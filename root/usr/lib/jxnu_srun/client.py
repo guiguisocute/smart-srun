@@ -205,44 +205,63 @@ def _urlencode(params):
     return "&".join(parts)
 
 
+def extract_host_from_url(url):
+    match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/:?#]+)", str(url or ""))
+    return match.group(1) if match else ""
+
+
 def http_get(url, params=None, timeout=5):
     if params:
         query = _urlencode(params)
         url = url + ("&" if "?" in url else "?") + query
 
+    errors = []
+
     if HAVE_URLLIB:
-        req = urllib_request.Request(url, headers=HEADER, method="GET")
-        with urllib_request.urlopen(req, timeout=timeout) as resp:
-            return resp.read().decode("utf-8", errors="replace")
+        try:
+            req = urllib_request.Request(url, headers=HEADER, method="GET")
+            with urllib_request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8", errors="replace")
+        except Exception as exc:
+            errors.append("urllib: %s" % str(exc))
+
+    host = extract_host_from_url(url)
+    bind_ip = get_local_ip_for_target(host) if host else None
 
     candidates = [
-        ("/bin/uclient-fetch", "uclient-fetch"),
-        ("/usr/bin/uclient-fetch", "uclient-fetch"),
         ("/usr/bin/wget", "wget"),
         ("/bin/wget", "wget"),
+        ("/bin/uclient-fetch", "uclient-fetch"),
+        ("/usr/bin/uclient-fetch", "uclient-fetch"),
     ]
-    selected = None
-    selected_type = ""
-    for path, kind in candidates:
-        if os.path.exists(path):
-            selected = path
-            selected_type = kind
-            break
 
-    if not selected:
+    available = False
+    for path, kind in candidates:
+        if not os.path.exists(path):
+            continue
+        available = True
+
+        if kind == "wget":
+            cmd = [path, "-q", "-O", "-", "--timeout=%d" % int(timeout)]
+            if bind_ip:
+                cmd.append("--bind-address=%s" % bind_ip)
+            cmd.append(url)
+        else:
+            cmd = [path, "-q", "-O", "-", "--timeout", str(int(timeout)), url]
+
+        try:
+            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+            return output.decode("utf-8", errors="replace")
+        except subprocess.CalledProcessError as exc:
+            details = exc.output.decode("utf-8", errors="replace") if exc.output else str(exc)
+            errors.append("%s: %s" % (kind, details.strip()))
+        except OSError as exc:
+            errors.append("%s: %s" % (kind, str(exc)))
+
+    if not available:
         raise RuntimeError("未找到可用 HTTP 客户端（uclient-fetch/wget）。")
 
-    if selected_type == "uclient-fetch":
-        cmd = [selected, "-q", "-O", "-", "--timeout", str(int(timeout)), url]
-    else:
-        cmd = [selected, "-q", "-O", "-", "--timeout=%d" % int(timeout), url]
-
-    try:
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-        return output.decode("utf-8", errors="replace")
-    except subprocess.CalledProcessError as exc:
-        details = exc.output.decode("utf-8", errors="replace") if exc.output else str(exc)
-        raise RuntimeError("HTTP 请求失败: " + details)
+    raise RuntimeError("HTTP 请求失败: " + " | ".join([e for e in errors if e]))
 
 
 def parse_jsonp(text):
