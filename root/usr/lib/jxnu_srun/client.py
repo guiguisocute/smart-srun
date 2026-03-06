@@ -729,6 +729,32 @@ def build_urls(base_url):
     }
 
 
+def prepare_campus_for_login(cfg):
+    if not failover_enabled(cfg):
+        return True, ""
+
+    campus_ssid = str(cfg.get("campus_ssid", "")).strip()
+    if not campus_ssid:
+        return True, ""
+
+    campus_net = get_network_interface_from_ssid(campus_ssid)
+    campus_ip = get_ipv4_from_network_interface(campus_net) if campus_net else None
+    if campus_ip:
+        return True, ""
+
+    switched, sw_msg = switch_to_campus(cfg)
+    if switched:
+        # Give wpa_supplicant/dhcp a brief window to settle after SSID switch.
+        time.sleep(2)
+        campus_net = get_network_interface_from_ssid(campus_ssid)
+        campus_ip = get_ipv4_from_network_interface(campus_net) if campus_net else None
+        if campus_ip:
+            return True, ""
+
+    detail = sw_msg or "未获取到校园网SSID的IPv4地址"
+    return False, "校园网SSID未就绪: " + detail
+
+
 def init_getip(init_url):
     text = http_get(init_url, timeout=5)
     ip = extract_ip_from_text(text)
@@ -837,6 +863,10 @@ def run_once(cfg):
 
     if not cfg["username"] or not cfg["password"]:
         return False, "请先在 LuCI 页面填写学工号和密码。"
+
+    campus_ready, campus_msg = prepare_campus_for_login(cfg)
+    if not campus_ready:
+        return False, campus_msg
 
     urls = build_urls(cfg["base_url"])
     ip = init_getip(urls["init_url"])
