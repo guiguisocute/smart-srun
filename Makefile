@@ -1,14 +1,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-jxnu-srun
-PKG_VERSION:=1.0.0
+PKG_VERSION:=1.0.1
 PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/luci/luci.mk
 
 LUCI_TITLE:=师大校园网
-LUCI_DEPENDS:=+python3-light
+LUCI_DEPENDS:=+python3
 LUCI_PKGARCH:=all
 
 define Package/$(PKG_NAME)/description

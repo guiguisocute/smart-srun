@@ -22,7 +22,7 @@ end
 local function run_client(args, stderr_to_stdout)
     local py = find_python()
     if py == "" then
-        return "", "未找到 Python3，请先安装 python3-light。"
+        return "", "未找到 Python3，请先安装。"
     end
 
     local cmd = py .. " -B /usr/lib/jxnu_srun/client.py " .. (args or "")
@@ -69,6 +69,15 @@ local function validate_hhmm(v)
     return string.format("%02d:%02d", hour, minute)
 end
 
+local function validate_non_negative_number(v, field_label)
+    local value = util.trim(v or "")
+    local num = tonumber(value)
+    if not num or num < 0 then
+        return nil, (field_label or "该字段") .. "必须为大于等于 0 的数字"
+    end
+    return tostring(num)
+end
+
 local function list_sta_ssids()
     local out = sys.exec("uci -q show wireless 2>/dev/null") or ""
     local iface_sections = {}
@@ -104,6 +113,21 @@ local function list_has_value(list, value)
         end
     end
     return false
+end
+
+local function form_or_uci(section, option, default_value)
+    local form_key = "cbid.jxnu_srun." .. tostring(section or "") .. "." .. tostring(option or "")
+    local from_form = m:formvalue(form_key)
+    if from_form ~= nil then
+        return util.trim(from_form)
+    end
+
+    local from_uci = m.uci:get("jxnu_srun", section, option)
+    if from_uci ~= nil and tostring(from_uci) ~= "" then
+        return util.trim(from_uci)
+    end
+
+    return util.trim(default_value or "")
 end
 
 local function html_escape(text)
@@ -184,56 +208,70 @@ password = s:taboption("basic", Value, "password", "密码")
 password.password = true
 password.rmempty = false
 
-failover_enabled = s:taboption("basic", Flag, "failover_enabled", "自动切换SSID（下线时段/断网）")
+local CAMPUS_SSID = "jxnu_stu"
+
+failover_enabled = s:taboption("basic", Flag, "failover_enabled", "夜间模式自动切换热点SSID")
 failover_enabled.rmempty = false
 failover_enabled.default = "1"
 
 local ssids = list_sta_ssids()
-
-campus_ssid = s:taboption("basic", ListValue, "campus_ssid", "校园网SSID")
-campus_ssid.rmempty = true
+local hotspot_ssids = {}
 for _, name in ipairs(ssids) do
-    campus_ssid:value(name, name)
-end
-local current_campus = util.trim(m.uci:get("jxnu_srun", "main", "campus_ssid") or "")
-if current_campus ~= "" and not list_has_value(ssids, current_campus) then
-    campus_ssid:value(current_campus, current_campus .. "（当前）")
-end
-if #ssids == 0 and current_campus == "" then
-    campus_ssid:value("", "未找到 STA 模式 SSID")
-end
-campus_ssid:depends("failover_enabled", "1")
-function campus_ssid.validate(self, value, section)
-    local enabled_now = m.uci:get("jxnu_srun", section, "failover_enabled")
-    local v = util.trim(value or "")
-    if enabled_now == "1" and v == "" then
-        return nil, "启用自动切换SSID时必须选择校园网SSID"
+    if name ~= CAMPUS_SSID then
+        hotspot_ssids[#hotspot_ssids + 1] = name
     end
-    return v
 end
 
 hotspot_ssid = s:taboption("basic", ListValue, "hotspot_ssid", "热点SSID")
 hotspot_ssid.rmempty = true
-for _, name in ipairs(ssids) do
+for _, name in ipairs(hotspot_ssids) do
     hotspot_ssid:value(name, name)
 end
 local current_hotspot = util.trim(m.uci:get("jxnu_srun", "main", "hotspot_ssid") or "")
-if current_hotspot ~= "" and not list_has_value(ssids, current_hotspot) then
+if current_hotspot ~= "" and not list_has_value(hotspot_ssids, current_hotspot) then
     hotspot_ssid:value(current_hotspot, current_hotspot .. "（当前）")
 end
-if #ssids == 0 and current_hotspot == "" then
-    hotspot_ssid:value("", "未找到 STA 模式 SSID")
+if #hotspot_ssids == 0 and current_hotspot == "" then
+    hotspot_ssid:value("", "未找到可用 STA 热点SSID（已排除 jxnu_stu）")
 end
 hotspot_ssid:depends("failover_enabled", "1")
 function hotspot_ssid.validate(self, value, section)
-    local enabled_now = m.uci:get("jxnu_srun", section, "failover_enabled")
+    local enabled_now = form_or_uci(section, "failover_enabled", "0")
     local v = util.trim(value or "")
     if enabled_now == "1" and v == "" then
-        return nil, "启用自动切换SSID时必须选择热点SSID"
+        return nil, "启用夜间模式切换时必须选择热点SSID"
     end
     return v
 end
 
+local function add_encryption_values(opt)
+    opt:value("none", "开放网络 (none)")
+    opt:value("psk", "WPA-PSK (psk)")
+    opt:value("psk2", "WPA2-PSK (psk2)")
+    opt:value("psk-mixed", "WPA/WPA2-PSK (psk-mixed)")
+    opt:value("sae", "WPA3-SAE (sae)")
+    opt:value("sae-mixed", "WPA2/WPA3-SAE (sae-mixed)")
+end
+
+hotspot_encryption = s:taboption("basic", ListValue, "hotspot_encryption", "热点加密方式")
+add_encryption_values(hotspot_encryption)
+hotspot_encryption.default = "psk2"
+hotspot_encryption.rmempty = false
+hotspot_encryption:depends("failover_enabled", "1")
+
+hotspot_key = s:taboption("basic", Value, "hotspot_key", "热点密码")
+hotspot_key.password = true
+hotspot_key.rmempty = true
+hotspot_key:depends("failover_enabled", "1")
+function hotspot_key.validate(self, value, section)
+    local enabled_now = form_or_uci(section, "failover_enabled", "0")
+    local enc = form_or_uci(section, "hotspot_encryption", "none"):lower()
+    local v = util.trim(value or "")
+    if enabled_now == "1" and enc ~= "none" and v == "" then
+        return nil, "热点加密方式非 none 时必须填写热点密码"
+    end
+    return v
+end
 quiet_hours_enabled = s:taboption("advanced", Flag, "quiet_hours_enabled", "按时段自动上下线", quiet_desc)
 quiet_hours_enabled.rmempty = false
 quiet_hours_enabled.default = "1"
@@ -267,14 +305,60 @@ force_logout_in_quiet.rmempty = false
 force_logout_in_quiet.default = "1"
 force_logout_in_quiet:depends("quiet_hours_enabled", "1")
 
-connectivity_check_host = s:taboption("advanced", Value, "connectivity_check_host", "连通性检测地址", "支持 IP 或域名")
-connectivity_check_host.default = "8.8.8.8"
-connectivity_check_host.rmempty = false
-connectivity_check_host:depends("failover_enabled", "1")
+backoff_enable = s:taboption("advanced", Flag, "backoff_enable", "登录失败时启用积分退避重试")
+backoff_enable.rmempty = false
+backoff_enable.default = "1"
+
+backoff_max_retries = s:taboption("advanced", Value, "backoff_max_retries", "最大重试次数（0 为无限）")
+backoff_max_retries.datatype = "uinteger"
+backoff_max_retries.default = "0"
+backoff_max_retries.rmempty = false
+backoff_max_retries:depends("backoff_enable", "1")
+
+backoff_initial_duration = s:taboption("advanced", Value, "backoff_initial_duration", "初始等待时长（秒）")
+backoff_initial_duration.default = "10"
+backoff_initial_duration.rmempty = false
+backoff_initial_duration:depends("backoff_enable", "1")
+function backoff_initial_duration.validate(self, value, section)
+    return validate_non_negative_number(value, "初始等待时长")
+end
+
+backoff_max_duration = s:taboption("advanced", Value, "backoff_max_duration", "最大等待时长（秒）")
+backoff_max_duration.default = "600"
+backoff_max_duration.rmempty = false
+backoff_max_duration:depends("backoff_enable", "1")
+function backoff_max_duration.validate(self, value, section)
+    return validate_non_negative_number(value, "最大等待时长")
+end
+
+backoff_exponent_factor = s:taboption("advanced", Value, "backoff_exponent_factor", "指数因子")
+backoff_exponent_factor.default = "1.5"
+backoff_exponent_factor.rmempty = false
+backoff_exponent_factor:depends("backoff_enable", "1")
+function backoff_exponent_factor.validate(self, value, section)
+    return validate_non_negative_number(value, "指数因子")
+end
+
+backoff_inter_const_factor = s:taboption("advanced", Value, "backoff_inter_const_factor", "内常数因子（秒）")
+backoff_inter_const_factor.default = "0"
+backoff_inter_const_factor.rmempty = false
+backoff_inter_const_factor:depends("backoff_enable", "1")
+function backoff_inter_const_factor.validate(self, value, section)
+    return validate_non_negative_number(value, "内常数因子")
+end
+
+backoff_outer_const_factor = s:taboption("advanced", Value, "backoff_outer_const_factor", "外常数因子（秒）")
+backoff_outer_const_factor.default = "0"
+backoff_outer_const_factor.rmempty = false
+backoff_outer_const_factor:depends("backoff_enable", "1")
+function backoff_outer_const_factor.validate(self, value, section)
+    return validate_non_negative_number(value, "外常数因子")
+end
+
 
 interval = s:taboption("advanced", Value, "interval", "检测间隔（秒）")
 interval.datatype = "uinteger"
-interval.default = "60"
+interval.default = "180"
 interval.rmempty = false
 
 log_text = s:taboption("log", DummyValue, "_log_text", "运行日志（最近 200 行）")
