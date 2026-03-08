@@ -36,8 +36,7 @@ LOG_MAX_BYTES = 512 * 1024
 SWITCH_DELAY_SECONDS = 2
 SSID_READY_TIMEOUT_SECONDS = 12
 SSID_EXPECTED_RETRY_SECONDS = 30
-ONLINE_CHECK_MULTIPLIER = 3
-ONLINE_CHECK_MIN_SECONDS = 180
+ONLINE_CHECK_MAX_SECONDS = 60
 DISCONNECT_RETRY_DELAY_SECONDS = 3
 CAMPUS_FIXED_SSID = "jxnu_stu"
 CAMPUS_FIXED_ENCRYPTION = "none"
@@ -270,11 +269,19 @@ def run_once_with_retry(cfg):
     if ok:
         return True, message
 
+    append_log("[JXNU-SRun] 首次登录失败: %s" % message)
+
     if not backoff_enabled(cfg):
+        append_log(
+            "[JXNU-SRun] 已关闭退避重试，%d 秒后执行一次重试"
+            % DISCONNECT_RETRY_DELAY_SECONDS
+        )
         time.sleep(DISCONNECT_RETRY_DELAY_SECONDS)
         retry_ok, retry_message = run_once_safe(cfg)
         if retry_ok:
-            return True, "首次失败，重试成功"
+            append_log("[JXNU-SRun] 单次重试成功")
+            return True, "重试成功"
+        append_log("[JXNU-SRun] 单次重试失败: %s" % retry_message)
         return False, retry_message
 
     retries = 0
@@ -285,30 +292,28 @@ def run_once_with_retry(cfg):
         max_retries = int(runtime_cfg.get("backoff_max_retries", 0))
 
         if runtime_cfg.get("enabled") != "1":
-            return False, "已禁用，停止退避重试"
+            return False, "服务已禁用，停止重试"
         if not backoff_enabled(runtime_cfg):
             return False, message
         if in_quiet_window(runtime_cfg):
-            return False, "进入夜间停用时段，停止退避重试"
+            return False, "进入夜间停用时段，停止重试"
         if max_retries > 0 and retries >= max_retries:
             return False, message
 
         delay = calc_backoff_delay_seconds(runtime_cfg, failures)
-        append_log(
-            "[JXNU-SRun] 登录失败，%.1f 秒后退避重试（第 %d 次）"
-            % (delay, retries + 1)
-        )
+        append_log("[JXNU-SRun] 第 %d 次重试将在 %.1f 秒后执行" % (retries + 1, delay))
         if delay > 0:
             time.sleep(delay)
 
         retry_ok, retry_message = run_once_safe(runtime_cfg)
         retries += 1
         if retry_ok:
-            return True, "退避重试成功（第 %d 次）" % retries
+            append_log("[JXNU-SRun] 第 %d 次重试成功" % retries)
+            return True, "重试成功（第 %d 次）" % retries
 
+        append_log("[JXNU-SRun] 第 %d 次重试失败: %s" % (retries, retry_message))
         message = retry_message
         failures += 1
-
 
 def quiet_connection_state(cfg, urls=None):
     if not cfg.get("username"):
@@ -413,7 +418,7 @@ def http_get(url, params=None, timeout=5):
             errors.append("%s: %s" % (kind, str(exc)))
 
     if not available:
-        raise RuntimeError("未找到可用 HTTP 客户端（uclient-fetch/wget）。")
+        raise RuntimeError("未找到可用 HTTP 客户端（uclient-fetch/wget）")
 
     raise RuntimeError("HTTP 请求失败: " + " | ".join([e for e in errors if e]))
 
@@ -933,7 +938,7 @@ def init_getip(init_url):
         target_host = init_url.split("://", 1)[-1].split("/", 1)[0]
         ip = get_local_ip_for_target(target_host)
     if not ip:
-        raise RuntimeError("无法获取本机登录 IP。")
+        raise RuntimeError("无法获取本机登录 IP")
     return ip
 
 
@@ -952,7 +957,7 @@ def get_token(get_challenge_api, username, ip):
         raise RuntimeError("获取挑战码失败: " + localize_error(msg))
     resolved_ip = pick_valid_ip(data.get("client_ip"), data.get("online_ip"), ip)
     if not resolved_ip:
-        raise RuntimeError("获取挑战码失败: 未获得有效客户端 IP。")
+        raise RuntimeError("获取挑战码失败: 未获得有效客户端 IP")
     return token, resolved_ip
 
 
@@ -1033,7 +1038,7 @@ def run_once(cfg):
         return False, "夜间停用中（北京时间 %s），不执行登录" % quiet_window_label(cfg)
 
     if not cfg["username"] or not cfg["password"]:
-        return False, "请先在 LuCI 页面填写学工号和密码。"
+        return False, "请先在 LuCI 页面填写学工号和密码"
 
     campus_ready, campus_msg = prepare_campus_for_login(cfg)
     if not campus_ready:
@@ -1067,7 +1072,7 @@ def run_once(cfg):
 def run_status(cfg):
     mode_hint = ""
     if failover_enabled(cfg):
-        mode_hint = "（校园网SSID: %s, 热点SSID: %s）" % (
+        mode_hint = "（校园网SSID: %s，热点SSID: %s）" % (
             CAMPUS_FIXED_SSID,
             cfg.get("hotspot_ssid", "未设置"),
         )
@@ -1097,16 +1102,16 @@ def run_quiet_logout(cfg):
     ip = init_getip(urls["init_url"])
     ok, message = logout(urls["srun_portal_api"], cfg, ip)
     if ok:
-        return True, "夜间停用（未连接）"
+        return True, "夜间停用下线成功"
     return False, "夜间停用下线失败: " + localize_error(message)
 
 
 def run_switch(cfg, expect_hotspot):
     target = build_expected_profile(cfg, expect_hotspot)
     if not target["ssid"]:
-        return False, "%s SSID 未配置。" % target["label"]
+        return False, "%s SSID 未配置" % target["label"]
     if wifi_key_required(target["encryption"]) and not target["key"]:
-        return False, "%s 配置缺少密码。" % target["label"]
+        return False, "%s 配置缺少密码" % target["label"]
 
     switched, message = switch_sta_profile(cfg, expect_hotspot)
     if switched:
@@ -1115,24 +1120,21 @@ def run_switch(cfg, expect_hotspot):
 
 
 def run_daemon():
-    last_message = ""
     was_in_quiet = False
     quiet_logout_done = False
     current_mode = "campus"
-    has_logged_in = False
     was_online = False
     last_expected_ssid_switch_at = 0
 
     while True:
         cfg = load_config()
         interval = max(int(cfg["interval"]), 5)
-        online_interval = max(interval * ONLINE_CHECK_MULTIPLIER, ONLINE_CHECK_MIN_SECONDS)
+        online_interval = min(interval, ONLINE_CHECK_MAX_SECONDS)
 
         if cfg["enabled"] != "1":
             was_in_quiet = False
             quiet_logout_done = False
             current_mode = "campus"
-            has_logged_in = False
             was_online = False
             last_expected_ssid_switch_at = 0
             time.sleep(interval)
@@ -1151,17 +1153,15 @@ def run_daemon():
                 if ssid_ok:
                     current_mode = "hotspot"
                 if ssid_msg:
-                    mode_msg = (mode_msg + "\uff1b" if mode_msg else "") + ssid_msg
+                    mode_msg = (mode_msg + "；" if mode_msg else "") + ssid_msg
                 if not ssid_ok:
-                    message = "\u591c\u95f4\u505c\u7528\uff08\u672a\u8fde\u63a5\uff09"
+                    message = "夜间停用（未连接）"
                     if mode_msg:
-                        message = message + "\uff1b" + mode_msg
-                    log_line = ("[JXNU-SRun] " + message).strip()
-                    if message != last_message:
-                        append_log(log_line)
-                    last_message = message
+                        message = message + "；" + mode_msg
+                    append_log(("[JXNU-SRun] " + message).strip())
                     was_in_quiet = True
                     was_online = False
+                    current_mode = "hotspot"
                     time.sleep(min(interval, 60))
                     continue
 
@@ -1186,35 +1186,50 @@ def run_daemon():
             if mode_msg:
                 message = message + "；" + mode_msg
 
-            log_line = ("[JXNU-SRun] " + message).strip()
-            if (not ok) or (message != last_message):
-                append_log(log_line)
-            last_message = message
+            append_log(("[JXNU-SRun] " + message).strip())
             was_in_quiet = True
             was_online = False
             time.sleep(min(interval, 60))
             continue
 
         if was_in_quiet:
+            append_log("[JXNU-SRun] 退出夜间时段，准备切回校园网配置")
             quiet_logout_done = False
             was_in_quiet = False
-            has_logged_in = False
             was_online = False
+            last_expected_ssid_switch_at = 0
             if failover_enabled(cfg):
                 switched, sw_msg = switch_to_campus(cfg)
-                current_mode = "campus"
+                current_mode = "campus" if switched else "hotspot"
                 if sw_msg:
                     mode_msg = sw_msg
 
-        if current_mode == "hotspot":
+        if failover_enabled(cfg):
+            ready_ok, ready_msg, last_expected_ssid_switch_at = ensure_expected_profile(
+                cfg,
+                expect_hotspot=False,
+                last_switch_ts=last_expected_ssid_switch_at,
+            )
+            if ready_ok:
+                current_mode = "campus"
+                if ready_msg:
+                    mode_msg = (mode_msg + "；" if mode_msg else "") + ready_msg
+            else:
+                current_mode = "hotspot"
+                message = "校园网配置未就绪"
+                if ready_msg:
+                    message = message + "；" + ready_msg
+                append_log("[JXNU-SRun] " + message)
+                was_online = False
+                time.sleep(min(interval, 30))
+                continue
+
+        if failover_enabled(cfg) and current_mode == "hotspot":
             was_online = False
             message = "已切换到热点SSID，校园网SSID恢复后将自动切回"
             if mode_msg:
                 message = message + "；" + mode_msg
-            log_line = ("[JXNU-SRun] " + message).strip()
-            if message != last_message:
-                append_log(log_line)
-            last_message = message
+            append_log(("[JXNU-SRun] " + message).strip())
             time.sleep(interval)
             continue
 
@@ -1223,52 +1238,51 @@ def run_daemon():
         try:
             urls = build_urls(cfg["base_url"])
             online_now = False
+            status_message = ""
             if cfg["username"]:
-                online_now, _ = query_online_status(urls["rad_user_info_api"], cfg["username"])
+                online_now, status_message = query_online_status(urls["rad_user_info_api"], cfg["username"])
 
             if online_now:
                 ok = True
-                has_logged_in = True
-                message = "在线，降低检测频率（%d秒）" % online_interval
+                message = "在线，下一次检测间隔 %d 秒" % online_interval
                 if not was_online:
-                    message = "检测到在线，降低检测频率（%d秒）" % online_interval
+                    message = "检测到在线，下一次检测间隔 %d 秒" % online_interval
                 was_online = True
                 next_sleep = online_interval
             else:
                 if was_online:
-                    append_log("[JXNU-SRun] 检测到刚断线，立即重连。")
+                    append_log("[JXNU-SRun] 检测到断线，立即开始重连")
                 was_online = False
 
                 ok, message = run_once_with_retry(cfg)
-                if ok:
-                    has_logged_in = True
-                    was_online = True
+                was_online = bool(ok)
+                if not ok and status_message:
+                    message = "%s；状态检测结果: %s" % (message, status_message)
 
         except HTTP_EXCEPTIONS as exc:
-            if was_online:
-                append_log("[JXNU-SRun] 检测到刚断线，立即重连。")
+            append_log("[JXNU-SRun] 状态检测网络异常，尝试重连")
             was_online = False
-            ok, message = False, "网络错误: " + localize_error(exc)
+            ok, message = run_once_with_retry(cfg)
+            if not ok:
+                message = "网络异常: %s；重连结果: %s" % (localize_error(exc), message)
         except ValueError as exc:
-            if was_online:
-                append_log("[JXNU-SRun] 检测到刚断线，立即重连。")
+            append_log("[JXNU-SRun] 状态检测解析异常，尝试重连")
             was_online = False
-            ok, message = False, "响应解析错误: " + localize_error(exc)
+            ok, message = run_once_with_retry(cfg)
+            if not ok:
+                message = "解析异常: %s；重连结果: %s" % (localize_error(exc), message)
         except Exception as exc:
-            if was_online:
-                append_log("[JXNU-SRun] 检测到刚断线，立即重连。")
+            append_log("[JXNU-SRun] 状态检测异常，尝试重连")
             was_online = False
-            ok, message = False, "错误: " + localize_error(exc)
+            ok, message = run_once_with_retry(cfg)
+            if not ok:
+                message = "异常: %s；重连结果: %s" % (localize_error(exc), message)
 
         if mode_msg:
             message = message + "；" + mode_msg
 
-        log_line = ("[JXNU-SRun] " + message).strip()
-        if (not ok) or (message != last_message):
-            append_log(log_line)
-        last_message = message
+        append_log(("[JXNU-SRun] " + message).strip())
         time.sleep(next_sleep)
-
 
 def main():
     parser = argparse.ArgumentParser(description="JXNU SRun client for OpenWrt")
