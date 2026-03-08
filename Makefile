@@ -1,7 +1,7 @@
 ﻿include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-jxnu-srun
-PKG_VERSION:=1.0.1-0.7
+PKG_VERSION:=1.1.0-T1
 PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk

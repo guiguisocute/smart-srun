@@ -82,20 +82,6 @@ if HAVE_URLLIB:
     HTTP_EXCEPTIONS = HTTP_EXCEPTIONS + (urllib_error.URLError,)
 
 
-def uci_get(option, default=""):
-    key = "jxnu_srun.main." + option
-    cmd = ["uci", "-q", "get", key]
-    try:
-        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True).strip()
-        return out if out else default
-    except (OSError, subprocess.CalledProcessError):
-        return default
-
-
-def load_uci_raw_config():
-    return {k: uci_get(k, v) for k, v in DEFAULTS.items()}
-
-
 def ensure_parent_dir(path):
     parent = os.path.dirname(str(path or ""))
     if parent:
@@ -131,12 +117,6 @@ def save_json_raw_config(raw_cfg):
     with open(JSON_CONFIG_FILE, "w", encoding="utf-8") as wf:
         json.dump(payload, wf, ensure_ascii=False, indent=2, sort_keys=True)
         wf.write("\n")
-
-
-def sync_json_from_uci():
-    raw = load_uci_raw_config()
-    save_json_raw_config(raw)
-    return raw
 
 
 def parse_non_negative_int(value, default_value):
@@ -1374,20 +1354,9 @@ def main():
     parser.add_argument("--daemon", action="store_true", help="run as daemon loop")
     parser.add_argument("--once", action="store_true", help="run login once")
     parser.add_argument("--status", action="store_true", help="query online status")
-    parser.add_argument("--sync-json", action="store_true", help="sync json config from uci")
     parser.add_argument("--switch-hotspot", action="store_true", help="switch STA profile to hotspot")
     parser.add_argument("--switch-campus", action="store_true", help="switch STA profile to campus")
     args = parser.parse_args()
-
-    if args.sync_json:
-        try:
-            sync_json_from_uci()
-            print("配置已同步到 JSON")
-        except Exception as exc:
-            message = "同步 JSON 配置失败: " + localize_error(exc)
-            append_log("[JXNU-SRun] " + message)
-            print(message)
-        return
 
     cfg = load_config()
 

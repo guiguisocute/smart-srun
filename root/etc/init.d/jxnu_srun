@@ -11,10 +11,6 @@ find_python() {
 }
 
 start_service() {
-	config_load jxnu_srun
-	config_get_bool enabled main enabled 0
-	[ "$enabled" -eq 1 ] || return 0
-
 	PYTHON_BIN="$(find_python)"
 	if [ -z "$PYTHON_BIN" ]; then
 		logger -t "$SERVICE_NAME" "python3 not found, please install python3-light"
