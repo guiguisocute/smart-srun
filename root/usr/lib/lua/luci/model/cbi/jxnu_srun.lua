@@ -248,10 +248,10 @@ user_id.rmempty = false
 bind_text(user_id, "user_id")
 
 operator = s:taboption("basic", ListValue, "operator", "运营商")
-operator:value("cmcc", "中国移动 (cmcc)")
-operator:value("ctcc", "中国电信 (ctcc)")
-operator:value("cucc", "中国联通 (cucc)")
-operator:value("xn", "校内网 (xn)")
+operator:value("cmcc", "中国移动")
+operator:value("ctcc", "中国电信")
+operator:value("cucc", "中国联通")
+operator:value("xn", "校内网")
 operator.default = "cucc"
 operator.rmempty = false
 function operator.cfgvalue()
@@ -507,8 +507,13 @@ function m.parse(self, ...)
     Map.parse(self, ...)
     if changed then
         save_cfg(cfg)
+        m.uci:set("jxnu_srun", "main", "_stamp", tostring(os.time()))
         m.message = (m.message and (m.message .. "；") or "") .. "配置已保存到 JSON"
     end
+end
+
+function m.on_before_commit(self)
+    sys.call("/etc/init.d/jxnu_srun restart >/dev/null 2>&1")
 end
 
 return m

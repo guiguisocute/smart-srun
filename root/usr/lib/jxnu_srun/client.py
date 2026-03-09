@@ -144,7 +144,10 @@ def load_config():
 
     cfg["username"] = ""
     if cfg["user_id"]:
-        cfg["username"] = cfg["user_id"] + "@" + cfg["operator"]
+        if cfg["operator"] == "xn":
+            cfg["username"] = cfg["user_id"]
+        else:
+            cfg["username"] = cfg["user_id"] + "@" + cfg["operator"]
 
     cfg["campus_encryption"] = normalize_wifi_encryption(CAMPUS_FIXED_ENCRYPTION)
     cfg["hotspot_encryption"] = normalize_wifi_encryption(cfg["hotspot_encryption"])
