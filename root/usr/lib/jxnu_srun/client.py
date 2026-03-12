@@ -375,16 +375,9 @@ def build_runtime_snapshot(cfg, state=None):
     previous = load_runtime_state()
     wired_mode = campus_uses_wired(cfg)
     wan_ip = get_ipv4_from_network_interface("wan") if wired_mode else None
-    if ssid == str(cfg.get("hotspot_ssid", "")).strip() and ssid:
-        mode = "hotspot"
-    elif wired_mode and wan_ip:
-        mode = "campus"
-    elif ssid == str(cfg.get("campus_ssid", "")).strip() and ssid:
-        mode = "campus"
-    else:
-        mode = "unknown"
+    wired_online = False
 
-    if mode == "campus" and wired_mode and wan_ip:
+    if wired_mode and wan_ip:
         ssid = "有线接入"
         bssid = ""
         net = "wan"
@@ -426,7 +419,28 @@ def build_runtime_snapshot(cfg, state=None):
     else:
         previous["connectivity_checked_at"] = int(time.time())
 
-    if mode != "hotspot" and cfg.get("username"):
+    if cfg.get("username") and wired_mode and wan_ip:
+        try:
+            urls = build_urls(cfg["base_url"])
+            online_now, online_user, _ = query_online_identity(
+                urls["rad_user_info_api"], cfg["username"], bind_ip=wan_ip
+            )
+            if online_now and online_user:
+                wired_online = True
+                online_account_label = online_user
+        except Exception:
+            wired_online = False
+
+    if wired_online:
+        mode = "campus"
+    elif ssid == str(cfg.get("hotspot_ssid", "")).strip() and ssid:
+        mode = "hotspot"
+    elif ssid == str(cfg.get("campus_ssid", "")).strip() and ssid:
+        mode = "campus"
+    else:
+        mode = "unknown"
+
+    if mode != "hotspot" and cfg.get("username") and not wired_online:
         try:
             urls = build_urls(cfg["base_url"])
             online_now, online_user, _ = query_online_identity(
@@ -1215,6 +1229,16 @@ def get_ipv4_from_network_interface(iface_name):
         if match:
             return match.group(1)
 
+    return None
+
+
+def wait_for_network_interface_ipv4(iface_name, timeout_seconds=12, interval_seconds=1):
+    deadline = time.time() + max(int(timeout_seconds), 1)
+    while time.time() < deadline:
+        ip = get_ipv4_from_network_interface(iface_name)
+        if ip:
+            return ip
+        time.sleep(max(int(interval_seconds), 1))
     return None
 
 
@@ -2077,7 +2101,9 @@ def switch_to_hotspot(cfg):
 def switch_to_campus(cfg):
     if campus_uses_wired(cfg):
         disable_managed_sta_sections(cfg, parse_wireless_iface_data())
-        wan_ip = get_ipv4_from_network_interface("wan")
+        wan_ip = wait_for_network_interface_ipv4(
+            "wan", timeout_seconds=get_switch_ready_timeout_seconds(cfg)
+        )
         if wan_ip:
             return True, "已切换为有线校园网模式（wan, %s）" % wan_ip
         return False, "已切到有线校园网模式，但 WAN 口暂未获取到 IPv4 地址"
@@ -2410,6 +2436,8 @@ def wait_for_manual_login_ready(cfg, attempts=5, delay_seconds=2):
     last_message = ""
     ready_label = get_manual_terminal_check_label(cfg)
     wired_mode = campus_uses_wired(cfg)
+    urls = build_urls(cfg["base_url"])
+    bind_ip = resolve_bind_ip(urls["init_url"], cfg)
     for idx in range(attempts):
         append_log(
             "[JXNU-SRun] 正在执行手动登录终态校验：第%d次检查连通性。" % (idx + 1)
@@ -2422,10 +2450,24 @@ def wait_for_manual_login_ready(cfg, attempts=5, delay_seconds=2):
             (not bssid_expect) or (not current_bssid) or current_bssid == bssid_expect
         )
         online_ok = connectivity_mode_matches(snapshot, cfg, require_ssid=True)
+        auth_online = False
+        auth_message = ""
+        try:
+            auth_online, auth_message = query_online_status(
+                urls["rad_user_info_api"], cfg["username"], bind_ip=bind_ip
+            )
+        except Exception as exc:
+            auth_online = False
+            auth_message = localize_error(exc)
+
+        if wired_mode and auth_online:
+            return True, "已切到有线校园网并确认认证在线"
         if ssid_ok and bssid_ok and online_ok:
             if wired_mode:
                 return True, "已切到有线校园网并确认%s" % ready_label
             return True, "已关联目标校园网并确认%s" % ready_label
+        if (not wired_mode) and ssid_ok and bssid_ok and auth_online:
+            return True, "已关联目标校园网并确认认证在线"
         if ssid_ok and online_ok and bssid_expect and not current_bssid:
             return (
                 True,
@@ -2437,6 +2479,8 @@ def wait_for_manual_login_ready(cfg, attempts=5, delay_seconds=2):
             current_bssid or "-",
             snapshot.get("connectivity", "未知") or "未知",
         )
+        if auth_message:
+            last_message = last_message + "；认证状态=%s" % auth_message
         if idx + 1 < attempts:
             time.sleep(max(int(delay_seconds), 1))
     return False, last_message
@@ -2501,10 +2545,24 @@ def clean_slate_for_manual_login(cfg, online_user=""):
                 return False, message
             append_log("[JXNU-SRun] 手动登录预清理成功：历史在线账号已注销。")
 
+        active_data = parse_wireless_iface_data()
+        append_log(
+            "[JXNU-SRun] 当前校园网账号使用有线接入模式：开始禁用全部受管 STA 接口，确保后续认证流量走 WAN 口。"
+        )
+        ok, message = disable_managed_sta_sections(cfg, active_data)
+        if not ok:
+            append_log(
+                "[JXNU-SRun] 手动登录预清理失败：禁用受管 STA 接口失败，返回结果：%s"
+                % (message or "未知错误")
+            )
+            return False, message or "禁用历史 STA 接口失败"
+
         append_log(
             "[JXNU-SRun] 当前校园网账号使用有线接入模式：跳过无线重建，直接使用 WAN 口继续登录。"
         )
-        wan_ip = get_ipv4_from_network_interface("wan")
+        wan_ip = wait_for_network_interface_ipv4(
+            "wan", timeout_seconds=get_switch_ready_timeout_seconds(cfg)
+        )
         if not wan_ip:
             return False, "有线校园网模式下，WAN 口尚未获取到 IPv4 地址"
         return True, ""
@@ -2851,7 +2909,7 @@ def run_manual_login(cfg):
         login_ok, login_msg = run_once_with_retry(cfg, ignore_service_disabled=True)
         if login_ok:
             append_log(
-                "[JXNU-SRun] 手动登录请求已成功：登录阶段返回结果=%s，开始校验目标无线配置与互联网连通性。"
+                "[JXNU-SRun] 手动登录请求已成功：登录阶段返回结果=%s，开始校验目标接入配置与认证/连通性。"
                 % login_msg
             )
             max_attempts = get_manual_terminal_check_attempts(cfg)
@@ -2926,6 +2984,12 @@ def run_quiet_logout(cfg):
 
 def run_switch(cfg, expect_hotspot):
     target = build_expected_profile(cfg, expect_hotspot)
+    if (not expect_hotspot) and campus_uses_wired(cfg):
+        switched, message = switch_to_campus(cfg)
+        if switched:
+            return True, "切换成功: " + (message or "")
+        return False, "切换失败: " + (message or "未知错误")
+
     if not target["ssid"]:
         return False, "%s SSID 未配置" % target["label"]
     if wifi_key_required(target["encryption"]) and not target["key"]:
@@ -3201,14 +3265,6 @@ def run_daemon():
 
         action_handled, action_message = handle_runtime_action(cfg, state)
         if action_handled:
-            save_runtime_status(
-                action_message,
-                state,
-                daemon_running=True,
-                enabled=(cfg.get("enabled") == "1"),
-                in_quiet=in_quiet_window(cfg),
-                **build_runtime_snapshot(cfg, state),
-            )
             time.sleep(1)
             continue
 

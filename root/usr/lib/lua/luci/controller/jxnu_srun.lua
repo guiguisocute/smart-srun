@@ -10,6 +10,7 @@ local STATE_FILE = "/var/run/jxnu_srun/state.json"
 local ACTION_FILE = "/var/run/jxnu_srun/action.json"
 local LOG_FILE = "/var/log/jxnu_srun.log"
 local restore_manual_guarded_enabled
+local ACTION_STALE_SECONDS = 20
 
 function index()
     entry({"admin", "services", "jxnu_srun"}, cbi("jxnu_srun"), _("JXNU SRun"), 80).dependent = true
@@ -98,7 +99,12 @@ local function current_pending_runtime_action()
     local action = read_json_file(ACTION_FILE)
     local queued = tostring(action.action or "")
     if queued ~= "" then
-        return queued
+        local requested_at = tonumber(action.requested_at) or 0
+        if requested_at > 0 and (os.time() - requested_at) >= ACTION_STALE_SECONDS then
+            remove_file(ACTION_FILE)
+        else
+            return queued
+        end
     end
 
     local state = read_json_file(STATE_FILE)
@@ -116,7 +122,7 @@ function action_status()
     local data = read_json_file(STATE_FILE)
     local action = read_json_file(ACTION_FILE)
     local text = tostring(data.message or "未知")
-    local pending = tostring(action.action or data.pending_action or "")
+    local pending = current_pending_runtime_action()
     local last_log = util.trim(sys.exec("tail -n 1 " .. LOG_FILE .. " 2>/dev/null") or "")
     local enabled = true
     if data.enabled == false or tostring(data.enabled or "") == "0" then
