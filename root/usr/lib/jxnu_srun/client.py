@@ -41,40 +41,85 @@ SWITCH_DELAY_SECONDS = 2
 SSID_READY_TIMEOUT_SECONDS = 12
 SSID_EXPECTED_RETRY_SECONDS = 30
 DISCONNECT_RETRY_DELAY_SECONDS = 3
-CAMPUS_FIXED_SSID = "jxnu_stu"
-CAMPUS_FIXED_ENCRYPTION = "none"
 DEFAULTS_JSON_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "defaults.json"
 )
 
+# 全局标量字段（字符串类型），不包含数组和指针
+GLOBAL_SCALAR_KEYS = {
+    "enabled",
+    "quiet_hours_enabled",
+    "quiet_start",
+    "quiet_end",
+    "force_logout_in_quiet",
+    "failover_enabled",
+    "backoff_enable",
+    "backoff_max_retries",
+    "backoff_initial_duration",
+    "backoff_max_duration",
+    "backoff_exponent_factor",
+    "backoff_inter_const_factor",
+    "backoff_outer_const_factor",
+    "interval",
+    "developer_mode",
+    "sta_iface",
+    "n",
+    "type",
+    "enc",
+}
+
+# 指针字段
+POINTER_KEYS = {
+    "active_campus_id",
+    "default_campus_id",
+    "active_hotspot_id",
+    "default_hotspot_id",
+}
+
+# 列表字段
+LIST_KEYS = {"campus_accounts", "hotspot_profiles"}
+
+# 旧版扁平字段（用于迁移检测）
+LEGACY_CAMPUS_KEYS = {
+    "user_id",
+    "operator",
+    "password",
+    "base_url",
+    "ac_id",
+    "campus_ssid",
+    "campus_encryption",
+    "campus_key",
+}
+LEGACY_HOTSPOT_KEYS = {
+    "hotspot_ssid",
+    "hotspot_encryption",
+    "hotspot_key",
+    "hotspot_radio",
+}
+
 
 def _load_defaults():
+    """加载默认配置，支持新版嵌套 JSON 结构"""
     try:
         with open(DEFAULTS_JSON_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            return {k: str(v) for k, v in data.items()}
+            out = {}
+            for k, v in data.items():
+                if k in LIST_KEYS:
+                    out[k] = v if isinstance(v, list) else []
+                else:
+                    out[k] = str(v)
+            return out
     except Exception:
         pass
     return {
         "enabled": "0",
-        "user_id": "",
-        "operator": "cucc",
-        "password": "",
         "quiet_hours_enabled": "1",
         "quiet_start": "00:00",
         "quiet_end": "06:00",
         "force_logout_in_quiet": "1",
-        "developer_mode": "0",
         "failover_enabled": "1",
-        "sta_iface": "",
-        "campus_ssid": "jxnu_stu",
-        "campus_encryption": "none",
-        "campus_key": "",
-        "hotspot_ssid": "",
-        "hotspot_encryption": "psk2",
-        "hotspot_key": "",
-        "hotspot_radio": "",
         "backoff_enable": "1",
         "backoff_max_retries": "0",
         "backoff_initial_duration": "10",
@@ -82,12 +127,18 @@ def _load_defaults():
         "backoff_exponent_factor": "1.5",
         "backoff_inter_const_factor": "0",
         "backoff_outer_const_factor": "0",
-        "base_url": "http://172.17.1.2",
-        "ac_id": "1",
+        "interval": "180",
+        "developer_mode": "0",
+        "sta_iface": "",
         "n": "200",
         "type": "1",
         "enc": "srun_bx1",
-        "interval": "180",
+        "active_campus_id": "",
+        "default_campus_id": "",
+        "active_hotspot_id": "",
+        "default_hotspot_id": "",
+        "campus_accounts": [],
+        "hotspot_profiles": [],
     }
 
 
@@ -116,21 +167,29 @@ def ensure_json_config_file():
 
 
 def load_json_raw_config():
+    """读取 config.json 原始内容，支持新版嵌套结构和旧版扁平结构"""
     ensure_json_config_file()
     try:
         with open(JSON_CONFIG_FILE, "r", encoding="utf-8") as rf:
             data = json.load(rf)
         if isinstance(data, dict):
-            return {k: str(v) for k, v in data.items() if k in DEFAULTS}
+            return data
     except Exception:
         pass
     return {}
 
 
 def save_json_raw_config(raw_cfg):
+    """保存 config.json，全局标量和指针存字符串，列表存原生数组"""
     payload = {}
-    for key, default_value in DEFAULTS.items():
-        payload[key] = str(raw_cfg.get(key, default_value))
+    for key in GLOBAL_SCALAR_KEYS:
+        default_val = DEFAULTS.get(key, "")
+        payload[key] = str(raw_cfg.get(key, default_val))
+    for key in POINTER_KEYS:
+        payload[key] = str(raw_cfg.get(key, ""))
+    for key in LIST_KEYS:
+        val = raw_cfg.get(key)
+        payload[key] = val if isinstance(val, list) else []
 
     ensure_parent_dir(JSON_CONFIG_FILE)
     with open(JSON_CONFIG_FILE, "w", encoding="utf-8") as wf:
@@ -185,6 +244,7 @@ def build_runtime_snapshot(cfg, state=None):
     section = get_active_sta_section(cfg, data)
     profile = get_sta_profile_from_section(section, data) if section else {}
     ssid = str(profile.get("ssid", "")).strip()
+    bssid = str(profile.get("bssid", "")).strip().lower()
     net = get_network_interface_from_sta_section(section, data) if section else None
     ip = get_ipv4_from_network_interface(net) if net else None
     previous = load_runtime_state()
@@ -197,6 +257,7 @@ def build_runtime_snapshot(cfg, state=None):
 
     connectivity = "未连接"
     connectivity_level = "offline"
+    online_account_label = ""
     if ip:
         now_ts = int(time.time())
         cache_ip = str(previous.get("current_ip", "")).strip()
@@ -230,6 +291,16 @@ def build_runtime_snapshot(cfg, state=None):
     else:
         previous["connectivity_checked_at"] = int(time.time())
 
+    try:
+        urls = build_urls(cfg["base_url"])
+        online_now, online_user, _ = query_online_identity(
+            urls["rad_user_info_api"], cfg["username"]
+        )
+        if online_now and online_user:
+            online_account_label = online_user
+    except Exception:
+        online_account_label = ""
+
     if mode == "campus":
         mode_label = "校园网模式"
     elif mode == "hotspot":
@@ -242,11 +313,17 @@ def build_runtime_snapshot(cfg, state=None):
         "mode": mode,
         "mode_label": mode_label,
         "current_ssid": ssid,
+        "current_bssid": bssid,
         "current_iface": str(net or ""),
         "current_ip": str(ip or ""),
         "connectivity": connectivity,
         "connectivity_level": connectivity_level,
         "connectivity_checked_at": int(previous.get("connectivity_checked_at", 0) or 0),
+        "campus_account_label": str(cfg.get("campus_account_label", "")),
+        "online_account_label": online_account_label,
+        "hotspot_profile_label": str(cfg.get("hotspot_profile_label", "")),
+        "campus_ssid": str(cfg.get("campus_ssid", "")),
+        "campus_bssid": str(cfg.get("campus_bssid", "")).strip().lower(),
     }
 
 
@@ -283,19 +360,176 @@ def parse_non_negative_float(value, default_value):
         return float(default_value)
 
 
-def load_config():
-    raw = load_json_raw_config()
-    cfg = {k: str(raw.get(k, v)).strip() for k, v in DEFAULTS.items()}
+def _is_legacy_config(raw):
+    """检测是否为旧版扁平配置（没有 campus_accounts 数组）"""
+    if "campus_accounts" in raw and isinstance(raw["campus_accounts"], list):
+        return False
+    return any(k in raw for k in LEGACY_CAMPUS_KEYS)
 
-    cfg["operator"] = cfg["operator"].lower()
+
+def _next_id(items, prefix):
+    """生成下一个递增 ID，如 campus-1, campus-2, ..."""
+    max_num = 0
+    for item in items:
+        item_id = str(item.get("id", ""))
+        if item_id.startswith(prefix + "-"):
+            try:
+                num = int(item_id[len(prefix) + 1 :])
+                if num > max_num:
+                    max_num = num
+            except ValueError:
+                pass
+    return "%s-%d" % (prefix, max_num + 1)
+
+
+def _make_campus_label(account):
+    """为校园网账号生成默认显示名"""
+    label = str(account.get("label", "")).strip()
+    if label:
+        return label
+    user_id = str(account.get("user_id", "")).strip()
+    operator = str(account.get("operator", "")).strip()
+    if user_id and operator and operator != "xn":
+        return "%s@%s" % (user_id, operator)
+    return user_id or "未命名账号"
+
+
+def _make_hotspot_label(profile):
+    """为热点配置生成默认显示名"""
+    label = str(profile.get("label", "")).strip()
+    if label:
+        return label
+    return str(profile.get("ssid", "")).strip() or "未命名热点"
+
+
+def _migrate_legacy_config(raw):
+    """将旧版扁平配置迁移为新版嵌套结构（内存中）"""
+    migrated = {}
+    for key in GLOBAL_SCALAR_KEYS:
+        if key in raw:
+            migrated[key] = str(raw[key])
+        elif key in DEFAULTS:
+            migrated[key] = (
+                str(DEFAULTS[key]) if not isinstance(DEFAULTS[key], list) else ""
+            )
+
+    user_id = str(raw.get("user_id", "")).strip()
+    campus_account = {
+        "id": "campus-1",
+        "label": "",
+        "base_url": str(raw.get("base_url", "http://172.17.1.2")).strip(),
+        "ac_id": str(raw.get("ac_id", "1")).strip(),
+        "user_id": user_id,
+        "password": str(raw.get("password", "")).strip(),
+        "operator": str(raw.get("operator", "cucc")).strip().lower(),
+        "ssid": str(raw.get("campus_ssid", "jxnu_stu")).strip(),
+        "bssid": str(raw.get("campus_bssid", "")).strip(),
+        "radio": str(raw.get("campus_radio", "")).strip(),
+    }
+    campus_account["label"] = _make_campus_label(campus_account)
+    migrated["campus_accounts"] = [campus_account] if user_id else []
+
+    hotspot_ssid = str(raw.get("hotspot_ssid", "")).strip()
+    hotspot_profile = {
+        "id": "hotspot-1",
+        "label": "",
+        "ssid": hotspot_ssid,
+        "encryption": str(raw.get("hotspot_encryption", "psk2")).strip().lower(),
+        "key": str(raw.get("hotspot_key", "")).strip(),
+        "radio": str(raw.get("hotspot_radio", "")).strip(),
+    }
+    hotspot_profile["label"] = _make_hotspot_label(hotspot_profile)
+    migrated["hotspot_profiles"] = [hotspot_profile] if hotspot_ssid else []
+
+    if migrated["campus_accounts"]:
+        migrated["active_campus_id"] = "campus-1"
+        migrated["default_campus_id"] = "campus-1"
+    else:
+        migrated["active_campus_id"] = ""
+        migrated["default_campus_id"] = ""
+    if migrated["hotspot_profiles"]:
+        migrated["active_hotspot_id"] = "hotspot-1"
+        migrated["default_hotspot_id"] = "hotspot-1"
+    else:
+        migrated["active_hotspot_id"] = ""
+        migrated["default_hotspot_id"] = ""
+    return migrated
+
+
+def _find_item_by_id(items, target_id):
+    """在列表中按 id 查找项"""
+    for item in items:
+        if isinstance(item, dict) and str(item.get("id", "")) == target_id:
+            return item
+    return None
+
+
+def get_active_campus_account(cfg):
+    """获取当前校园网账号"""
+    accounts = cfg.get("campus_accounts", [])
+    if not isinstance(accounts, list) or not accounts:
+        return {}
+    active_id = str(cfg.get("active_campus_id", "")).strip()
+    if active_id:
+        found = _find_item_by_id(accounts, active_id)
+        if found:
+            return found
+    default_id = str(cfg.get("default_campus_id", "")).strip()
+    if default_id:
+        found = _find_item_by_id(accounts, default_id)
+        if found:
+            return found
+    return accounts[0]
+
+
+def get_active_hotspot_profile(cfg):
+    """获取当前热点配置"""
+    profiles = cfg.get("hotspot_profiles", [])
+    if not isinstance(profiles, list) or not profiles:
+        return {}
+    active_id = str(cfg.get("active_hotspot_id", "")).strip()
+    if active_id:
+        found = _find_item_by_id(profiles, active_id)
+        if found:
+            return found
+    default_id = str(cfg.get("default_hotspot_id", "")).strip()
+    if default_id:
+        found = _find_item_by_id(profiles, default_id)
+        if found:
+            return found
+    return profiles[0]
+
+
+def resolve_active_items(cfg):
+    """解析当前运行时使用的校园网账号和热点配置，将关键字段打平到 cfg"""
+    campus = get_active_campus_account(cfg)
+    hotspot = get_active_hotspot_profile(cfg)
+
+    cfg["user_id"] = str(campus.get("user_id", "")).strip()
+    cfg["operator"] = str(campus.get("operator", "cucc")).strip().lower()
     if cfg["operator"] not in OPERATORS:
         cfg["operator"] = "cucc"
-    cfg["base_url"] = cfg["base_url"].rstrip("/")
-    cfg["campus_ssid"] = CAMPUS_FIXED_SSID
-    cfg["campus_encryption"] = CAMPUS_FIXED_ENCRYPTION
+    cfg["password"] = str(campus.get("password", "")).strip()
+    cfg["base_url"] = (
+        str(campus.get("base_url", "http://172.17.1.2")).strip().rstrip("/")
+    )
+    cfg["ac_id"] = str(campus.get("ac_id", "1")).strip()
+    cfg["campus_ssid"] = str(campus.get("ssid", "jxnu_stu")).strip()
+    cfg["campus_bssid"] = str(campus.get("bssid", "")).strip()
+    cfg["campus_radio"] = str(campus.get("radio", "")).strip()
+    cfg["campus_encryption"] = normalize_wifi_encryption(
+        str(campus.get("encryption", "none")).strip() or "none"
+    )
     cfg["campus_key"] = ""
-    cfg["hotspot_encryption"] = cfg["hotspot_encryption"].lower()
-    cfg["hotspot_radio"] = str(cfg.get("hotspot_radio", "")).strip()
+    cfg["campus_account_label"] = _make_campus_label(campus)
+
+    cfg["hotspot_ssid"] = str(hotspot.get("ssid", "")).strip()
+    cfg["hotspot_encryption"] = normalize_wifi_encryption(
+        str(hotspot.get("encryption", "psk2")).strip() or "psk2"
+    )
+    cfg["hotspot_key"] = str(hotspot.get("key", "")).strip()
+    cfg["hotspot_radio"] = str(hotspot.get("radio", "")).strip()
+    cfg["hotspot_profile_label"] = _make_hotspot_label(hotspot)
 
     cfg["username"] = ""
     if cfg["user_id"]:
@@ -303,9 +537,41 @@ def load_config():
             cfg["username"] = cfg["user_id"]
         else:
             cfg["username"] = cfg["user_id"] + "@" + cfg["operator"]
+    return cfg
 
-    cfg["campus_encryption"] = normalize_wifi_encryption(CAMPUS_FIXED_ENCRYPTION)
-    cfg["hotspot_encryption"] = normalize_wifi_encryption(cfg["hotspot_encryption"])
+
+def load_config():
+    """加载并解析配置，自动兼容旧版格式并迁移"""
+    raw = load_json_raw_config()
+
+    if _is_legacy_config(raw):
+        raw = _migrate_legacy_config(raw)
+        try:
+            save_json_raw_config(raw)
+            append_log("[JXNU-SRun] 旧版配置已自动迁移为新格式")
+        except Exception:
+            pass
+
+    cfg = {}
+    for key in GLOBAL_SCALAR_KEYS:
+        default_val = DEFAULTS.get(key, "")
+        if isinstance(default_val, list):
+            default_val = ""
+        val = raw.get(key)
+        if val is None or (isinstance(val, str) and val.strip() == ""):
+            cfg[key] = str(default_val)
+        else:
+            cfg[key] = str(val).strip()
+
+    for key in POINTER_KEYS:
+        cfg[key] = str(raw.get(key, "")).strip()
+
+    for key in LIST_KEYS:
+        val = raw.get(key)
+        cfg[key] = val if isinstance(val, list) else []
+
+    resolve_active_items(cfg)
+
     cfg["backoff_max_retries"] = parse_non_negative_int(cfg["backoff_max_retries"], 0)
     cfg["backoff_initial_duration"] = parse_non_negative_float(
         cfg["backoff_initial_duration"], 10.0
@@ -780,6 +1046,7 @@ def parse_wireless_iface_data():
         sec, opt, val = m.groups()
         if opt not in (
             "ssid",
+            "bssid",
             "mode",
             "network",
             "disabled",
@@ -881,6 +1148,7 @@ def get_sta_profile_from_section(section, wireless_data=None):
     opts = data.get(sec, {})
     return {
         "ssid": str(opts.get("ssid", "")).strip(),
+        "bssid": str(opts.get("bssid", "")).strip().lower(),
         "encryption": normalize_wifi_encryption(opts.get("encryption", "none")),
         "key": str(opts.get("key", "")).strip(),
     }
@@ -970,10 +1238,19 @@ def get_managed_sta_sections(cfg, wireless_data=None):
     data = wireless_data if wireless_data is not None else parse_wireless_iface_data()
     managed = []
     preferred = str((cfg or {}).get("sta_iface", "")).strip()
-    known_ssids = {
-        str((cfg or {}).get("campus_ssid", "")).strip(),
-        str((cfg or {}).get("hotspot_ssid", "")).strip(),
-    }
+    known_ssids = set()
+    known_ssids.add(str((cfg or {}).get("campus_ssid", "")).strip())
+    known_ssids.add(str((cfg or {}).get("hotspot_ssid", "")).strip())
+
+    for item in list((cfg or {}).get("campus_accounts", []) or []):
+        if isinstance(item, dict):
+            known_ssids.add(str(item.get("ssid", "")).strip())
+
+    for item in list((cfg or {}).get("hotspot_profiles", []) or []):
+        if isinstance(item, dict):
+            known_ssids.add(str(item.get("ssid", "")).strip())
+
+    known_ssids.discard("")
 
     for sec in sorted(data.keys()):
         opts = data[sec]
@@ -1040,6 +1317,7 @@ def create_sta_on_radio(radio, network_name, profile):
             return None, msg or ("重命名无线接口节 %s 失败" % section)
 
     ssid = str(profile.get("ssid", "")).strip()
+    bssid = str(profile.get("bssid", "")).strip().lower()
     encryption = normalize_wifi_encryption(profile.get("encryption", "none"))
     key = str(profile.get("key", "")).strip()
 
@@ -1060,6 +1338,13 @@ def create_sta_on_radio(radio, network_name, profile):
         c_ok, c_msg = run_cmd(cmd)
         if not c_ok and c_msg:
             msgs.append(c_msg)
+
+    if bssid:
+        c_ok, c_msg = run_cmd(["uci", "set", "wireless.%s.bssid=%s" % (section, bssid)])
+        if not c_ok and c_msg:
+            msgs.append(c_msg)
+    else:
+        run_cmd(["uci", "-q", "delete", "wireless.%s.bssid" % section])
 
     if msgs:
         return section, "；".join(msgs)
@@ -1108,6 +1393,7 @@ def _set_sta_profile_uci(section, profile):
         return False, "未配置 STA 接口节。"
 
     ssid = str(profile.get("ssid", "")).strip()
+    bssid = str(profile.get("bssid", "")).strip().lower()
     encryption = normalize_wifi_encryption(profile.get("encryption", "none"))
     key = str(profile.get("key", "")).strip()
 
@@ -1123,11 +1409,20 @@ def _set_sta_profile_uci(section, profile):
         "wireless.%s.disabled=0" % sec,
         "wireless.%s.ssid=%s" % (sec, ssid),
         "wireless.%s.encryption=%s" % (sec, encryption),
+        "wireless.%s.jxnu_auto=1" % sec,
     ]:
         c_ok, c_msg = run_cmd(["uci", "set", arg])
         ok = ok and c_ok
         if (not c_ok) and c_msg:
             msgs.append(c_msg)
+
+    if bssid:
+        c_ok, c_msg = run_cmd(["uci", "set", "wireless.%s.bssid=%s" % (sec, bssid)])
+        ok = ok and c_ok
+        if (not c_ok) and c_msg:
+            msgs.append(c_msg)
+    else:
+        run_cmd(["uci", "-q", "delete", "wireless.%s.bssid" % sec])
 
     if wifi_key_required(encryption):
         c_ok, c_msg = run_cmd(["uci", "set", "wireless.%s.key=%s" % (sec, key)])
@@ -1155,6 +1450,7 @@ def build_expected_profile(cfg, expect_hotspot):
     prefix = "hotspot" if expect_hotspot else "campus"
     return {
         "ssid": str(cfg.get(prefix + "_ssid", "")).strip(),
+        "bssid": str(cfg.get(prefix + "_bssid", "")).strip().lower(),
         "encryption": normalize_wifi_encryption(
             cfg.get(prefix + "_encryption", "none")
         ),
@@ -1165,6 +1461,11 @@ def build_expected_profile(cfg, expect_hotspot):
 
 def profiles_match(current, expected):
     if str(current.get("ssid", "")).strip() != str(expected.get("ssid", "")).strip():
+        return False
+
+    expected_bssid = str(expected.get("bssid", "")).strip().lower()
+    current_bssid = str(current.get("bssid", "")).strip().lower()
+    if expected_bssid and current_bssid != expected_bssid:
         return False
 
     current_enc = normalize_wifi_encryption(current.get("encryption", "none"))
@@ -1193,8 +1494,27 @@ def _find_sta_by_ssid(ssid, wireless_data=None):
     return None
 
 
-def get_preferred_hotspot_radio(cfg, wireless_data=None):
-    radio = str((cfg or {}).get("hotspot_radio", "")).strip()
+def _find_sta_by_profile(profile, wireless_data=None):
+    data = wireless_data if wireless_data is not None else parse_wireless_iface_data()
+    target_ssid = str((profile or {}).get("ssid", "")).strip()
+    target_bssid = str((profile or {}).get("bssid", "")).strip().lower()
+    if not target_ssid:
+        return None
+    for sec in sorted(data.keys()):
+        opts = data[sec]
+        if str(opts.get("mode", "")).strip().lower() != "sta":
+            continue
+        if str(opts.get("ssid", "")).strip() != target_ssid:
+            continue
+        if target_bssid and str(opts.get("bssid", "")).strip().lower() != target_bssid:
+            continue
+        return sec
+    return None
+
+
+def get_preferred_profile_radio(cfg, expect_hotspot, wireless_data=None):
+    key = "hotspot_radio" if expect_hotspot else "campus_radio"
+    radio = str((cfg or {}).get(key, "")).strip()
     if not radio:
         return ""
 
@@ -1211,12 +1531,13 @@ def get_preferred_hotspot_radio(cfg, wireless_data=None):
     return radio if radio in devices else ""
 
 
-def select_sta_section(cfg, expect_hotspot, base_section, target, wireless_data):
-    existing = _find_sta_by_ssid(target["ssid"], wireless_data)
-    if not expect_hotspot:
-        return existing or base_section, ""
+def get_preferred_hotspot_radio(cfg, wireless_data=None):
+    return get_preferred_profile_radio(cfg, True, wireless_data)
 
-    preferred_radio = get_preferred_hotspot_radio(cfg, wireless_data)
+
+def select_sta_section(cfg, expect_hotspot, base_section, target, wireless_data):
+    existing = _find_sta_by_profile(target, wireless_data)
+    preferred_radio = get_preferred_profile_radio(cfg, expect_hotspot, wireless_data)
     if not preferred_radio:
         return existing or base_section, ""
 
@@ -1403,7 +1724,7 @@ def ensure_expected_profile(cfg, expect_hotspot, last_switch_ts=0):
     if wifi_key_required(expected["encryption"]) and not expected["key"]:
         return False, "%s 配置缺少密码。" % expected["label"], last_switch_ts
 
-    existing = _find_sta_by_ssid(expected["ssid"], data)
+    existing = _find_sta_by_profile(expected, data)
     check = existing if existing else section
 
     current = get_sta_profile_from_section(check, data)
@@ -1631,6 +1952,107 @@ def wait_for_logout_status(
     return False, last_message or "在线"
 
 
+def disable_managed_sta_sections(cfg, wireless_data=None):
+    data = wireless_data if wireless_data is not None else parse_wireless_iface_data()
+    managed = get_managed_sta_sections(cfg, data)
+    if not managed:
+        return True, ""
+
+    msgs = []
+    ok = True
+    for sec in sorted(set(managed)):
+        c_ok, c_msg = run_cmd(["uci", "set", "wireless.%s.disabled=1" % sec])
+        ok = ok and c_ok
+        if (not c_ok) and c_msg:
+            msgs.append(c_msg)
+
+    ok2, msg2 = commit_reload_wireless()
+    ok = ok and ok2
+    if msg2:
+        msgs.append(msg2)
+    return ok, "；".join([x for x in msgs if x])
+
+
+def wait_for_manual_login_ready(cfg, attempts=5, delay_seconds=2):
+    attempts = max(int(attempts), 1)
+    last_message = ""
+    for idx in range(attempts):
+        snapshot = build_runtime_snapshot(cfg)
+        ssid_ok = snapshot.get("current_ssid") == cfg.get("campus_ssid")
+        bssid_expect = str(cfg.get("campus_bssid", "")).strip().lower()
+        bssid_ok = (not bssid_expect) or snapshot.get("current_bssid") == bssid_expect
+        online_ok = snapshot.get("connectivity_level") == "online"
+        if ssid_ok and bssid_ok and online_ok:
+            return True, "已关联目标校园网并确认互联网可达"
+        last_message = "当前 SSID=%s BSSID=%s 连通性=%s" % (
+            snapshot.get("current_ssid", "") or "-",
+            snapshot.get("current_bssid", "") or "-",
+            snapshot.get("connectivity", "未知") or "未知",
+        )
+        if idx + 1 < attempts:
+            time.sleep(max(int(delay_seconds), 1))
+    return False, last_message
+
+
+def clean_slate_for_manual_login(cfg, online_user=""):
+    active_data = parse_wireless_iface_data()
+    active_section = get_active_sta_section(cfg, active_data)
+    active_profile = (
+        get_sta_profile_from_section(active_section, active_data)
+        if active_section
+        else {}
+    )
+    target_profile = build_expected_profile(cfg, expect_hotspot=False)
+    target_radio = get_preferred_profile_radio(cfg, False, active_data)
+    active_radio = get_radio_for_section(active_section, active_data)
+
+    profile_changed = False
+    if not profiles_match(active_profile, target_profile):
+        profile_changed = True
+    elif target_radio and active_radio and target_radio != active_radio:
+        profile_changed = True
+
+    if online_user:
+        append_log(
+            "[JXNU-SRun] 正在执行手动登录预清理：检测到已有在线账号 %s，开始注销。"
+            % online_user
+        )
+        ok, message = run_manual_logout(cfg, override_user_id=online_user)
+        if not ok:
+            append_log(
+                "[JXNU-SRun] 手动登录预清理失败：注销在线账号失败，返回结果：%s"
+                % message
+            )
+            return False, message
+        append_log("[JXNU-SRun] 手动登录预清理成功：历史在线账号已注销。")
+
+    append_log(
+        "[JXNU-SRun] 正在执行手动登录预清理：开始禁用全部受管 STA 接口，确保不存在历史连接残留。"
+    )
+    ok, message = disable_managed_sta_sections(cfg, active_data)
+    if not ok:
+        append_log(
+            "[JXNU-SRun] 手动登录预清理失败：禁用受管 STA 接口失败，返回结果：%s"
+            % (message or "未知错误")
+        )
+        return False, message or "禁用历史 STA 接口失败"
+
+    if online_user or profile_changed:
+        append_log(
+            "[JXNU-SRun] 手动登录预清理成功：受管 STA 接口已全部禁用，开始重建目标校园网连接。"
+        )
+        ok2, sw_msg = switch_to_campus(cfg)
+        if not ok2:
+            append_log(
+                "[JXNU-SRun] 手动登录预清理失败：重建校园网连接失败，返回结果：%s"
+                % (sw_msg or "未知错误")
+            )
+            return False, sw_msg or "切换校园网失败"
+        append_log("[JXNU-SRun] 手动登录预清理成功：目标校园网无线配置已重建。")
+
+    return True, ""
+
+
 def prepare_campus_for_login(cfg):
     ok, msg, _ = ensure_expected_profile(cfg, expect_hotspot=False, last_switch_ts=0)
     if ok:
@@ -1818,31 +2240,60 @@ def run_once(cfg):
     return False, "登录失败: " + localize_error(message)
 
 
-def run_manual_logout(cfg):
+def run_manual_logout(cfg, override_user_id=None):
     if not cfg["username"]:
         return False, "未配置学工号"
-
-    campus_ready, campus_msg = prepare_campus_for_login(cfg)
-    if not campus_ready:
-        return False, campus_msg
 
     urls = build_urls(cfg["base_url"])
     bip = resolve_bind_ip(urls["init_url"], cfg)
 
     try:
+        online_now, online_user, _ = query_online_identity(
+            urls["rad_user_info_api"], cfg["username"], bind_ip=bip
+        )
+        logout_user = str(override_user_id or online_user or "").strip()
+        if not online_now or not logout_user:
+            return True, "已离线"
+
+        logout_cfg = dict(cfg)
+        logout_cfg["user_id"] = logout_user
+        logout_cfg["username"] = logout_user
         ip = init_getip(urls["init_url"], bind_ip=bip)
-        ok, message = logout(urls["rad_user_dm_api"], cfg, ip, bind_ip=bip)
+        append_log(
+            "[JXNU-SRun] 正在执行手动登出：发送注销请求，账号=%s，绑定IP=%s。"
+            % (logout_user, ip)
+        )
+        ok, message = logout(urls["rad_user_dm_api"], logout_cfg, ip, bind_ip=bip)
         if ok:
+            append_log(
+                "[JXNU-SRun] 手动登出请求已受理：接口返回结果=%s，开始校验离线状态。"
+                % message
+            )
             offline, offline_msg = wait_for_logout_status(
-                urls["rad_user_info_api"], cfg, bind_ip=bip
+                urls["rad_user_info_api"], logout_cfg, bind_ip=bip
             )
             if offline:
+                internet_ok, internet_msg = test_internet_connectivity(timeout=2)
+                if internet_ok:
+                    append_log(
+                        "[JXNU-SRun] 手动登出校验失败：离线状态检查通过，但互联网连通性检查结果=可达，返回结果=%s。"
+                        % (internet_msg or "可达")
+                    )
+                    return False, "登出失败：离线后互联网仍可达"
+                append_log(
+                    "[JXNU-SRun] 手动登出成功：已确认离线，互联网连通性检查结果=不可达。"
+                )
                 return True, "登出成功"
+            append_log(
+                "[JXNU-SRun] 手动登出校验失败：注销请求已发送，但在线状态检查结果=%s。"
+                % localize_error(offline_msg)
+            )
             return False, "登出请求已发送，但当前仍在线（%s）" % localize_error(
                 offline_msg
             )
 
         localized = localize_error(message)
+        append_log("[JXNU-SRun] 手动登出失败：注销接口返回结果=%s。" % localized)
         try:
             online, online_msg = query_online_status(
                 urls["rad_user_info_api"], cfg["username"], bind_ip=bip
@@ -1858,7 +2309,6 @@ def run_manual_logout(cfg):
 
 def run_manual_login(cfg):
     urls = build_urls(cfg["base_url"])
-    target_user = get_logout_username(cfg)
 
     try:
         online_now, online_user, _ = query_online_identity(
@@ -1867,22 +2317,29 @@ def run_manual_login(cfg):
     except Exception:
         online_now, online_user = False, ""
 
-    need_logout_first = bool(online_now and online_user and online_user != target_user)
+    clean_ok, clean_msg = clean_slate_for_manual_login(
+        cfg, online_user if online_now else ""
+    )
+    if not clean_ok:
+        return False, clean_msg
 
-    if need_logout_first:
-        logout_ok, logout_msg = run_manual_logout(cfg)
-    else:
-        logout_ok, logout_msg = True, ""
-
+    append_log(
+        "[JXNU-SRun] 正在执行手动登录：开始提交认证请求，目标账号=%s。"
+        % get_logout_username(cfg)
+    )
     login_ok, login_msg = run_once_with_retry(cfg)
     if login_ok:
-        if need_logout_first and logout_ok:
-            return True, "先登出后登录成功"
-        if need_logout_first:
-            return True, "登录成功（登出阶段: %s）" % logout_msg
-        return True, "登录成功"
-    if need_logout_first and logout_msg:
-        return False, "%s；登录阶段: %s" % (logout_msg, login_msg)
+        append_log(
+            "[JXNU-SRun] 手动登录请求已成功：登录阶段返回结果=%s，开始校验目标无线配置与互联网连通性。"
+            % login_msg
+        )
+        ready_ok, ready_msg = wait_for_manual_login_ready(cfg)
+        if ready_ok:
+            append_log("[JXNU-SRun] 手动登录成功：%s。" % ready_msg)
+            return True, "登录成功"
+        append_log("[JXNU-SRun] 手动登录校验失败：%s。" % ready_msg)
+        return False, "登录后校验失败：%s" % ready_msg
+    append_log("[JXNU-SRun] 手动登录失败：登录阶段返回结果=%s。" % login_msg)
     return False, login_msg
 
 
@@ -1890,7 +2347,7 @@ def run_status(cfg):
     mode_hint = ""
     if failover_enabled(cfg):
         mode_hint = "（校园网SSID: %s，热点SSID: %s）" % (
-            CAMPUS_FIXED_SSID,
+            cfg.get("campus_ssid", "jxnu_stu"),
             cfg.get("hotspot_ssid", "未设置"),
         )
 
@@ -1961,6 +2418,7 @@ def handle_runtime_action(cfg, state):
             message,
             state,
             last_action=action,
+            last_action_ts=int(time.time()),
             action_result="ok" if ok else "error",
             pending_action="",
             **build_runtime_snapshot(cfg, state),
@@ -1974,6 +2432,7 @@ def handle_runtime_action(cfg, state):
             message,
             state,
             last_action=action,
+            last_action_ts=int(time.time()),
             action_result="ok" if ok else "error",
             pending_action="",
             **build_runtime_snapshot(cfg, state),
@@ -1987,6 +2446,7 @@ def handle_runtime_action(cfg, state):
             message,
             state,
             last_action=action,
+            last_action_ts=int(time.time()),
             action_result="ignored",
             **build_runtime_snapshot(cfg, state),
         )
@@ -2004,6 +2464,7 @@ def handle_runtime_action(cfg, state):
         message,
         state,
         last_action=action,
+        last_action_ts=int(time.time()),
         action_result=action_result,
         pending_action="",
         **build_runtime_snapshot(cfg, state),
