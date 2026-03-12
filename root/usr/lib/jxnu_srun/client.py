@@ -57,7 +57,13 @@ GLOBAL_SCALAR_KEYS = {
     "backoff_max_retries",
     "backoff_initial_duration",
     "backoff_max_duration",
+    "retry_cooldown_seconds",
+    "retry_max_cooldown_seconds",
+    "switch_ready_timeout_seconds",
     "manual_terminal_check_max_attempts",
+    "manual_terminal_check_interval_seconds",
+    "hotspot_failback_enabled",
+    "connectivity_check_mode",
     "backoff_exponent_factor",
     "backoff_inter_const_factor",
     "backoff_outer_const_factor",
@@ -125,7 +131,13 @@ def _load_defaults():
         "backoff_max_retries": "0",
         "backoff_initial_duration": "10",
         "backoff_max_duration": "600",
+        "retry_cooldown_seconds": "10",
+        "retry_max_cooldown_seconds": "600",
+        "switch_ready_timeout_seconds": "12",
         "manual_terminal_check_max_attempts": "5",
+        "manual_terminal_check_interval_seconds": "2",
+        "hotspot_failback_enabled": "1",
+        "connectivity_check_mode": "internet",
         "backoff_exponent_factor": "1.5",
         "backoff_inter_const_factor": "0",
         "backoff_outer_const_factor": "0",
@@ -683,6 +695,17 @@ def load_config():
         val = raw.get(key)
         cfg[key] = val if isinstance(val, list) else []
 
+    if str(raw.get("retry_cooldown_seconds", "")).strip() == "":
+        cfg["retry_cooldown_seconds"] = str(
+            raw.get("backoff_initial_duration", cfg.get("retry_cooldown_seconds", "10"))
+        ).strip()
+    if str(raw.get("retry_max_cooldown_seconds", "")).strip() == "":
+        cfg["retry_max_cooldown_seconds"] = str(
+            raw.get(
+                "backoff_max_duration", cfg.get("retry_max_cooldown_seconds", "600")
+            )
+        ).strip()
+
     resolve_active_items(cfg)
 
     cfg["backoff_max_retries"] = parse_non_negative_int(cfg["backoff_max_retries"], 0)
@@ -691,6 +714,18 @@ def load_config():
     )
     cfg["backoff_max_duration"] = parse_non_negative_float(
         cfg["backoff_max_duration"], 600.0
+    )
+    cfg["retry_cooldown_seconds"] = parse_non_negative_float(
+        cfg["retry_cooldown_seconds"], 10.0
+    )
+    cfg["retry_max_cooldown_seconds"] = parse_non_negative_float(
+        cfg["retry_max_cooldown_seconds"], 600.0
+    )
+    cfg["switch_ready_timeout_seconds"] = parse_non_negative_int(
+        cfg["switch_ready_timeout_seconds"], 12
+    )
+    cfg["manual_terminal_check_interval_seconds"] = parse_non_negative_int(
+        cfg["manual_terminal_check_interval_seconds"], 2
     )
     cfg["backoff_exponent_factor"] = parse_non_negative_float(
         cfg["backoff_exponent_factor"], 1.5
@@ -701,6 +736,11 @@ def load_config():
     cfg["backoff_outer_const_factor"] = parse_non_negative_float(
         cfg["backoff_outer_const_factor"], 0.0
     )
+
+    mode = str(cfg.get("connectivity_check_mode", "internet")).strip().lower()
+    if mode not in ("internet", "portal", "ssid"):
+        mode = "internet"
+    cfg["connectivity_check_mode"] = mode
 
     cfg["quiet_start"], cfg["quiet_start_minutes"] = normalize_hhmm(
         cfg["quiet_start"], "00:00"
@@ -784,22 +824,54 @@ def failover_enabled(cfg):
     return cfg.get("failover_enabled") == "1"
 
 
+def hotspot_failback_enabled(cfg):
+    return cfg.get("hotspot_failback_enabled") == "1"
+
+
 def backoff_enabled(cfg):
     return cfg.get("backoff_enable") == "1"
 
 
+def get_retry_cooldown_seconds(cfg):
+    return max(float(cfg.get("retry_cooldown_seconds", 10.0)), 0.0)
+
+
+def get_retry_max_cooldown_seconds(cfg):
+    value = max(float(cfg.get("retry_max_cooldown_seconds", 600.0)), 0.0)
+    return value if value > 0 else 600.0
+
+
+def get_switch_ready_timeout_seconds(cfg):
+    value = int(cfg.get("switch_ready_timeout_seconds", 12))
+    return value if value > 0 else 12
+
+
+def get_manual_terminal_check_interval_seconds(cfg):
+    value = int(cfg.get("manual_terminal_check_interval_seconds", 2))
+    return value if value > 0 else 2
+
+
+def connectivity_mode_matches(snapshot, cfg, require_ssid=False):
+    mode = str(cfg.get("connectivity_check_mode", "internet")).strip().lower()
+    current_ssid = str(snapshot.get("current_ssid", "")).strip()
+    target_ssid = str(cfg.get("campus_ssid", "")).strip()
+    ssid_ok = (not require_ssid) or (current_ssid and current_ssid == target_ssid)
+    if not ssid_ok:
+        return False
+
+    level = str(snapshot.get("connectivity_level", "offline")).strip().lower()
+    if mode == "ssid":
+        return bool(ssid_ok)
+    if mode == "portal":
+        return level in ("online", "portal")
+    return level == "online"
+
+
 def calc_backoff_delay_seconds(cfg, failure_index):
     n_val = max(int(failure_index), 1)
-    initial = float(cfg.get("backoff_initial_duration", 10.0))
-    max_duration = float(cfg.get("backoff_max_duration", 600.0))
-    exponent_factor = float(cfg.get("backoff_exponent_factor", 1.5))
-    inter_const_factor = float(cfg.get("backoff_inter_const_factor", 0.0))
-    outer_const_factor = float(cfg.get("backoff_outer_const_factor", 0.0))
-
-    core = math.pow(max(n_val + inter_const_factor, 0.0), exponent_factor)
-    delay = outer_const_factor + (initial * core)
-    if delay < 0:
-        delay = 0.0
+    base = get_retry_cooldown_seconds(cfg)
+    max_duration = get_retry_max_cooldown_seconds(cfg)
+    delay = base * math.pow(2, max(n_val - 1, 0))
     if max_duration > 0:
         delay = min(delay, max_duration)
     return delay
@@ -826,9 +898,9 @@ def run_once_with_retry(cfg, ignore_service_disabled=False):
     if not backoff_enabled(cfg):
         append_log(
             "[JXNU-SRun] 已关闭退避重试，%d 秒后执行一次重试"
-            % DISCONNECT_RETRY_DELAY_SECONDS
+            % int(get_retry_cooldown_seconds(cfg))
         )
-        time.sleep(DISCONNECT_RETRY_DELAY_SECONDS)
+        time.sleep(get_retry_cooldown_seconds(cfg))
         retry_ok, retry_message = run_once_safe(cfg)
         if retry_ok:
             append_log("[JXNU-SRun] 单次重试成功")
@@ -1700,8 +1772,11 @@ def switch_sta_profile(cfg, expect_hotspot):
     if not ok:
         return False, "写入无线配置失败。"
 
-    if int(SWITCH_DELAY_SECONDS) > 0:
-        time.sleep(int(SWITCH_DELAY_SECONDS))
+    settle_delay = min(
+        max(get_switch_ready_timeout_seconds(cfg), 1), SWITCH_DELAY_SECONDS
+    )
+    if settle_delay > 0:
+        time.sleep(settle_delay)
 
     refreshed_data = parse_wireless_iface_data()
     radio = get_radio_for_section(section, refreshed_data)
@@ -1709,7 +1784,9 @@ def switch_sta_profile(cfg, expect_hotspot):
     bl = band_label(bands.get(radio, ""))
 
     if not expect_hotspot:
-        _, ip = wait_for_sta_ipv4(section, timeout_seconds=SSID_READY_TIMEOUT_SECONDS)
+        _, ip = wait_for_sta_ipv4(
+            section, timeout_seconds=get_switch_ready_timeout_seconds(cfg)
+        )
         if ip:
             portal_ok, portal_detail = _test_portal_reachability(cfg)
             if portal_ok:
@@ -1737,10 +1814,22 @@ def switch_sta_profile(cfg, expect_hotspot):
             bl,
         )
 
-    _, ip = wait_for_sta_ipv4(section, timeout_seconds=SSID_READY_TIMEOUT_SECONDS)
+    _, ip = wait_for_sta_ipv4(
+        section, timeout_seconds=get_switch_ready_timeout_seconds(cfg)
+    )
     if ip:
         dns_ok, _ = test_internet_connectivity()
         conn_hint = "连通" if dns_ok else "不通"
+        if (not dns_ok) and hotspot_failback_enabled(cfg):
+            append_log("[JXNU-SRun] 热点切换后未确认互联网连通，开始自动回切校园网。")
+            rollback_ok, rollback_msg = switch_to_campus(cfg)
+            if rollback_ok:
+                return False, "热点未确认连通，已自动回切校园网：%s" % (
+                    rollback_msg or "回切成功"
+                )
+            return False, "热点未确认连通，自动回切校园网失败：%s" % (
+                rollback_msg or "未知错误"
+            )
         hint = "已切换为%s配置（%s %s, %s）" % (
             target["label"],
             radio or "?",
@@ -1750,6 +1839,17 @@ def switch_sta_profile(cfg, expect_hotspot):
         if select_msg:
             hint = hint + "；" + select_msg
         return True, hint
+
+    if hotspot_failback_enabled(cfg):
+        append_log("[JXNU-SRun] 热点切换后未获取到 IPv4，开始自动回切校园网。")
+        rollback_ok, rollback_msg = switch_to_campus(cfg)
+        if rollback_ok:
+            return False, "热点未获取到 IPv4，已自动回切校园网：%s" % (
+                rollback_msg or "回切成功"
+            )
+        return False, "热点未获取到 IPv4，自动回切校园网失败：%s" % (
+            rollback_msg or "未知错误"
+        )
 
     if get_preferred_hotspot_radio(cfg, refreshed_data):
         return False, "已切换为%s配置但未获取到IPv4地址（%s %s）" % (
@@ -2090,6 +2190,7 @@ def disable_managed_sta_sections(cfg, wireless_data=None):
 def wait_for_manual_login_ready(cfg, attempts=5, delay_seconds=2):
     attempts = max(int(attempts), 1)
     last_message = ""
+    ready_label = get_manual_terminal_check_label(cfg)
     for idx in range(attempts):
         append_log(
             "[JXNU-SRun] 正在执行手动登录终态校验：第%d次检查连通性。" % (idx + 1)
@@ -2101,13 +2202,14 @@ def wait_for_manual_login_ready(cfg, attempts=5, delay_seconds=2):
         bssid_ok = (
             (not bssid_expect) or (not current_bssid) or current_bssid == bssid_expect
         )
-        online_ok = snapshot.get("connectivity_level") == "online"
+        online_ok = connectivity_mode_matches(snapshot, cfg, require_ssid=True)
         if ssid_ok and bssid_ok and online_ok:
-            return True, "已关联目标校园网并确认互联网可达"
+            return True, "已关联目标校园网并确认%s" % ready_label
         if ssid_ok and online_ok and bssid_expect and not current_bssid:
             return (
                 True,
-                "已关联目标校园网并确认互联网可达（BSSID 暂未上报，忽略本次终态校验阻塞）",
+                "已关联目标校园网并确认%s（BSSID 暂未上报，忽略本次终态校验阻塞）"
+                % ready_label,
             )
         last_message = "当前 SSID=%s BSSID=%s 连通性=%s" % (
             snapshot.get("current_ssid", "") or "-",
@@ -2151,6 +2253,15 @@ def get_manual_terminal_check_attempts(cfg):
         return attempts if attempts > 0 else 5
     except Exception:
         return 5
+
+
+def get_manual_terminal_check_label(cfg):
+    mode = str(cfg.get("connectivity_check_mode", "internet")).strip().lower()
+    if mode == "portal":
+        return "认证网关可达"
+    if mode == "ssid":
+        return "已关联目标 SSID"
+    return "互联网可达"
 
 
 def clean_slate_for_manual_login(cfg, online_user=""):
@@ -2430,11 +2541,13 @@ def run_manual_logout(cfg, override_user_id=None):
                 % message
             )
             max_attempts = get_manual_terminal_check_attempts(cfg)
+            interval_seconds = get_manual_terminal_check_interval_seconds(cfg)
             ready_ok, ready_msg = wait_for_manual_logout_ready(
                 urls["rad_user_info_api"],
                 logout_cfg,
                 bind_ip=bip,
                 attempts=max_attempts,
+                delay_seconds=interval_seconds,
             )
             if ready_ok:
                 append_log("[JXNU-SRun] 手动登出成功：%s。" % ready_msg)
@@ -2498,8 +2611,9 @@ def run_manual_login(cfg):
                 % login_msg
             )
             max_attempts = get_manual_terminal_check_attempts(cfg)
+            interval_seconds = get_manual_terminal_check_interval_seconds(cfg)
             ready_ok, ready_msg = wait_for_manual_login_ready(
-                cfg, attempts=max_attempts
+                cfg, attempts=max_attempts, delay_seconds=interval_seconds
             )
             if ready_ok:
                 append_log("[JXNU-SRun] 手动登录成功：%s。" % ready_msg)

@@ -349,7 +349,7 @@ function action_enqueue()
         local id = fv("id")
         if find_index_by_id(cfg.campus_accounts, id) then
             cfg.default_campus_id = id
-            ok = true; message = "已设为当前选择，不会立即切换；如与运行配置不同，将显示为待生效，并在下次手动登录、手动切换或自动重连时生效"
+            ok = true; message = "已设为默认账号，手动登录后生效"
         else
             ok = false; message = "未找到"
         end
@@ -358,7 +358,7 @@ function action_enqueue()
         local id = fv("id")
         if find_index_by_id(cfg.hotspot_profiles, id) then
             cfg.default_hotspot_id = id
-            ok = true; message = "已设为当前选择，不会立即切换；如与运行配置不同，将显示为待生效，并在下次手动切换或自动故障切换时生效"
+            ok = true; message = "已设为默认热点，不会立即切换；如与当前连接不同，将显示为待生效"
         else
             ok = false; message = "未找到"
         end

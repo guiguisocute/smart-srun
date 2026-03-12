@@ -4,12 +4,17 @@ local util = require "luci.util"
 local jsonc = require "luci.jsonc"
 
 local CONFIG_FILE = "/usr/lib/jxnu_srun/config.json"
+local STATE_FILE = "/var/run/jxnu_srun/state.json"
 
 -- 全局标量字段名
 local GLOBAL_SCALAR_KEYS = {
     "enabled", "quiet_hours_enabled", "quiet_start", "quiet_end",
     "force_logout_in_quiet", "failover_enabled", "backoff_enable",
     "backoff_max_retries", "backoff_initial_duration", "backoff_max_duration",
+    "retry_cooldown_seconds", "retry_max_cooldown_seconds",
+    "switch_ready_timeout_seconds", "manual_terminal_check_max_attempts",
+    "manual_terminal_check_interval_seconds", "hotspot_failback_enabled",
+    "connectivity_check_mode",
     "backoff_exponent_factor", "backoff_inter_const_factor",
     "backoff_outer_const_factor", "interval", "developer_mode",
     "sta_iface", "n", "type", "enc",
@@ -28,7 +33,12 @@ local SCALAR_DEFAULTS = {
     force_logout_in_quiet = "1", failover_enabled = "1",
     backoff_enable = "1", backoff_max_retries = "0",
     backoff_initial_duration = "10", backoff_max_duration = "600",
+    retry_cooldown_seconds = "10", retry_max_cooldown_seconds = "600",
+    switch_ready_timeout_seconds = "12",
     manual_terminal_check_max_attempts = "5",
+    manual_terminal_check_interval_seconds = "2",
+    hotspot_failback_enabled = "1",
+    connectivity_check_mode = "internet",
     backoff_exponent_factor = "1.5", backoff_inter_const_factor = "0",
     backoff_outer_const_factor = "0", interval = "180",
     developer_mode = "0", sta_iface = "",
@@ -140,6 +150,12 @@ local function save_cfg(cfg)
     end
     ensure_json_file()
     fs.writefile(CONFIG_FILE, (jsonc.stringify(out) or "{}") .. "\n")
+end
+
+local function load_state()
+    local raw = fs.readfile(STATE_FILE) or "{}"
+    local parsed = jsonc.parse(raw)
+    return type(parsed) == "table" and parsed or {}
 end
 
 local function has_cmd(name)
@@ -395,9 +411,6 @@ s.addremove = false
 s.anonymous = true
 s:tab("basic", "基础设置")
 s:tab("advanced", "进阶设置")
-if cfg.developer_mode == "1" then
-    s:tab("developer", "开发者调试")
-end
 s:tab("log", "日志")
 
 manual_login = s:taboption("basic", DummyValue, "_manual_login", "手动登录")
@@ -616,402 +629,13 @@ bind_flag(force_logout_in_quiet, "force_logout_in_quiet")
 failover_enabled = s:taboption("basic", Flag, "failover_enabled", "登出时自动切换热点上网")
 bind_flag(failover_enabled, "failover_enabled")
 
--- 校园网账号表格 + 热点配置表格 + 弹窗
-tables_html = s:taboption("basic", DummyValue, "_tables", "")
-tables_html.rawhtml = true
-function tables_html.cfgvalue()
-    local campus = cfg.campus_accounts or {}
-    local hotspots = cfg.hotspot_profiles or {}
-    local active_cid = cfg.active_campus_id or ""
-    local default_cid = cfg.default_campus_id or ""
-    local active_hid = cfg.active_hotspot_id or ""
-    local default_hid = cfg.default_hotspot_id or ""
-
-    local operator_labels = { cmcc = "移动", ctcc = "电信", cucc = "联通", xn = "校内网" }
-    local radio_labels = { [""] = "自动" }
-    local radio_options = '<option value="">自动</option>'
-    for radio, meta in pairs(RADIO_CHOICES) do
-        local label = tostring(meta.label or radio)
-        radio_labels[radio] = label
-        radio_options = radio_options .. '<option value="' .. util.pcdata(radio) .. '">' .. util.pcdata(label) .. '</option>'
-    end
-
-    -- 构建校园网账号表格行
-    local campus_rows = ""
-    if type(campus) == "table" then
-        for _, a in ipairs(campus) do
-            local aid = tostring(a.id or "")
-            local is_active = (aid == active_cid)
-            local is_default = (aid == default_cid)
-            local badge_parts = {}
-            if is_active then
-                badge_parts[#badge_parts + 1] = '<span style="display:inline-block;color:#16a34a;font-weight:700;">✓ 当前</span>'
-            end
-            if is_default then
-                if not is_active then
-                    badge_parts[#badge_parts + 1] = '<span style="display:inline-block;color:#d97706;font-weight:700;">待生效</span>'
-                end
-            else
-                badge_parts[#badge_parts + 1] = ("<button type=\"button\" class=\"cbi-button\" style=\"font-size:12px;padding:1px 8px;\" onclick=\"jxnuSetDefault('campus','%s')\">设当前</button>"):format(util.pcdata(aid))
-            end
-            local badge = table.concat(badge_parts, '<br>')
-            campus_rows = campus_rows .. '<tr class="tr">'
-                .. '<td class="td">' .. badge .. '</td>'
-                .. '<td class="td">' .. util.pcdata(tostring(a.label or "")) .. '</td>'
-                .. '<td class="td">' .. util.pcdata(tostring(a.base_url or "http://172.17.1.2")) .. '</td>'
-                .. '<td class="td">' .. util.pcdata(tostring(a.ac_id or "1")) .. '</td>'
-                .. '<td class="td">' .. util.pcdata(tostring(a.user_id or "")) .. '</td>'
-                .. '<td class="td">' .. (operator_labels[tostring(a.operator or "")] or tostring(a.operator or "")) .. '</td>'
-                .. '<td class="td">' .. util.pcdata(tostring(a.ssid or "jxnu_stu")) .. '</td>'
-                .. '<td class="td">' .. util.pcdata(tostring(a.bssid or "")) .. '</td>'
-                .. '<td class="td">' .. util.pcdata(radio_labels[tostring(a.radio or "")] or tostring(a.radio or "自动")) .. '</td>'
-                .. '<td class="td cbi-section-actions"><div class="jxnu-action-cell">'
-                .. ("<button type=\"button\" class=\"cbi-button\" style=\"font-size:12px;padding:1px 8px;\" onclick=\"jxnuEditCampus('%s')\">编辑</button>"):format(util.pcdata(aid))
-                .. ("<button type=\"button\" class=\"cbi-button cbi-button-remove\" style=\"font-size:12px;padding:1px 8px;\" onclick=\"jxnuDelete('campus','%s')\">删除</button>"):format(util.pcdata(aid))
-                .. '</div></td></tr>\n'
-        end
-    end
-    if campus_rows == "" then
-        campus_rows = '<tr class="tr"><td class="td" colspan="10" style="text-align:center;color:#999;">暂无账号，请点击"新增"添加</td></tr>'
-    end
-
-    -- 构建热点配置表格行
-    local hotspot_rows = ""
-    if type(hotspots) == "table" then
-        for _, h in ipairs(hotspots) do
-            local hid = tostring(h.id or "")
-            local is_active = (hid == active_hid)
-            local is_default = (hid == default_hid)
-            local badge_parts = {}
-            if is_active then
-                badge_parts[#badge_parts + 1] = '<span style="display:inline-block;color:#16a34a;font-weight:700;">✓ 当前</span>'
-            end
-            if is_default then
-                if not is_active then
-                    badge_parts[#badge_parts + 1] = '<span style="display:inline-block;color:#d97706;font-weight:700;">待生效</span>'
-                end
-            else
-                badge_parts[#badge_parts + 1] = ("<button type=\"button\" class=\"cbi-button\" style=\"font-size:12px;padding:1px 8px;\" onclick=\"jxnuSetDefault('hotspot','%s')\">设当前</button>"):format(util.pcdata(hid))
-            end
-            local badge = table.concat(badge_parts, '<br>')
-            hotspot_rows = hotspot_rows .. '<tr class="tr">'
-                .. '<td class="td">' .. badge .. '</td>'
-                .. '<td class="td">' .. util.pcdata(tostring(h.label or "")) .. '</td>'
-                .. '<td class="td">' .. util.pcdata(tostring(h.ssid or "")) .. '</td>'
-                .. '<td class="td">' .. util.pcdata(tostring(h.encryption or "psk2")) .. '</td>'
-                .. '<td class="td">' .. util.pcdata(radio_labels[tostring(h.radio or "")] or tostring(h.radio or "自动")) .. '</td>'
-                .. '<td class="td cbi-section-actions"><div class="jxnu-action-cell">'
-                .. ("<button type=\"button\" class=\"cbi-button\" style=\"font-size:12px;padding:1px 8px;\" onclick=\"jxnuEditHotspot('%s')\">编辑</button>"):format(util.pcdata(hid))
-                .. ("<button type=\"button\" class=\"cbi-button cbi-button-remove\" style=\"font-size:12px;padding:1px 8px;\" onclick=\"jxnuDelete('hotspot','%s')\">删除</button>"):format(util.pcdata(hid))
-                .. '</div></td></tr>\n'
-        end
-    end
-    if hotspot_rows == "" then
-        hotspot_rows = '<tr class="tr"><td class="td" colspan="6" style="text-align:center;color:#999;">暂无热点，请点击"新增"添加</td></tr>'
-    end
-
-    -- 将数据嵌入到前端
-    local campus_json = jsonc.stringify(campus) or "[]"
-    local hotspot_json = jsonc.stringify(hotspots) or "[]"
-
+switch_test = s:taboption("basic", DummyValue, "_switch_test", "手动切换网络")
+switch_test.rawhtml = true
+function switch_test.cfgvalue()
     return [[
-<style>
-.jxnu-native-box{margin:18px 0;}
-.jxnu-native-box h3{margin:0 0 .75rem 0;font-weight:600;}
-.jxnu-native-box .cbi-section-table .th,
-.jxnu-native-box .cbi-section-table .td{vertical-align:middle;}
-.jxnu-native-box .cbi-section-table .td:last-child{white-space:nowrap;}
-.jxnu-native-box .cbi-section-table .btn,
-.jxnu-native-box .cbi-section-table .cbi-button{vertical-align:middle;}
-.jxnu-native-box .cbi-section-actions{white-space:nowrap;text-align:center;}
-.jxnu-native-box .jxnu-action-cell{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;width:100%;}
-.jxnu-native-box .jxnu-box-actions{padding:.75rem 1rem 0 1rem;}
-.jxnu-native-row{margin-bottom:.75rem;}
-.jxnu-native-row label{display:block;margin-bottom:.25rem;font-weight:600;}
-.jxnu-native-row input,.jxnu-native-row select{width:100%;box-sizing:border-box;}
-.jxnu-input-wrap{position:relative;}
-.jxnu-input-wrap input{padding-right:3rem;}
-.jxnu-toggle{position:absolute;right:.5rem;top:50%;transform:translateY(-50%);border:none;background:none;color:inherit;cursor:pointer;font-size:.85rem;padding:0;}
-</style>
-
-<div class="cbi-section cbi-tblsection jxnu-native-box">
-  <h3>校园网账号</h3>
-  <div style="margin:0 0 .75rem 0;color:#4b5563;line-height:1.6;">点击“设当前”后不会立刻切网；若与当前运行配置不同，会标记为“待生效”，并在下次手动登录、手动切换或自动重连时应用。</div>
-  <table class="table cbi-section-table">
-    <tr class="tr table-titles"><th class="th" style="width:80px;">状态</th><th class="th">标签</th><th class="th">认证地址</th><th class="th">ACID</th><th class="th">学工号</th><th class="th">运营商</th><th class="th">SSID</th><th class="th">BSSID</th><th class="th">频段</th><th class="th cbi-section-actions" style="width:120px;">操作</th></tr>
-    <tbody>]] .. campus_rows .. [[</tbody>
-  </table>
-  <div class="jxnu-box-actions">
-    <button type="button" class="cbi-button cbi-button-add" onclick="jxnuEditCampus('')">新增</button>
-  </div>
-</div>
-
-<div class="cbi-section cbi-tblsection jxnu-native-box">
-  <h3>热点配置</h3>
-  <div style="margin:0 0 .75rem 0;color:#4b5563;line-height:1.6;">点击“设当前”后不会立刻切换热点；若与当前运行配置不同，会标记为“待生效”，并在下次手动切换或自动故障切换时应用。</div>
-  <table class="table cbi-section-table">
-    <tr class="tr table-titles"><th class="th" style="width:80px;">状态</th><th class="th">标签</th><th class="th">SSID</th><th class="th">加密方式</th><th class="th">频段</th><th class="th cbi-section-actions" style="width:120px;">操作</th></tr>
-    <tbody>]] .. hotspot_rows .. [[</tbody>
-  </table>
-  <div class="jxnu-box-actions">
-    <button type="button" class="cbi-button cbi-button-add" onclick="jxnuEditHotspot('')">新增</button>
-  </div>
-</div>
-
-<script type="text/javascript">
-(function() {
-if (window.__jxnuTablesInit) return;
-window.__jxnuTablesInit = true;
-
-var campusData = ]] .. campus_json .. [[;
-var hotspotData = ]] .. hotspot_json .. [[;
-var modalType = '';
-var modalEditId = '';
-var modalSaveHandler = null;
-
-function bindPasswordToggles() {
-    var buttons = document.querySelectorAll('.jxnu-toggle');
-    for (var i = 0; i < buttons.length; i++) {
-      buttons[i].onclick = function() {
-        var target = document.getElementById(this.getAttribute('data-target'));
-        if (!target) return;
-        var isPwd = target.type === 'password';
-        target.type = isPwd ? 'text' : 'password';
-        this.textContent = isPwd ? '隐藏' : '显示';
-      };
-    }
-}
-
-function showNativeModal(title, bodyHtml, afterOpen, onSave) {
-  var body = document.createElement('div');
-  body.innerHTML = bodyHtml;
-
-  var buttonRow = document.createElement('div');
-  buttonRow.className = 'right';
-
-  var cancelBtn = document.createElement('button');
-  cancelBtn.type = 'button';
-  cancelBtn.className = 'btn cbi-button';
-  cancelBtn.textContent = '取消';
-  cancelBtn.onclick = function() { L.hideModal(); };
-
-  var saveBtn = document.createElement('button');
-  saveBtn.type = 'button';
-  saveBtn.className = 'btn cbi-button cbi-button-save important';
-  saveBtn.textContent = '保存';
-  saveBtn.onclick = function() {
-    if (typeof modalSaveHandler === 'function')
-      modalSaveHandler();
-  };
-
-  buttonRow.appendChild(cancelBtn);
-  buttonRow.appendChild(document.createTextNode(' '));
-  buttonRow.appendChild(saveBtn);
-
-  modalSaveHandler = onSave;
-  L.showModal(title, [ body, buttonRow ], 'cbi-modal');
-  if (typeof afterOpen === 'function')
-    afterOpen();
-}
-
-window.jxnuSetDefault = function(kind, id) {
-  var fd = new FormData();
-  fd.append('action', 'set_default_' + kind);
-  fd.append('id', id);
-  var xhr = new XMLHttpRequest();
-  xhr.open('POST', '/cgi-bin/luci/admin/services/jxnu_srun/enqueue', true);
-  xhr.onload = function() {
-    var message = '已保存当前选择';
-    if (xhr.status === 200) {
-      try {
-        var data = JSON.parse(xhr.responseText || '{}');
-        if (typeof data.message === 'string' && data.message !== '')
-          message = data.message;
-      } catch (e) {}
-    }
-    alert(message);
-    location.reload();
-  };
-  xhr.send(fd);
-};
-
-window.jxnuDelete = function(kind, id) {
-  if (!confirm('确定要删除此项吗？')) return;
-  var fd = new FormData();
-  fd.append('action', 'delete_' + kind);
-  fd.append('id', id);
-  var xhr = new XMLHttpRequest();
-  xhr.open('POST', '/cgi-bin/luci/admin/services/jxnu_srun/enqueue', true);
-  xhr.onload = function() { location.reload(); };
-  xhr.send(fd);
-};
-
-function findById(arr, id) {
-  for (var i = 0; i < arr.length; i++) {
-    if (arr[i].id === id) return arr[i];
-  }
-  return null;
-}
-
-window.jxnuEditCampus = function(id) {
-  modalType = 'campus';
-  modalEditId = id;
-  var item = id ? findById(campusData, id) : {};
-  var bodyHtml =
-    '<div class="jxnu-native-row"><label>标签（选填）</label><input id="jm-label" value="' + (item.label || '') + '"></div>' +
-    '<div class="jxnu-native-row"><label>学工号</label><input id="jm-user_id" value="' + (item.user_id || '') + '"></div>' +
-    '<div class="jxnu-native-row"><label>运营商</label><select id="jm-operator"><option value="cmcc"' + (item.operator==='cmcc'?' selected':'') + '>中国移动</option><option value="ctcc"' + (item.operator==='ctcc'?' selected':'') + '>中国电信</option><option value="cucc"' + (item.operator==='cucc'?' selected':'') + '>中国联通</option><option value="xn"' + (item.operator==='xn'?' selected':'') + '>校内网</option></select></div>' +
-    '<div class="jxnu-native-row"><label>密码</label><div class="jxnu-input-wrap"><input id="jm-password" type="password" value="' + (item.password || '') + '"><button type="button" class="jxnu-toggle" data-target="jm-password">显示</button></div></div>' +
-    '<div class="jxnu-native-row"><label>认证地址</label><input id="jm-base_url" value="' + (item.base_url || 'http://172.17.1.2') + '"></div>' +
-    '<div class="jxnu-native-row"><label>AC_ID</label><input id="jm-ac_id" value="' + (item.ac_id || '1') + '"></div>' +
-    '<div class="jxnu-native-row"><label>校园网 SSID</label><input id="jm-ssid" value="' + (item.ssid || 'jxnu_stu') + '"></div>' +
-    '<div class="jxnu-native-row"><label>BSSID（选填）</label><input id="jm-bssid" value="' + (item.bssid || '') + '"></div>' +
-    '<div class="jxnu-native-row"><label>频段</label><select id="jm-radio">]] .. radio_options .. [[</select></div>';
-  showNativeModal(
-    id ? '编辑校园网账号' : '新增校园网账号',
-    bodyHtml,
-    function() {
-      document.getElementById('jm-radio').value = item.radio || '';
-      bindPasswordToggles();
-    },
-    function() { jxnuModalSave(); }
-  );
-};
-
-window.jxnuEditHotspot = function(id) {
-  modalType = 'hotspot';
-  modalEditId = id;
-  var item = id ? findById(hotspotData, id) : {};
-  var bodyHtml =
-    '<div class="jxnu-native-row"><label>标签（选填）</label><input id="jm-label" value="' + (item.label || '') + '"></div>' +
-    '<div class="jxnu-native-row"><label>SSID</label><input id="jm-ssid" value="' + (item.ssid || '') + '"></div>' +
-    '<div class="jxnu-native-row"><label>加密方式</label><select id="jm-encryption"><option value="none"' + (item.encryption==='none'?' selected':'') + '>开放(none)</option><option value="psk"' + (item.encryption==='psk'?' selected':'') + '>WPA-PSK</option><option value="psk2"' + ((item.encryption==='psk2'||!item.encryption)?' selected':'') + '>WPA2-PSK</option><option value="psk-mixed"' + (item.encryption==='psk-mixed'?' selected':'') + '>WPA/WPA2</option><option value="sae"' + (item.encryption==='sae'?' selected':'') + '>WPA3-SAE</option><option value="sae-mixed"' + (item.encryption==='sae-mixed'?' selected':'') + '>WPA2/WPA3</option></select></div>' +
-    '<div class="jxnu-native-row"><label>密码</label><div class="jxnu-input-wrap"><input id="jm-key" type="password" value="' + (item.key || '') + '"><button type="button" class="jxnu-toggle" data-target="jm-key">显示</button></div></div>' +
-    '<div class="jxnu-native-row"><label>频段</label><select id="jm-radio">]] .. radio_options .. [[</select></div>';
-  showNativeModal(
-    id ? '编辑热点配置' : '新增热点配置',
-    bodyHtml,
-    function() {
-      document.getElementById('jm-radio').value = item.radio || '';
-      bindPasswordToggles();
-    },
-    function() { jxnuModalSave(); }
-  );
-};
-
-window.jxnuModalSave = function() {
-  var fd = new FormData();
-  fd.append('action', (modalEditId ? 'edit_' : 'add_') + modalType);
-  if (modalEditId) fd.append('id', modalEditId);
-
-  if (modalType === 'campus') {
-    fd.append('label', document.getElementById('jm-label').value);
-    fd.append('user_id', document.getElementById('jm-user_id').value);
-    fd.append('operator', document.getElementById('jm-operator').value);
-    fd.append('password', document.getElementById('jm-password').value);
-    fd.append('base_url', document.getElementById('jm-base_url').value);
-    fd.append('ac_id', document.getElementById('jm-ac_id').value);
-    fd.append('ssid', document.getElementById('jm-ssid').value);
-    fd.append('bssid', document.getElementById('jm-bssid').value);
-    fd.append('radio', document.getElementById('jm-radio').value);
-  } else {
-    fd.append('label', document.getElementById('jm-label').value);
-    fd.append('ssid', document.getElementById('jm-ssid').value);
-    fd.append('encryption', document.getElementById('jm-encryption').value);
-    fd.append('key', document.getElementById('jm-key').value);
-    fd.append('radio', document.getElementById('jm-radio').value);
-  }
-
-  var xhr = new XMLHttpRequest();
-  xhr.open('POST', '/cgi-bin/luci/admin/services/jxnu_srun/enqueue', true);
-  xhr.onload = function() {
-    L.hideModal();
-    location.reload();
-  };
-  xhr.send(fd);
-};
-})();
-</script>
-]]
-end
-
-developer_mode = s:taboption("advanced", Flag, "developer_mode", "开发者选项")
-bind_flag(developer_mode, "developer_mode")
-
-backoff_enable = s:taboption("advanced", Flag, "backoff_enable", "登录失败时启用退避重试")
-bind_flag(backoff_enable, "backoff_enable")
-
-backoff_max_retries = s:taboption("advanced", Value, "backoff_max_retries", "最大重试次数（0 为无限）")
-backoff_max_retries.datatype = "uinteger"
-bind_text(backoff_max_retries, "backoff_max_retries")
-
-backoff_initial_duration = s:taboption("advanced", Value, "backoff_initial_duration", "初始等待时长（秒）")
-function backoff_initial_duration.validate(self, value)
-    if validate_non_negative_number(value) then
-        return value
-    end
-    return nil, "初始等待时长必须是大于等于 0 的数字"
-end
-bind_text(backoff_initial_duration, "backoff_initial_duration", validate_non_negative_number)
-
-backoff_max_duration = s:taboption("advanced", Value, "backoff_max_duration", "最大等待时长（秒）")
-function backoff_max_duration.validate(self, value)
-    if validate_non_negative_number(value) then
-        return value
-    end
-    return nil, "最大等待时长必须是大于等于 0 的数字"
-end
-bind_text(backoff_max_duration, "backoff_max_duration", validate_non_negative_number)
-
-manual_terminal_check_max_attempts = s:taboption("advanced", Value, "manual_terminal_check_max_attempts", "手动登录/登出终态最大检查次数")
-function manual_terminal_check_max_attempts.validate(self, value)
-    if validate_non_negative_number(value) then
-        return value
-    end
-    return nil, "手动终态检查次数必须是大于等于 0 的数字"
-end
-manual_terminal_check_max_attempts.placeholder = "5"
-bind_text(manual_terminal_check_max_attempts, "manual_terminal_check_max_attempts", validate_non_negative_number)
-
-backoff_exponent_factor = s:taboption("advanced", Value, "backoff_exponent_factor", "指数因子")
-function backoff_exponent_factor.validate(self, value)
-    if validate_non_negative_number(value) then
-        return value
-    end
-    return nil, "指数因子必须是大于等于 0 的数字"
-end
-bind_text(backoff_exponent_factor, "backoff_exponent_factor", validate_non_negative_number)
-
-backoff_inter_const_factor = s:taboption("advanced", Value, "backoff_inter_const_factor", "内常数因子（秒）")
-function backoff_inter_const_factor.validate(self, value)
-    if validate_non_negative_number(value) then
-        return value
-    end
-    return nil, "内常数因子必须是大于等于 0 的数字"
-end
-bind_text(backoff_inter_const_factor, "backoff_inter_const_factor", validate_non_negative_number)
-
-backoff_outer_const_factor = s:taboption("advanced", Value, "backoff_outer_const_factor", "外常数因子（秒）")
-function backoff_outer_const_factor.validate(self, value)
-    if validate_non_negative_number(value) then
-        return value
-    end
-    return nil, "外常数因子必须是大于等于 0 的数字"
-end
-bind_text(backoff_outer_const_factor, "backoff_outer_const_factor", validate_non_negative_number)
-
-interval = s:taboption("advanced", Value, "interval", "检测间隔（秒）")
-interval.datatype = "uinteger"
-bind_text(interval, "interval")
-
-if cfg.developer_mode == "1" then
-    switch_test = s:taboption("developer", DummyValue, "_switch_test", "切网测试")
-    switch_test.rawhtml = true
-    function switch_test.cfgvalue()
-        return [[
 <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-  <button id="jxnu-srun-switch-hotspot" type="button" class="cbi-button cbi-button-apply">测试切到热点</button>
-  <button id="jxnu-srun-switch-campus" type="button" class="cbi-button">测试切回校园网</button>
+  <button id="jxnu-srun-switch-hotspot" type="button" class="cbi-button cbi-button-apply">切到热点</button>
+  <button id="jxnu-srun-switch-campus" type="button" class="cbi-button">切回校园网</button>
   <span id="jxnu-srun-switch-result" style="color:#666;">点击后会异步执行</span>
 </div>
 <script type="text/javascript">
@@ -1053,8 +677,404 @@ if cfg.developer_mode == "1" then
 })();
 </script>
 ]]
-    end
 end
+
+-- 校园网账号表格 + 热点配置表格 + 弹窗
+tables_html = s:taboption("basic", DummyValue, "_tables", "")
+tables_html.rawhtml = true
+function tables_html.cfgvalue()
+    local campus = cfg.campus_accounts or {}
+    local hotspots = cfg.hotspot_profiles or {}
+    local state = load_state()
+    local active_cid = cfg.active_campus_id or ""
+    local default_cid = cfg.default_campus_id or ""
+    local active_hid = cfg.active_hotspot_id or ""
+    local default_hid = cfg.default_hotspot_id or ""
+    local current_mode = tostring(state.current_mode or "")
+    local online_account_label = tostring(state.online_account_label or "")
+    local current_ssid = tostring(state.current_ssid or "")
+
+    local operator_labels = { cmcc = "移动", ctcc = "电信", cucc = "联通", xn = "校内网" }
+    local radio_labels = { [""] = "自动" }
+    local radio_options = '<option value="">自动</option>'
+    for radio, meta in pairs(RADIO_CHOICES) do
+        local label = tostring(meta.label or radio)
+        radio_labels[radio] = label
+        radio_options = radio_options .. '<option value="' .. util.pcdata(radio) .. '">' .. util.pcdata(label) .. '</option>'
+    end
+
+    -- 构建校园网账号表格行
+    local campus_rows = ""
+    if type(campus) == "table" then
+        for _, a in ipairs(campus) do
+            local aid = tostring(a.id or "")
+            local campus_user = tostring(a.user_id or "")
+            local is_active = (aid == active_cid)
+            local is_default = (aid == default_cid)
+            local is_connected = current_mode == "campus" and campus_user ~= "" and online_account_label == campus_user
+            local badge_parts = {}
+            if is_connected then
+                badge_parts[#badge_parts + 1] = '<span style="display:inline-block;color:#16a34a;font-weight:700;">已连接</span>'
+            end
+            if is_default then
+                if is_active and not is_connected then
+                    badge_parts[#badge_parts + 1] = '<span style="display:inline-block;color:#2563eb;font-weight:700;">默认</span>'
+                elseif not is_active then
+                    badge_parts[#badge_parts + 1] = '<span style="display:inline-block;color:#d97706;font-weight:700;">待生效</span>'
+                end
+            else
+                badge_parts[#badge_parts + 1] = ("<button type=\"button\" class=\"cbi-button\" style=\"font-size:12px;padding:1px 8px;\" onclick=\"jxnuSetDefault('campus','%s')\">设默认</button>"):format(util.pcdata(aid))
+            end
+            local badge = table.concat(badge_parts, '<br>')
+            campus_rows = campus_rows .. '<tr class="tr">'
+                .. '<td class="td">' .. badge .. '</td>'
+                .. '<td class="td">' .. util.pcdata(tostring(a.label or "")) .. '</td>'
+                .. '<td class="td">' .. util.pcdata(tostring(a.base_url or "http://172.17.1.2")) .. '</td>'
+                .. '<td class="td">' .. util.pcdata(tostring(a.ac_id or "1")) .. '</td>'
+                .. '<td class="td">' .. util.pcdata(tostring(a.user_id or "")) .. '</td>'
+                .. '<td class="td">' .. (operator_labels[tostring(a.operator or "")] or tostring(a.operator or "")) .. '</td>'
+                .. '<td class="td">' .. util.pcdata(tostring(a.ssid or "jxnu_stu")) .. '</td>'
+                .. '<td class="td">' .. util.pcdata(tostring(a.bssid or "")) .. '</td>'
+                .. '<td class="td">' .. util.pcdata(radio_labels[tostring(a.radio or "")] or tostring(a.radio or "自动")) .. '</td>'
+                .. '<td class="td cbi-section-actions"><div class="jxnu-action-cell">'
+                .. ("<button type=\"button\" class=\"cbi-button\" style=\"font-size:12px;padding:1px 8px;\" onclick=\"jxnuEditCampus('%s')\">编辑</button>"):format(util.pcdata(aid))
+                .. ("<button type=\"button\" class=\"cbi-button cbi-button-remove\" style=\"font-size:12px;padding:1px 8px;\" onclick=\"jxnuDelete('campus','%s')\">删除</button>"):format(util.pcdata(aid))
+                .. '</div></td></tr>\n'
+        end
+    end
+    if campus_rows == "" then
+        campus_rows = '<tr class="tr"><td class="td" colspan="10" style="text-align:center;color:#999;">暂无账号，请点击"新增"添加</td></tr>'
+    end
+
+    -- 构建热点配置表格行
+    local hotspot_rows = ""
+    if type(hotspots) == "table" then
+        for _, h in ipairs(hotspots) do
+            local hid = tostring(h.id or "")
+            local is_active = (hid == active_hid)
+            local is_default = (hid == default_hid)
+            local hotspot_ssid = tostring(h.ssid or "")
+            local is_connected = current_mode == "hotspot" and hotspot_ssid ~= "" and current_ssid == hotspot_ssid
+            local badge_parts = {}
+            if is_connected then
+                badge_parts[#badge_parts + 1] = '<span style="display:inline-block;color:#16a34a;font-weight:700;">已连接</span>'
+            end
+            if is_default then
+                if is_active and not is_connected then
+                    badge_parts[#badge_parts + 1] = '<span style="display:inline-block;color:#2563eb;font-weight:700;">默认</span>'
+                elseif not is_active then
+                    badge_parts[#badge_parts + 1] = '<span style="display:inline-block;color:#d97706;font-weight:700;">待生效</span>'
+                end
+            else
+                badge_parts[#badge_parts + 1] = ("<button type=\"button\" class=\"cbi-button\" style=\"font-size:12px;padding:1px 8px;\" onclick=\"jxnuSetDefault('hotspot','%s')\">设默认</button>"):format(util.pcdata(hid))
+            end
+            local badge = table.concat(badge_parts, '<br>')
+            hotspot_rows = hotspot_rows .. '<tr class="tr">'
+                .. '<td class="td">' .. badge .. '</td>'
+                .. '<td class="td">' .. util.pcdata(tostring(h.label or "")) .. '</td>'
+                .. '<td class="td">' .. util.pcdata(tostring(h.ssid or "")) .. '</td>'
+                .. '<td class="td">' .. util.pcdata(tostring(h.encryption or "psk2")) .. '</td>'
+                .. '<td class="td">' .. util.pcdata(radio_labels[tostring(h.radio or "")] or tostring(h.radio or "自动")) .. '</td>'
+                .. '<td class="td cbi-section-actions"><div class="jxnu-action-cell">'
+                .. ("<button type=\"button\" class=\"cbi-button\" style=\"font-size:12px;padding:1px 8px;\" onclick=\"jxnuEditHotspot('%s')\">编辑</button>"):format(util.pcdata(hid))
+                .. ("<button type=\"button\" class=\"cbi-button cbi-button-remove\" style=\"font-size:12px;padding:1px 8px;\" onclick=\"jxnuDelete('hotspot','%s')\">删除</button>"):format(util.pcdata(hid))
+                .. '</div></td></tr>\n'
+        end
+    end
+    if hotspot_rows == "" then
+        hotspot_rows = '<tr class="tr"><td class="td" colspan="6" style="text-align:center;color:#999;">暂无热点，请点击"新增"添加</td></tr>'
+    end
+
+    -- 将数据嵌入到前端
+    local campus_json = jsonc.stringify(campus) or "[]"
+    local hotspot_json = jsonc.stringify(hotspots) or "[]"
+
+    return [[
+<style>
+.jxnu-native-box{margin:18px 0;}
+.jxnu-native-box h3{margin:0 0 .75rem 0;font-weight:600;}
+.jxnu-native-box .cbi-section-table .th,
+.jxnu-native-box .cbi-section-table .td{vertical-align:middle;}
+.jxnu-native-box .cbi-section-table .td:last-child{white-space:nowrap;}
+.jxnu-native-box .cbi-section-table .btn,
+.jxnu-native-box .cbi-section-table .cbi-button{vertical-align:middle;}
+.jxnu-native-box .cbi-section-actions{white-space:nowrap;text-align:center;}
+.jxnu-native-box .jxnu-action-cell{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;width:100%;}
+.jxnu-native-box .jxnu-box-actions{padding:.75rem 1rem 0 1rem;}
+.jxnu-native-row{margin-bottom:.75rem;}
+.jxnu-native-row label{display:block;margin-bottom:.25rem;font-weight:600;}
+.jxnu-native-row input,.jxnu-native-row select{width:100%;box-sizing:border-box;}
+</style>
+
+<div class="cbi-section cbi-tblsection jxnu-native-box">
+  <h3>校园网账号</h3>
+  <div style="margin:0 0 .75rem 0;color:#4b5563;line-height:1.6;">“已连接”表示当前实际联网账号；“默认”表示下次优先使用的账号；若两者不同，会显示“待生效”。</div>
+  <table class="table cbi-section-table">
+    <tr class="tr table-titles"><th class="th" style="width:80px;">状态</th><th class="th">标签</th><th class="th">认证地址</th><th class="th">ACID</th><th class="th">学工号</th><th class="th">运营商</th><th class="th">SSID</th><th class="th">BSSID</th><th class="th">频段</th><th class="th cbi-section-actions" style="width:120px;">操作</th></tr>
+    <tbody>]] .. campus_rows .. [[</tbody>
+  </table>
+  <div class="jxnu-box-actions">
+    <button type="button" class="cbi-button cbi-button-add" onclick="jxnuEditCampus('')">新增</button>
+  </div>
+</div>
+
+<div class="cbi-section cbi-tblsection jxnu-native-box">
+  <h3>热点配置</h3>
+  <div style="margin:0 0 .75rem 0;color:#4b5563;line-height:1.6;">“已连接”表示当前实际连接热点；“默认”表示下次优先使用的热点；若两者不同，会显示“待生效”。</div>
+  <table class="table cbi-section-table">
+    <tr class="tr table-titles"><th class="th" style="width:80px;">状态</th><th class="th">标签</th><th class="th">SSID</th><th class="th">加密方式</th><th class="th">频段</th><th class="th cbi-section-actions" style="width:120px;">操作</th></tr>
+    <tbody>]] .. hotspot_rows .. [[</tbody>
+  </table>
+  <div class="jxnu-box-actions">
+    <button type="button" class="cbi-button cbi-button-add" onclick="jxnuEditHotspot('')">新增</button>
+  </div>
+</div>
+
+<script type="text/javascript">
+(function() {
+if (window.__jxnuTablesInit) return;
+window.__jxnuTablesInit = true;
+
+var campusData = ]] .. campus_json .. [[;
+var hotspotData = ]] .. hotspot_json .. [[;
+var modalType = '';
+var modalEditId = '';
+var modalSaveHandler = null;
+
+function renderPasswordField(containerId, fieldId, value) {
+  var container = document.getElementById(containerId);
+  if (!container) return;
+  L.require('ui').then(function(ui) {
+    var widget = new ui.Textfield(value || '', {
+      id: fieldId,
+      password: true,
+      optional: true
+    });
+    return Promise.resolve(widget.render()).then(function(node) {
+      container.innerHTML = '';
+      container.appendChild(node);
+    });
+  });
+}
+
+function getFieldValue(id) {
+  var node = document.getElementById('widget.' + id) || document.getElementById(id);
+  return node ? node.value : '';
+}
+
+function showNativeModal(title, bodyHtml, afterOpen, onSave) {
+  var body = document.createElement('div');
+  body.innerHTML = bodyHtml;
+
+  var buttonRow = document.createElement('div');
+  buttonRow.className = 'right';
+
+  var cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'btn cbi-button';
+  cancelBtn.textContent = '取消';
+  cancelBtn.onclick = function() { L.hideModal(); };
+
+  var saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'btn cbi-button cbi-button-save important';
+  saveBtn.textContent = '保存';
+  saveBtn.onclick = function() {
+    if (typeof modalSaveHandler === 'function')
+      modalSaveHandler();
+  };
+
+  buttonRow.appendChild(cancelBtn);
+  buttonRow.appendChild(document.createTextNode(' '));
+  buttonRow.appendChild(saveBtn);
+
+  modalSaveHandler = onSave;
+  L.showModal(title, [ body, buttonRow ], 'cbi-modal');
+  if (typeof afterOpen === 'function')
+    afterOpen();
+}
+
+window.jxnuSetDefault = function(kind, id) {
+  var fd = new FormData();
+  fd.append('action', 'set_default_' + kind);
+  fd.append('id', id);
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/cgi-bin/luci/admin/services/jxnu_srun/enqueue', true);
+  xhr.onload = function() {
+    var message = '已保存默认配置';
+    if (xhr.status === 200) {
+      try {
+        var data = JSON.parse(xhr.responseText || '{}');
+        if (typeof data.message === 'string' && data.message !== '')
+          message = data.message;
+      } catch (e) {}
+    }
+    alert(message);
+    location.reload();
+  };
+  xhr.send(fd);
+};
+
+window.jxnuDelete = function(kind, id) {
+  if (!confirm('确定要删除此项吗？')) return;
+  var fd = new FormData();
+  fd.append('action', 'delete_' + kind);
+  fd.append('id', id);
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/cgi-bin/luci/admin/services/jxnu_srun/enqueue', true);
+  xhr.onload = function() { location.reload(); };
+  xhr.send(fd);
+};
+
+function findById(arr, id) {
+  for (var i = 0; i < arr.length; i++) {
+    if (arr[i].id === id) return arr[i];
+  }
+  return null;
+}
+
+window.jxnuEditCampus = function(id) {
+  modalType = 'campus';
+  modalEditId = id;
+  var item = id ? findById(campusData, id) : {};
+  var bodyHtml =
+    '<div class="jxnu-native-row"><label>标签（选填）</label><input id="jm-label" value="' + (item.label || '') + '"></div>' +
+    '<div class="jxnu-native-row"><label>学工号</label><input id="jm-user_id" value="' + (item.user_id || '') + '"></div>' +
+    '<div class="jxnu-native-row"><label>运营商</label><select id="jm-operator"><option value="cmcc"' + (item.operator==='cmcc'?' selected':'') + '>中国移动</option><option value="ctcc"' + (item.operator==='ctcc'?' selected':'') + '>中国电信</option><option value="cucc"' + (item.operator==='cucc'?' selected':'') + '>中国联通</option><option value="xn"' + (item.operator==='xn'?' selected':'') + '>校内网</option></select></div>' +
+    '<div class="jxnu-native-row"><label>密码</label><div id="jm-password-field"></div></div>' +
+    '<div class="jxnu-native-row"><label>认证地址</label><input id="jm-base_url" value="' + (item.base_url || 'http://172.17.1.2') + '"></div>' +
+    '<div class="jxnu-native-row"><label>AC_ID</label><input id="jm-ac_id" value="' + (item.ac_id || '1') + '"></div>' +
+    '<div class="jxnu-native-row"><label>校园网 SSID</label><input id="jm-ssid" value="' + (item.ssid || 'jxnu_stu') + '"></div>' +
+    '<div class="jxnu-native-row"><label>BSSID（选填）</label><input id="jm-bssid" value="' + (item.bssid || '') + '"></div>' +
+    '<div class="jxnu-native-row"><label>频段</label><select id="jm-radio">]] .. radio_options .. [[</select></div>';
+  showNativeModal(
+    id ? '编辑校园网账号' : '新增校园网账号',
+    bodyHtml,
+    function() {
+      document.getElementById('jm-radio').value = item.radio || '';
+      renderPasswordField('jm-password-field', 'jm-password', item.password || '');
+    },
+    function() { jxnuModalSave(); }
+  );
+};
+
+window.jxnuEditHotspot = function(id) {
+  modalType = 'hotspot';
+  modalEditId = id;
+  var item = id ? findById(hotspotData, id) : {};
+  var bodyHtml =
+    '<div class="jxnu-native-row"><label>标签（选填）</label><input id="jm-label" value="' + (item.label || '') + '"></div>' +
+    '<div class="jxnu-native-row"><label>SSID</label><input id="jm-ssid" value="' + (item.ssid || '') + '"></div>' +
+    '<div class="jxnu-native-row"><label>加密方式</label><select id="jm-encryption"><option value="none"' + (item.encryption==='none'?' selected':'') + '>开放(none)</option><option value="psk"' + (item.encryption==='psk'?' selected':'') + '>WPA-PSK</option><option value="psk2"' + ((item.encryption==='psk2'||!item.encryption)?' selected':'') + '>WPA2-PSK</option><option value="psk-mixed"' + (item.encryption==='psk-mixed'?' selected':'') + '>WPA/WPA2</option><option value="sae"' + (item.encryption==='sae'?' selected':'') + '>WPA3-SAE</option><option value="sae-mixed"' + (item.encryption==='sae-mixed'?' selected':'') + '>WPA2/WPA3</option></select></div>' +
+    '<div class="jxnu-native-row"><label>密码</label><div id="jm-key-field"></div></div>' +
+    '<div class="jxnu-native-row"><label>频段</label><select id="jm-radio">]] .. radio_options .. [[</select></div>';
+  showNativeModal(
+    id ? '编辑热点配置' : '新增热点配置',
+    bodyHtml,
+    function() {
+      document.getElementById('jm-radio').value = item.radio || '';
+      renderPasswordField('jm-key-field', 'jm-key', item.key || '');
+    },
+    function() { jxnuModalSave(); }
+  );
+};
+
+window.jxnuModalSave = function() {
+  var fd = new FormData();
+  fd.append('action', (modalEditId ? 'edit_' : 'add_') + modalType);
+  if (modalEditId) fd.append('id', modalEditId);
+
+  if (modalType === 'campus') {
+    fd.append('label', document.getElementById('jm-label').value);
+    fd.append('user_id', document.getElementById('jm-user_id').value);
+    fd.append('operator', document.getElementById('jm-operator').value);
+    fd.append('password', getFieldValue('jm-password'));
+    fd.append('base_url', document.getElementById('jm-base_url').value);
+    fd.append('ac_id', document.getElementById('jm-ac_id').value);
+    fd.append('ssid', document.getElementById('jm-ssid').value);
+    fd.append('bssid', document.getElementById('jm-bssid').value);
+    fd.append('radio', document.getElementById('jm-radio').value);
+  } else {
+    fd.append('label', document.getElementById('jm-label').value);
+    fd.append('ssid', document.getElementById('jm-ssid').value);
+    fd.append('encryption', document.getElementById('jm-encryption').value);
+    fd.append('key', getFieldValue('jm-key'));
+    fd.append('radio', document.getElementById('jm-radio').value);
+  }
+
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/cgi-bin/luci/admin/services/jxnu_srun/enqueue', true);
+  xhr.onload = function() {
+    L.hideModal();
+    location.reload();
+  };
+  xhr.send(fd);
+};
+})();
+</script>
+]]
+end
+
+backoff_enable = s:taboption("advanced", Flag, "backoff_enable", "登录失败时启用退避重试")
+bind_flag(backoff_enable, "backoff_enable")
+
+backoff_max_retries = s:taboption("advanced", Value, "backoff_max_retries", "最大重试次数（0 为无限）")
+backoff_max_retries.datatype = "uinteger"
+bind_text(backoff_max_retries, "backoff_max_retries")
+
+retry_cooldown_seconds = s:taboption("advanced", Value, "retry_cooldown_seconds", "失败后首次重试等待（秒）")
+function retry_cooldown_seconds.validate(self, value)
+    if validate_non_negative_number(value) then
+        return value
+    end
+    return nil, "首次重试等待时长必须是大于等于 0 的数字"
+end
+retry_cooldown_seconds.placeholder = "10"
+bind_text(retry_cooldown_seconds, "retry_cooldown_seconds", validate_non_negative_number)
+
+retry_max_cooldown_seconds = s:taboption("advanced", Value, "retry_max_cooldown_seconds", "退避等待上限（秒）")
+function retry_max_cooldown_seconds.validate(self, value)
+    if validate_non_negative_number(value) then
+        return value
+    end
+    return nil, "退避等待上限必须是大于等于 0 的数字"
+end
+retry_max_cooldown_seconds.placeholder = "600"
+bind_text(retry_max_cooldown_seconds, "retry_max_cooldown_seconds", validate_non_negative_number)
+
+switch_ready_timeout_seconds = s:taboption("advanced", Value, "switch_ready_timeout_seconds", "切网完成等待时间（秒）")
+switch_ready_timeout_seconds.datatype = "uinteger"
+switch_ready_timeout_seconds.placeholder = "12"
+bind_text(switch_ready_timeout_seconds, "switch_ready_timeout_seconds")
+
+manual_terminal_check_max_attempts = s:taboption("advanced", Value, "manual_terminal_check_max_attempts", "手动登录/登出终态最大检查次数")
+function manual_terminal_check_max_attempts.validate(self, value)
+    if validate_non_negative_number(value) then
+        return value
+    end
+    return nil, "手动终态检查次数必须是大于等于 0 的数字"
+end
+manual_terminal_check_max_attempts.placeholder = "5"
+bind_text(manual_terminal_check_max_attempts, "manual_terminal_check_max_attempts", validate_non_negative_number)
+
+manual_terminal_check_interval_seconds = s:taboption("advanced", Value, "manual_terminal_check_interval_seconds", "手动终态校验间隔（秒）")
+manual_terminal_check_interval_seconds.datatype = "uinteger"
+manual_terminal_check_interval_seconds.placeholder = "2"
+bind_text(manual_terminal_check_interval_seconds, "manual_terminal_check_interval_seconds")
+
+hotspot_failback_enabled = s:taboption("advanced", Flag, "hotspot_failback_enabled", "热点切换失败时自动回切校园网")
+bind_flag(hotspot_failback_enabled, "hotspot_failback_enabled")
+
+connectivity_check_mode = s:taboption("advanced", ListValue, "connectivity_check_mode", "在线判定方式")
+connectivity_check_mode:value("internet", "互联网可达")
+connectivity_check_mode:value("portal", "认证网关可达即可")
+connectivity_check_mode:value("ssid", "仅关联到目标 SSID")
+connectivity_check_mode.rmempty = false
+bind_text(connectivity_check_mode, "connectivity_check_mode")
+
+interval = s:taboption("advanced", Value, "interval", "检测间隔（秒）")
+interval.datatype = "uinteger"
+bind_text(interval, "interval")
 
 log_text = s:taboption("log", DummyValue, "_log_text", "运行日志")
 log_text.rawhtml = true
