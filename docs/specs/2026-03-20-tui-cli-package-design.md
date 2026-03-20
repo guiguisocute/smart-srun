@@ -92,10 +92,10 @@ parser.add_argument("--config", action="store_true", help="interactive config wi
 
 | 按键 | 动作 | 实现 |
 |------|------|------|
-| `L` | 手动登录 | 写 action.json `{"action": "manual_login"}` |
-| `O` | 手动登出 | 写 action.json `{"action": "manual_logout"}` |
-| `H` | 切换热点 | 写 action.json `{"action": "switch_hotspot"}` |
-| `C` | 切换校园 | 写 action.json `{"action": "switch_campus"}` |
+| `L` | 手动登录 | 调用 `config.queue_runtime_action("manual_login")` |
+| `O` | 手动登出 | 调用 `config.queue_runtime_action("manual_logout")` |
+| `H` | 切换热点 | 调用 `config.queue_runtime_action("switch_hotspot")` |
+| `C` | 切换校园 | 调用 `config.queue_runtime_action("switch_campus")` |
 | `R` | 立即刷新 | 重读 state.json + 日志文件 |
 | `Q` | 退出 | 退出 curses，恢复终端 |
 
@@ -180,7 +180,7 @@ Radio       < auto ▸ >
 |------|----------|------|
 | 文本输入 | Enter 激活，输入，Enter 确认 | `EditField` |
 | 密码输入 | 同上，显示 `*` 掩码 | `EditField(masked=True)` |
-| 下拉选择 | `←→` 切换选项 | `Dropdown` |
+| 下拉选择 | 聚焦时 `←→` 直接切换选项（无需 Enter 激活） | `Dropdown` |
 
 **条件联动**：
 - 接入方式 = wired → SSID / BSSID / Radio 灰化
@@ -235,6 +235,9 @@ SSID故障转移 < 开启 ▸ >
 - 首次使用（config.json 不存在）：`load_config()` 已有默认值处理，向导正常工作
 - 至少保留一个校园网账号，删到最后一个时禁止删除
 - 不经过 UCI，纯 CLI 版直接操作 JSON
+- 配置变更生效时机：daemon 每个 tick 都重新 `load_config()`，保存后下一个 tick 自动生效，无需额外通知
+- 保存成功后 Toast 提示 `配置已保存，将在下次检测周期生效`
+- LuCI 与 TUI 并存时的并发写入：最后写入者生效，spec 不做锁保护（低频操作，冲突概率极低）
 
 ## 组件库 tui_widgets.py
 
