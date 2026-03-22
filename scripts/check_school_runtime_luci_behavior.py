@@ -64,9 +64,33 @@ def test_runtime_contract_school_extra_is_normalized():
     )
 
 
+def test_int_descriptor_without_default_does_not_crash_contract_building():
+    contract = build_school_runtime_luci_contract(
+        {"school": "jxnu", SCHOOL_EXTRA_KEY: {}},
+        {
+            "runtime_type": "runtime_class",
+            "runtime_api_version": 1,
+            "field_descriptors": [
+                {
+                    "key": "retry_limit",
+                    "type": "int",
+                    "label": "Retry Limit",
+                }
+            ],
+            "school_extra": [],
+        },
+    )
+    assert_equal(
+        contract["field_descriptors"][0]["default"],
+        "",
+        "int descriptors without explicit default must stay empty instead of crashing",
+    )
+
+
 def main():
     test_bool_defaults_are_contract_normalized()
     test_runtime_contract_school_extra_is_normalized()
+    test_int_descriptor_without_default_does_not_crash_contract_building()
     print("OK: school runtime LuCI behavior contracts hold")
     return 0
 

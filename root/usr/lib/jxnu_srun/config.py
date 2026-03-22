@@ -370,9 +370,13 @@ def _coerce_school_extra_value(value, descriptor):
         return text
 
     if value_type == "int":
+        if text == "":
+            return ""
         return str(int(text))
 
     if value_type == "float":
+        if text == "":
+            return ""
         return str(float(text))
 
     return text
