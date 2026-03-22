@@ -143,7 +143,9 @@ def handle_runtime_action(cfg, state, runtime=None, app_ctx=None):
         **build_runtime_snapshot(cfg, state),
     )
 
-    ok, message = runtime.handle_runtime_action(app_ctx, action, state)
+    ok, message = school_runtime.dispatch_runtime_action(
+        runtime, app_ctx, action, state
+    )
     action_result = "ok" if ok else "error"
     if message.startswith("忽略未知动作:"):
         action_result = "ignored"
@@ -1071,10 +1073,12 @@ def main():
     import argparse
     import json as _json
     import schools
+    import sys
 
     cfg = load_config()
-    runtime = school_runtime.resolve_runtime(cfg)
-    app_ctx = school_runtime.build_app_context(cfg, runtime=runtime)
+    runtime = None
+    app_ctx = None
+    argv = sys.argv[1:]
 
     parser = argparse.ArgumentParser(
         prog="srunnet",
@@ -1148,8 +1152,12 @@ def main():
     p_hp_def = hotspot_sub.add_parser("default", help="set default hotspot profile")
     p_hp_def.add_argument("id", help="hotspot ID")
 
-    for item in school_runtime.get_runtime_cli_commands(runtime):
-        sub.add_parser(item["name"], help=item.get("help") or None)
+    needs_runtime_for_parse = bool(argv) and not argv[0].startswith("-")
+    if needs_runtime_for_parse and argv[0] not in school_runtime.CORE_RESERVED_COMMANDS:
+        runtime = school_runtime.resolve_runtime(cfg)
+        app_ctx = school_runtime.build_app_context(cfg, runtime=runtime)
+        for item in school_runtime.get_runtime_cli_commands(runtime):
+            sub.add_parser(item["name"], help=item.get("help") or None)
 
     args = parser.parse_args()
 
@@ -1164,18 +1172,25 @@ def main():
         return
 
     if args.command == "login":
+        runtime = runtime or school_runtime.resolve_runtime(cfg)
+        app_ctx = app_ctx or school_runtime.build_app_context(cfg, runtime=runtime)
         _emit_cli_result(_runtime_cli_login(app_ctx))
         return
 
     if args.command == "logout":
+        runtime = runtime or school_runtime.resolve_runtime(cfg)
+        app_ctx = app_ctx or school_runtime.build_app_context(cfg, runtime=runtime)
         _emit_cli_result(_runtime_cli_logout(app_ctx))
         return
 
     if args.command == "relogin":
+        runtime = runtime or school_runtime.resolve_runtime(cfg)
+        app_ctx = app_ctx or school_runtime.build_app_context(cfg, runtime=runtime)
         _emit_cli_result(_runtime_cli_relogin(app_ctx))
         return
 
     if args.command == "daemon":
+        runtime = runtime or school_runtime.resolve_runtime(cfg)
         run_daemon(runtime=runtime)
         return
 

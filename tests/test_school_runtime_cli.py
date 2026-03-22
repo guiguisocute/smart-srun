@@ -3,7 +3,7 @@ import json
 import os
 import sys
 import unittest
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from unittest import mock
 
 
@@ -62,6 +62,10 @@ class FakeRuntime(object):
         self.calls.append(("daemon_before_tick", interval))
         return self.daemon_result
 
+    def handle_runtime_action(self, app_ctx, action, state):
+        self.calls.append(("handle_runtime_action", action))
+        return True, "runtime-action:%s" % action
+
 
 class SchoolRuntimeCliTests(unittest.TestCase):
     def setUp(self):
@@ -70,18 +74,31 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         self.app_ctx = school_runtime.build_app_context(self.cfg, runtime=self.runtime)
 
     def run_main(self, argv):
+        return self.run_main_with_runtime(argv, runtime=self.runtime)
+
+    def run_main_with_runtime(
+        self, argv, runtime=None, build_app_ctx=None, patch_runtime=True
+    ):
+        runtime = runtime if runtime is not None else self.runtime
+        app_ctx = build_app_ctx if build_app_ctx is not None else self.app_ctx
         stdout = io.StringIO()
-        with (
-            mock.patch.object(sys, "argv", ["srunnet"] + argv),
-            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
-            mock.patch.object(
-                school_runtime, "resolve_runtime", return_value=self.runtime
-            ),
-            mock.patch.object(
-                school_runtime, "build_app_context", return_value=self.app_ctx
-            ),
-            redirect_stdout(stdout),
-        ):
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(sys, "argv", ["srunnet"] + argv))
+            stack.enter_context(
+                mock.patch.object(daemon, "load_config", return_value=dict(self.cfg))
+            )
+            if patch_runtime:
+                stack.enter_context(
+                    mock.patch.object(
+                        school_runtime, "resolve_runtime", return_value=runtime
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        school_runtime, "build_app_context", return_value=app_ctx
+                    )
+                )
+            stack.enter_context(redirect_stdout(stdout))
             try:
                 daemon.main()
                 code = 0
@@ -160,7 +177,28 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         self.runtime.extra_commands = [{"name": "status", "help": "bad"}]
 
         with self.assertRaisesRegex(ValueError, "reserved command"):
-            self.run_main([])
+            self.run_main(["custom"])
+
+    def test_all_builtin_top_level_commands_are_reserved(self):
+        reserved = [
+            "status",
+            "login",
+            "logout",
+            "relogin",
+            "daemon",
+            "schools",
+            "config",
+            "switch",
+            "log",
+            "enable",
+            "disable",
+        ]
+
+        for name in reserved:
+            with self.subTest(name=name):
+                self.runtime.extra_commands = [{"name": name, "help": "bad"}]
+                with self.assertRaisesRegex(ValueError, "reserved command"):
+                    self.run_main(["custom"])
 
     def test_runtime_cli_dispatch_requires_fixed_result_shape(self):
         self.runtime.extra_commands = [{"name": "custom", "help": "custom command"}]
@@ -225,6 +263,106 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         self.assertEqual(output, "")
         run_daemon.assert_called_once_with(runtime=self.runtime)
         self.assertNotIn(("cli_daemon", "daemon"), self.runtime.calls)
+
+    def test_schools_command_works_when_runtime_resolution_is_broken(self):
+        payload = [{"short_name": "jxnu"}]
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "schools"]),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            mock.patch.object(
+                school_runtime,
+                "resolve_runtime",
+                side_effect=AssertionError("should not resolve"),
+            ),
+            mock.patch.object(schools, "list_schools", return_value=payload),
+            redirect_stdout(stdout),
+        ):
+            daemon.main()
+
+        self.assertEqual(json.loads(stdout.getvalue()), payload)
+
+    def test_config_show_works_when_runtime_resolution_is_broken(self):
+        with (
+            mock.patch.object(
+                school_runtime,
+                "resolve_runtime",
+                side_effect=AssertionError("should not resolve"),
+            ),
+            mock.patch.object(daemon, "_show_config") as show_config,
+        ):
+            code, output = self.run_main_with_runtime(
+                ["config", "show"],
+                runtime=None,
+                build_app_ctx=None,
+                patch_runtime=False,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(output, "")
+        show_config.assert_called_once_with()
+
+    def test_top_level_help_works_when_runtime_resolution_is_broken(self):
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "--help"]),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            mock.patch.object(
+                school_runtime,
+                "resolve_runtime",
+                side_effect=AssertionError("should not resolve"),
+            ),
+            redirect_stdout(stdout),
+        ):
+            with self.assertRaises(SystemExit) as exc:
+                daemon.main()
+
+        self.assertEqual(exc.exception.code, 0)
+        self.assertIn("usage: srunnet", stdout.getvalue())
+
+    def test_runtime_action_contract_error_is_isolated(self):
+        state = {"current_mode": "campus", "last_switch_ts": 0}
+        with (
+            mock.patch.object(
+                daemon, "pop_runtime_action", return_value={"action": "custom"}
+            ),
+            mock.patch.object(daemon, "save_runtime_status"),
+            mock.patch.object(daemon, "build_runtime_snapshot", return_value={}),
+        ):
+            self.runtime.handle_runtime_action = mock.Mock(
+                return_value=(True, "bad", "shape")
+            )
+            handled, message = daemon.handle_runtime_action(
+                dict(self.cfg),
+                state,
+                runtime=self.runtime,
+                app_ctx=self.app_ctx,
+            )
+
+        self.assertTrue(handled)
+        self.assertIn("runtime action contract error", message)
+
+    def test_runtime_action_exception_is_isolated(self):
+        state = {"current_mode": "campus", "last_switch_ts": 0}
+        with (
+            mock.patch.object(
+                daemon, "pop_runtime_action", return_value={"action": "custom"}
+            ),
+            mock.patch.object(daemon, "save_runtime_status"),
+            mock.patch.object(daemon, "build_runtime_snapshot", return_value={}),
+        ):
+            self.runtime.handle_runtime_action = mock.Mock(
+                side_effect=RuntimeError("boom")
+            )
+            handled, message = daemon.handle_runtime_action(
+                dict(self.cfg),
+                state,
+                runtime=self.runtime,
+                app_ctx=self.app_ctx,
+            )
+
+        self.assertTrue(handled)
+        self.assertIn("runtime action failed", message)
 
 
 if __name__ == "__main__":

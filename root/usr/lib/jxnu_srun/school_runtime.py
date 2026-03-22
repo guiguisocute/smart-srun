@@ -19,6 +19,11 @@ CORE_RESERVED_COMMANDS = (
     "relogin",
     "daemon",
     "schools",
+    "config",
+    "switch",
+    "log",
+    "enable",
+    "disable",
 )
 
 
@@ -349,6 +354,34 @@ def dispatch_daemon_hook(runtime, hook_name, app_ctx, state, interval):
     if not isinstance(ok, bool):
         raise RuntimeError(
             "runtime daemon contract error: %s ok flag must be bool" % hook_name
+        )
+    if message is None:
+        message = ""
+    elif not isinstance(message, str):
+        message = str(message)
+    return ok, message
+
+
+def dispatch_runtime_action(runtime, app_ctx, action, state):
+    fn = getattr(runtime, "handle_runtime_action", None)
+    if not callable(fn):
+        raise RuntimeError(
+            "runtime action contract error: handle_runtime_action missing"
+        )
+    try:
+        result = fn(app_ctx, action, state)
+    except Exception as exc:
+        return False, "runtime action failed: %s" % exc
+    if not isinstance(result, tuple) or len(result) != 2:
+        return (
+            False,
+            "runtime action contract error: handle_runtime_action must return (ok, message)",
+        )
+    ok, message = result
+    if not isinstance(ok, bool):
+        return (
+            False,
+            "runtime action contract error: handle_runtime_action ok flag must be bool",
         )
     if message is None:
         message = ""
