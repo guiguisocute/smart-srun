@@ -59,6 +59,12 @@ def main():
         "runtime diagnostics marker",
         failures,
     )
+    require_regex(
+        lua_source,
+        r"cfg\.school_extra\s*=\s*school_runtime_contract\.school_extra",
+        "LuCI consumes normalized contract school_extra",
+        failures,
+    )
 
     require_contains(
         config_source,

@@ -664,6 +664,9 @@ local school_runtime_contract, school_runtime_diagnostics = parse_school_runtime
     school_runtime_json,
     school_runtime_err
 )
+if type(school_runtime_contract.school_extra) == "table" then
+    cfg.school_extra = school_runtime_contract.school_extra
+end
 local school_runtime_descriptors = {}
 local school_runtime_renderable = type(school_runtime_contract.field_descriptors) == "table"
     and type(school_runtime_contract.school_extra) == "table"

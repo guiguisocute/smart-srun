@@ -327,9 +327,15 @@ def _normalize_school_extra_descriptor(descriptor):
     label = str(descriptor.get("label") or key).strip() or key
     choices = descriptor.get("choices")
     return {
+        "default": _coerce_school_extra_value(
+            descriptor.get("default", ""),
+            {
+                "type": str(descriptor.get("type") or "string").strip().lower()
+                or "string"
+            },
+        ),
         "key": key,
         "type": str(descriptor.get("type") or "string").strip().lower() or "string",
-        "default": descriptor.get("default", ""),
         "required": bool(descriptor.get("required", False)),
         "label": label,
         "description": str(descriptor.get("description") or ""),
