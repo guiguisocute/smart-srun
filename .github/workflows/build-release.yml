@@ -123,7 +123,7 @@ jobs:
           echo "=== All ipk files ==="
           find openwrt/bin -type f -name '*.ipk' | sort
           echo "====================="
-          for pattern in 'jxnu-srun_*.ipk' 'luci-app-jxnu-srun*.ipk'; do
+          for pattern in 'jxnu-srun_*.ipk' 'luci-app-jxnu-srun_*.ipk' 'luci-app-jxnu-srun-bundle_*.ipk'; do
             IPK="$(find openwrt/bin -type f -name "$pattern" | head -n1)"
             if [ -n "$IPK" ]; then
               cp -v "$IPK" "artifacts/$(basename "$IPK")"
