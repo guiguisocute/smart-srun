@@ -31,6 +31,7 @@ from wireless import (
     switch_to_campus,
 )
 import orchestrator
+import school_runtime
 import srun_auth
 from snapshot import build_runtime_snapshot
 
@@ -38,6 +39,7 @@ from snapshot import build_runtime_snapshot
 # ---------------------------------------------------------------------------
 # Daemon state
 # ---------------------------------------------------------------------------
+
 
 def _make_daemon_state():
     return {
@@ -64,8 +66,10 @@ def _safe_call(fn, *args, **kwargs):
 # Switch
 # ---------------------------------------------------------------------------
 
+
 def run_switch(cfg, expect_hotspot):
     from wireless import switch_sta_profile
+
     target = build_expected_profile(cfg, expect_hotspot)
     if (not expect_hotspot) and campus_uses_wired(cfg):
         switched, message = switch_to_campus(cfg)
@@ -88,11 +92,44 @@ def run_switch(cfg, expect_hotspot):
 # Handle runtime actions (from LuCI)
 # ---------------------------------------------------------------------------
 
-def handle_runtime_action(cfg, state):
+
+def _handle_runtime_action_core(app_ctx, state, action):
+    cfg = app_ctx["cfg"]
+    action_map = {
+        "switch_hotspot": True,
+        "switch_campus": False,
+    }
+
+    if action == "manual_login":
+        ok, message = orchestrator.run_manual_login(cfg)
+        return ok, message
+
+    if action == "manual_logout":
+        ok, message = orchestrator.run_manual_logout(cfg)
+        return ok, message
+
+    if action not in action_map:
+        message = "忽略未知动作: %s" % action
+        return True, message
+
+    ok, message = run_switch(cfg, expect_hotspot=action_map[action])
+    action_result = "ok" if ok else "error"
+    target_mode = "hotspot" if action_map[action] else "campus"
+    if ok:
+        state["current_mode"] = target_mode
+        if not action_map[action]:
+            state["last_switch_ts"] = 0
+    return ok, message
+
+
+def handle_runtime_action(cfg, state, runtime=None, app_ctx=None):
     payload = pop_runtime_action()
     action = str(payload.get("action", "")).strip()
     if not action:
         return False, ""
+
+    runtime = runtime or school_runtime.resolve_runtime(cfg)
+    app_ctx = app_ctx or school_runtime.build_app_context(cfg, runtime=runtime)
 
     action_started_at = int(time.time())
     save_runtime_status(
@@ -106,63 +143,24 @@ def handle_runtime_action(cfg, state):
         **build_runtime_snapshot(cfg, state),
     )
 
-    action_map = {
-        "switch_hotspot": True,
-        "switch_campus": False,
-    }
-
-    if action == "manual_login":
-        ok, message = orchestrator.run_manual_login(cfg)
-        log("INFO", "action_result", message, action=action, ok=ok)
-        save_runtime_status(
-            message,
-            state,
-            last_action=action,
-            last_action_ts=int(time.time()),
-            action_result="ok" if ok else "error",
-            action_started_at=0,
-            pending_action="",
-            **build_runtime_snapshot(cfg, state),
-        )
-        return True, message
-
-    if action == "manual_logout":
-        ok, message = orchestrator.run_manual_logout(cfg)
-        log("INFO", "action_result", message, action=action, ok=ok)
-        save_runtime_status(
-            message,
-            state,
-            last_action=action,
-            last_action_ts=int(time.time()),
-            action_result="ok" if ok else "error",
-            action_started_at=0,
-            pending_action="",
-            **build_runtime_snapshot(cfg, state),
-        )
-        return True, message
-
-    if action not in action_map:
-        message = "忽略未知动作: %s" % action
-        log("WARN", "action_unknown", message, action=action)
-        save_runtime_status(
-            message,
-            state,
-            last_action=action,
-            last_action_ts=int(time.time()),
-            action_result="ignored",
-            action_started_at=0,
-            **build_runtime_snapshot(cfg, state),
-        )
-        return True, message
-
-    ok, message = run_switch(cfg, expect_hotspot=action_map[action])
+    ok, message = runtime.handle_runtime_action(app_ctx, action, state)
     action_result = "ok" if ok else "error"
-    target_mode = "hotspot" if action_map[action] else "campus"
-    if ok:
-        state["current_mode"] = target_mode
-        if not action_map[action]:
+    if message.startswith("忽略未知动作:"):
+        action_result = "ignored"
+    if action.startswith("switch_") and ok:
+        if action == "switch_hotspot":
+            state["current_mode"] = "hotspot"
+        elif action == "switch_campus":
+            state["current_mode"] = "campus"
             state["last_switch_ts"] = 0
-    log("INFO", "action_result", message, action=action, ok=ok)
+    if action.startswith("manual_"):
+        log("INFO", "action_result", message, action=action, ok=ok)
+    elif action.startswith("switch_"):
+        log("INFO", "action_result", message, action=action, ok=ok)
+    elif ok:
+        log("INFO", "action_result", message, action=action, ok=ok)
+    else:
+        log("WARN", "action_result", message, action=action, ok=ok)
     save_runtime_status(
         message,
         state,
@@ -179,6 +177,7 @@ def handle_runtime_action(cfg, state):
 # ---------------------------------------------------------------------------
 # Daemon tick
 # ---------------------------------------------------------------------------
+
 
 def _daemon_tick_quiet(cfg, state, interval):
     mode_msg = ""
@@ -285,26 +284,45 @@ def _daemon_tick_active(cfg, state, interval):
             next_sleep = online_interval
         else:
             if state["was_online"]:
-                log("WARN", "disconnect_detected", "disconnected, reconnecting immediately")
+                log(
+                    "WARN",
+                    "disconnect_detected",
+                    "disconnected, reconnecting immediately",
+                )
             state["was_online"] = False
             ok, message = orchestrator.run_once_with_retry(cfg)
             state["was_online"] = bool(ok)
             if not ok and status_message:
                 message = "%s；状态检测结果: %s" % (message, status_message)
     except HTTP_EXCEPTIONS as exc:
-        log("WARN", "status_check_error", "network error during status check, reconnecting", error_type="network")
+        log(
+            "WARN",
+            "status_check_error",
+            "network error during status check, reconnecting",
+            error_type="network",
+        )
         state["was_online"] = False
         ok, message = orchestrator.run_once_with_retry(cfg)
         if not ok:
             message = "网络异常: %s；重连结果: %s" % (localize_error(exc), message)
     except ValueError as exc:
-        log("WARN", "status_check_error", "parse error during status check, reconnecting", error_type="parse")
+        log(
+            "WARN",
+            "status_check_error",
+            "parse error during status check, reconnecting",
+            error_type="parse",
+        )
         state["was_online"] = False
         ok, message = orchestrator.run_once_with_retry(cfg)
         if not ok:
             message = "解析异常: %s；重连结果: %s" % (localize_error(exc), message)
     except Exception as exc:
-        log("WARN", "status_check_error", "unexpected error during status check, reconnecting", error_type="unknown")
+        log(
+            "WARN",
+            "status_check_error",
+            "unexpected error during status check, reconnecting",
+            error_type="unknown",
+        )
         state["was_online"] = False
         ok, message = orchestrator.run_once_with_retry(cfg)
         if not ok:
@@ -319,9 +337,22 @@ def _daemon_tick_active(cfg, state, interval):
 # Daemon main loop
 # ---------------------------------------------------------------------------
 
-def run_daemon():
+
+def _run_runtime_daemon_hook(app_ctx, state, interval):
+    return school_runtime.dispatch_daemon_hook(
+        app_ctx["runtime"],
+        "daemon_before_tick",
+        app_ctx,
+        state,
+        interval,
+    )
+
+
+def run_daemon(runtime=None):
     reconcile_manual_login_service_guard()
     state = _make_daemon_state()
+    startup_cfg = load_config()
+    runtime = runtime or school_runtime.resolve_runtime(startup_cfg)
     save_runtime_status(
         "守护进程已启动",
         state,
@@ -332,14 +363,18 @@ def run_daemon():
         action_result="",
         action_started_at=0,
         pending_action="",
-        **build_runtime_snapshot(load_config(), state),
+        **build_runtime_snapshot(startup_cfg, state),
     )
 
     while True:
         cfg = load_config()
         interval = max(int(cfg["interval"]), 5)
+        runtime = school_runtime.resolve_runtime(cfg)
+        app_ctx = school_runtime.build_app_context(cfg, runtime=runtime)
 
-        action_handled, action_message = handle_runtime_action(cfg, state)
+        action_handled, action_message = handle_runtime_action(
+            cfg, state, runtime=runtime, app_ctx=app_ctx
+        )
         if action_handled:
             time.sleep(1)
             continue
@@ -351,6 +386,21 @@ def run_daemon():
                 state,
                 daemon_running=True,
                 enabled=False,
+                **build_runtime_snapshot(cfg, state),
+            )
+            time.sleep(interval)
+            continue
+
+        hook_result = _run_runtime_daemon_hook(app_ctx, state, interval)
+        if hook_result is not None:
+            ok, message = hook_result
+            log("INFO" if ok else "WARN", "daemon_tick", message)
+            save_runtime_status(
+                message,
+                state,
+                daemon_running=True,
+                enabled=cfg.get("enabled", "0"),
+                in_quiet=in_quiet_window(cfg),
                 **build_runtime_snapshot(cfg, state),
             )
             time.sleep(interval)
@@ -376,6 +426,7 @@ def run_daemon():
 # ---------------------------------------------------------------------------
 # CLI: log
 # ---------------------------------------------------------------------------
+
 
 def _tail_log(last_n):
     """Tail the daemon log file. If last_n > 0, show last N lines and exit."""
@@ -421,6 +472,7 @@ def _tail_log(last_n):
 # CLI: status
 # ---------------------------------------------------------------------------
 
+
 def _show_status(cfg):
     """Print full runtime status matching LuCI status endpoint."""
     from config import load_runtime_state, load_json_raw_config
@@ -455,28 +507,89 @@ def _show_status(cfg):
     print("  IP:     %s" % ip)
     print("  SSID:   %s" % ssid)
     print("  连通:   %s" % conn)
-    print("  守护:   %s" % ("运行中" if daemon_running else ("已禁用" if not enabled else "已停止")))
+    print(
+        "  守护:   %s"
+        % ("运行中" if daemon_running else ("已禁用" if not enabled else "已停止"))
+    )
     print("  间隔:   %ss" % interval)
 
     if state.get("last_action"):
         ts = state.get("last_action_ts", 0)
         result = state.get("action_result", "")
         from datetime import datetime, timezone, timedelta
+
         ts_str = ""
         if ts:
             try:
-                ts_str = datetime.fromtimestamp(int(ts), tz=timezone(timedelta(hours=8))).strftime(" (%H:%M:%S)")
+                ts_str = datetime.fromtimestamp(
+                    int(ts), tz=timezone(timedelta(hours=8))
+                ).strftime(" (%H:%M:%S)")
             except (ValueError, TypeError, OSError):
                 pass
         print("\n  最近操作: %s -> %s%s" % (state["last_action"], result, ts_str))
 
     if in_quiet:
-        print("  夜间时段: %s - %s" % (raw.get("quiet_start", "?"), raw.get("quiet_end", "?")))
+        print(
+            "  夜间时段: %s - %s"
+            % (raw.get("quiet_start", "?"), raw.get("quiet_end", "?"))
+        )
+
+
+def _runtime_cli_login(app_ctx):
+    from config import (
+        apply_default_selection_for_runtime,
+        in_quiet_window as runtime_in_quiet_window,
+        quiet_window_label,
+    )
+
+    cfg, _, _ = apply_default_selection_for_runtime(False, "登录前")
+    runtime = school_runtime.resolve_runtime(cfg)
+    app_ctx = school_runtime.build_app_context(cfg, runtime=runtime)
+    if runtime_in_quiet_window(cfg):
+        return (
+            True,
+            0,
+            "夜间停用中（北京时间 %s），不执行登录" % quiet_window_label(cfg),
+        )
+    if not cfg["username"] or not cfg["password"]:
+        return True, 0, "请先配置学工号和密码: srunnet config account add"
+    ok_prep, msg_prep = orchestrator.prepare_campus_for_login(cfg)
+    if not ok_prep:
+        return True, 0, msg_prep
+    ok, message = runtime.login_once(app_ctx)
+    log("INFO", "action_result", "login: " + message, action="login")
+    return True, 0, message
+
+
+def _runtime_cli_logout(app_ctx):
+    cfg = app_ctx["cfg"]
+    ok, message = orchestrator.run_manual_logout(cfg)
+    log("INFO", "action_result", "logout: " + message, action="logout")
+    return True, 0, message
+
+
+def _runtime_cli_relogin(app_ctx):
+    cfg = app_ctx["cfg"]
+    ok, message = orchestrator.run_manual_login(cfg)
+    log("INFO", "action_result", "relogin: " + message, action="relogin")
+    return True, 0, message
+
+
+def _emit_cli_result(result):
+    handled, exit_code, message = result
+    if not handled:
+        return False
+    if message:
+        print(message)
+    if exit_code:
+        raise SystemExit(exit_code)
+    return True
 
 
 # ---------------------------------------------------------------------------
 # CLI: config show
 # ---------------------------------------------------------------------------
+
 
 def _show_config():
     """Print a human-readable configuration summary."""
@@ -497,8 +610,10 @@ def _show_config():
     quiet_on = raw.get("quiet_hours_enabled", "0") == "1"
     print("\n--- Quiet Hours ---")
     if quiet_on:
-        print("  Enabled:      yes (%s - %s)" % (
-            raw.get("quiet_start", "23:00"), raw.get("quiet_end", "06:30")))
+        print(
+            "  Enabled:      yes (%s - %s)"
+            % (raw.get("quiet_start", "23:00"), raw.get("quiet_end", "06:30"))
+        )
         force = raw.get("force_logout_in_quiet", "0") == "1"
         print("  Force logout: %s" % ("yes" if force else "no"))
     else:
@@ -508,19 +623,25 @@ def _show_config():
     failover_on = raw.get("failover_enabled", "0") == "1"
     print("\n--- Advanced ---")
     if backoff_on:
-        print("  Backoff:    on (max_retries=%s, initial=%ss, max=%ss)" % (
-            raw.get("backoff_max_retries", "0"),
-            raw.get("backoff_initial_duration", "10"),
-            raw.get("backoff_max_duration", "300"),
-        ))
+        print(
+            "  Backoff:    on (max_retries=%s, initial=%ss, max=%ss)"
+            % (
+                raw.get("backoff_max_retries", "0"),
+                raw.get("backoff_initial_duration", "10"),
+                raw.get("backoff_max_duration", "300"),
+            )
+        )
     else:
         print("  Backoff:    off")
     if failover_on:
         failback = raw.get("hotspot_failback_enabled", "0") == "1"
-        print("  Failover:   on (failback=%s, timeout=%ss)" % (
-            "on" if failback else "off",
-            raw.get("switch_ready_timeout_seconds", "30"),
-        ))
+        print(
+            "  Failover:   on (failback=%s, timeout=%ss)"
+            % (
+                "on" if failback else "off",
+                raw.get("switch_ready_timeout_seconds", "30"),
+            )
+        )
     else:
         print("  Failover:   off")
     print("  Conn check: %s" % raw.get("connectivity_check_mode", "internet"))
@@ -534,7 +655,10 @@ def _print_account_table(raw):
         print("  (none)")
         return
     # Header
-    print("  %-12s %-20s %-16s %-10s %-6s %-14s" % ("ID", "Label", "User", "Op", "Mode", "SSID"))
+    print(
+        "  %-12s %-20s %-16s %-10s %-6s %-14s"
+        % ("ID", "Label", "User", "Op", "Mode", "SSID")
+    )
     print("  " + "-" * 80)
     for acc in accounts:
         aid = str(acc.get("id", ""))
@@ -549,8 +673,10 @@ def _print_account_table(raw):
         label = acc.get("label", "") or ("%s@%s" % (user_id, op) if op else user_id)
         ssid = acc.get("ssid", "") if mode != "wired" else "-"
         marker = " *" if is_default else ""
-        print("  %-12s %-20s %-16s %-10s %-6s %-14s%s" % (
-            aid, label[:20], user_id[:16], op_display[:10], mode, ssid[:14], marker))
+        print(
+            "  %-12s %-20s %-16s %-10s %-6s %-14s%s"
+            % (aid, label[:20], user_id[:16], op_display[:10], mode, ssid[:14], marker)
+        )
     print("  (* = default)")
 
 
@@ -570,8 +696,7 @@ def _print_hotspot_table(raw):
         ssid = hp.get("ssid", "")
         enc = hp.get("encryption", "none")
         marker = " *" if is_default else ""
-        print("  %-12s %-20s %-20s %-10s%s" % (
-            hid, label[:20], ssid[:20], enc, marker))
+        print("  %-12s %-20s %-20s %-10s%s" % (hid, label[:20], ssid[:20], enc, marker))
     print("  (* = default)")
 
 
@@ -579,8 +704,10 @@ def _print_hotspot_table(raw):
 # CLI: config get / config set
 # ---------------------------------------------------------------------------
 
+
 def _config_get(key):
     from config import GLOBAL_SCALAR_KEYS
+
     raw = load_json_raw_config()
     if key not in GLOBAL_SCALAR_KEYS:
         print("未知配置项: %s" % key)
@@ -640,12 +767,18 @@ def _config_set(pairs, json_file=None):
 # CLI: config account / config hotspot CRUD
 # ---------------------------------------------------------------------------
 
-OPERATOR_LABELS_FALLBACK = {"cmcc": "移动", "ctcc": "电信", "cucc": "联通", "xn": "校内网"}
+OPERATOR_LABELS_FALLBACK = {
+    "cmcc": "移动",
+    "ctcc": "电信",
+    "cucc": "联通",
+    "xn": "校内网",
+}
 
 
 def _get_current_profile():
     try:
         import schools
+
         raw = load_json_raw_config()
         school_key = str(raw.get("school", "jxnu")).strip()
         return schools.get_profile(school_key)
@@ -664,9 +797,15 @@ def _get_operator_choices(profile=None):
         OPERATOR_LABELS_FALLBACK,
         {"xn"},
     )
+
+
 ENC_LABELS = {
-    "none": "Open", "psk": "WPA-PSK", "psk2": "WPA2-PSK",
-    "psk-mixed": "WPA/WPA2", "sae": "WPA3-SAE", "sae-mixed": "WPA2/WPA3",
+    "none": "Open",
+    "psk": "WPA-PSK",
+    "psk2": "WPA2-PSK",
+    "psk-mixed": "WPA/WPA2",
+    "sae": "WPA3-SAE",
+    "sae-mixed": "WPA2/WPA3",
 }
 
 
@@ -682,6 +821,7 @@ def _prompt(label, default="", choices=None, password=False):
     if password:
         try:
             import getpass
+
             value = getpass.getpass(label + suffix)
         except (ImportError, EOFError):
             value = input(label + suffix)
@@ -712,17 +852,22 @@ def _interactive_campus(existing=None):
     if not fields["user_id"]:
         print("学工号不能为空")
         return None
-    fields["operator"] = _prompt("运营商", item.get("operator", op_ids[0]),
-                                  choices=op_ids)
+    fields["operator"] = _prompt(
+        "运营商", item.get("operator", op_ids[0]), choices=op_ids
+    )
 
-    default_suffix_hint = "(无后缀)" if fields["operator"] in no_suffix_ops else fields["operator"]
+    default_suffix_hint = (
+        "(无后缀)" if fields["operator"] in no_suffix_ops else fields["operator"]
+    )
     fields["operator_suffix"] = _prompt(
         "运营商后缀（留空使用默认: %s）" % default_suffix_hint,
-        item.get("operator_suffix", ""))
+        item.get("operator_suffix", ""),
+    )
 
     fields["password"] = _prompt("密码", item.get("password", ""), password=True)
-    fields["access_mode"] = _prompt("接入方式", item.get("access_mode", "wifi"),
-                                     choices=["wifi", "wired"])
+    fields["access_mode"] = _prompt(
+        "接入方式", item.get("access_mode", "wifi"), choices=["wifi", "wired"]
+    )
     fields["base_url"] = _prompt("认证地址", item.get("base_url", "http://172.17.1.2"))
     fields["ac_id"] = _prompt("AC_ID", item.get("ac_id", "1"))
     if fields["access_mode"] != "wired":
@@ -755,8 +900,11 @@ def _interactive_hotspot(existing=None):
     if not fields["ssid"]:
         print("SSID 不能为空")
         return None
-    fields["encryption"] = _prompt("加密方式", item.get("encryption", "psk2"),
-                                    choices=["none", "psk", "psk2", "psk-mixed", "sae", "sae-mixed"])
+    fields["encryption"] = _prompt(
+        "加密方式",
+        item.get("encryption", "psk2"),
+        choices=["none", "psk", "psk2", "psk-mixed", "sae", "sae-mixed"],
+    )
     if fields["encryption"] != "none":
         fields["key"] = _prompt("密码", item.get("key", ""), password=True)
     else:
@@ -918,8 +1066,15 @@ def _config_hotspot(args):
 # CLI entry point (subcommand style)
 # ---------------------------------------------------------------------------
 
+
 def main():
     import argparse
+    import json as _json
+    import schools
+
+    cfg = load_config()
+    runtime = school_runtime.resolve_runtime(cfg)
+    app_ctx = school_runtime.build_app_context(cfg, runtime=runtime)
 
     parser = argparse.ArgumentParser(
         prog="srunnet",
@@ -935,15 +1090,24 @@ def main():
     sub.add_parser("daemon", help="run as daemon (used by init script)")
     sub.add_parser("enable", help="enable the daemon service")
     sub.add_parser("disable", help="disable the daemon service")
-    sub.add_parser("schools", help="list available school profiles (JSON)")
+    p_schools = sub.add_parser("schools", help="list available school profiles (JSON)")
+    schools_sub = p_schools.add_subparsers(dest="schools_command")
+    p_schools_inspect = schools_sub.add_parser("inspect", help="inspect school runtime")
+    p_schools_inspect.add_argument(
+        "--selected",
+        action="store_true",
+        help="show selected runtime metadata (JSON)",
+    )
 
     p_log = sub.add_parser("log", help="tail the daemon log")
-    p_log.add_argument("-n", type=int, default=0,
-                       help="show last N lines then exit (default: follow)")
+    p_log.add_argument(
+        "-n", type=int, default=0, help="show last N lines then exit (default: follow)"
+    )
 
     p_switch = sub.add_parser("switch", help="switch network mode")
-    p_switch.add_argument("target", choices=["hotspot", "campus"],
-                          help="switch to hotspot or campus")
+    p_switch.add_argument(
+        "target", choices=["hotspot", "campus"], help="switch to hotspot or campus"
+    )
 
     # --- config subcommand tree ---
     p_config = sub.add_parser("config", help="view or modify configuration")
@@ -955,10 +1119,12 @@ def main():
     p_get.add_argument("key", help="config key name")
 
     p_set = config_sub.add_parser("set", help="set config values or import JSON")
-    p_set.add_argument("pairs", nargs="*", metavar="KEY=VALUE",
-                       help="scalar config values to set")
-    p_set.add_argument("-f", "--file", metavar="PATH",
-                       help="import config from a JSON file")
+    p_set.add_argument(
+        "pairs", nargs="*", metavar="KEY=VALUE", help="scalar config values to set"
+    )
+    p_set.add_argument(
+        "-f", "--file", metavar="PATH", help="import config from a JSON file"
+    )
 
     # config account
     p_account = config_sub.add_parser("account", help="manage campus accounts")
@@ -982,58 +1148,47 @@ def main():
     p_hp_def = hotspot_sub.add_parser("default", help="set default hotspot profile")
     p_hp_def.add_argument("id", help="hotspot ID")
 
+    for item in school_runtime.get_runtime_cli_commands(runtime):
+        sub.add_parser(item["name"], help=item.get("help") or None)
+
     args = parser.parse_args()
 
     # No command → show status
     if not args.command:
-        cfg = load_config()
-        _show_status(cfg)
+        _emit_cli_result(
+            school_runtime.dispatch_cli_hook(runtime, "cli_status", app_ctx, args)
+        )
         return
 
     # --- dispatch ---
     if args.command == "status":
-        cfg = load_config()
-        _show_status(cfg)
+        _emit_cli_result(
+            school_runtime.dispatch_cli_hook(runtime, "cli_status", app_ctx, args)
+        )
         return
 
     if args.command == "login":
-        from config import (
-            apply_default_selection_for_runtime,
-            in_quiet_window,
-            quiet_window_label,
+        _emit_cli_result(
+            school_runtime.dispatch_cli_hook(runtime, "cli_login", app_ctx, args)
         )
-        cfg, _, _ = apply_default_selection_for_runtime(False, "登录前")
-        if in_quiet_window(cfg):
-            print("夜间停用中（北京时间 %s），不执行登录" % quiet_window_label(cfg))
-            return
-        if not cfg["username"] or not cfg["password"]:
-            print("请先配置学工号和密码: srunnet config account add")
-            return
-        ok_prep, msg_prep = orchestrator.prepare_campus_for_login(cfg)
-        if not ok_prep:
-            print(msg_prep)
-            return
-        ok, message = srun_auth.run_once(cfg)
-        log("INFO", "action_result", "login: " + message, action="login")
-        print(message)
         return
 
     if args.command == "logout":
-        cfg = load_config()
-        ok, message = orchestrator.run_manual_logout(cfg)
-        log("INFO", "action_result", "logout: " + message, action="logout")
-        print(message)
+        _emit_cli_result(
+            school_runtime.dispatch_cli_hook(runtime, "cli_logout", app_ctx, args)
+        )
         return
 
     if args.command == "relogin":
-        cfg = load_config()
-        ok, message = orchestrator.run_manual_login(cfg)
-        log("INFO", "action_result", "relogin: " + message, action="relogin")
-        print(message)
+        _emit_cli_result(
+            school_runtime.dispatch_cli_hook(runtime, "cli_relogin", app_ctx, args)
+        )
         return
 
     if args.command == "daemon":
-        run_daemon()
+        _emit_cli_result(
+            school_runtime.dispatch_cli_hook(runtime, "cli_daemon", app_ctx, args)
+        )
         return
 
     if args.command == "log":
@@ -1049,8 +1204,15 @@ def main():
         return
 
     if args.command == "schools":
-        import json as _json
-        import schools
+        if getattr(args, "schools_command", "") == "inspect" and getattr(
+            args, "selected", False
+        ):
+            print(
+                _json.dumps(
+                    school_runtime.inspect_runtime(cfg), ensure_ascii=False, indent=2
+                )
+            )
+            return
         print(_json.dumps(schools.list_schools(), ensure_ascii=False, indent=2))
         return
 
@@ -1058,8 +1220,12 @@ def main():
         cfg = load_config()
         expect_hotspot = args.target == "hotspot"
         _, message = run_switch(cfg, expect_hotspot=expect_hotspot)
-        log("INFO", "action_result", "switch %s: %s" % (args.target, message),
-            action="switch_%s" % args.target)
+        log(
+            "INFO",
+            "action_result",
+            "switch %s: %s" % (args.target, message),
+            action="switch_%s" % args.target,
+        )
         print(message)
         return
 
@@ -1089,3 +1255,5 @@ def main():
         # Shouldn't reach here
         parser.parse_args(["config", "--help"])
         return
+
+    _emit_cli_result(school_runtime.dispatch_custom_cli(runtime, app_ctx, args))
