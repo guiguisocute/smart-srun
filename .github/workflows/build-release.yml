@@ -90,7 +90,7 @@ jobs:
         working-directory: openwrt
         run: |
           ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          ./scripts/feeds install -p luci -a
 
       - name: Inject package
         run: |
