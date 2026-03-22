@@ -115,7 +115,7 @@ jobs:
       - name: Compile package
         working-directory: openwrt
         run: |
-          make package/luci-app-jxnu-srun/compile -j"$(nproc)"
+          make package/luci-app-jxnu-srun/{clean,compile} -j1 V=s
 
       - name: Collect artifact
         run: |
