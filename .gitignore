@@ -3,9 +3,9 @@ __pycache__/
 .claude/
 .codex/
 .spec-workflow/
+.worktrees/
 docs/
 scripts/
 tests/
 AGENTS.md
 CLAUDE.md
-
