@@ -1,9 +1,11 @@
 import io
+import importlib.util
 import json
 import os
 import sys
 import unittest
 from contextlib import ExitStack, redirect_stdout
+from urllib.error import HTTPError
 from unittest import mock
 
 
@@ -17,6 +19,20 @@ if MODULE_ROOT not in sys.path:
 import daemon
 import school_runtime
 import schools
+
+
+def load_hot_update_module(test_case):
+    script_path = os.path.join(REPO_ROOT, "scripts", "hot_update.py")
+    if not os.path.exists(script_path):
+        test_case.fail("scripts/hot_update.py missing")
+
+    spec = importlib.util.spec_from_file_location("hot_update", script_path)
+    if spec is None or spec.loader is None:
+        test_case.fail("failed to load scripts/hot_update.py")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class FakeRuntime(object):
@@ -171,7 +187,19 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         ):
             daemon.main()
 
-        self.assertEqual(json.loads(stdout.getvalue()), inspect_payload)
+        self.assertEqual(
+            json.loads(stdout.getvalue()),
+            {
+                "short_name": "custom",
+                "runtime_type": "runtime_class",
+                "runtime_api_version": 1,
+                "source_file": "/tmp/custom.py",
+                "declared_capabilities": ["cli", "daemon"],
+                "capabilities": ["cli", "daemon"],
+                "field_descriptors": None,
+                "school_extra": None,
+            },
+        )
 
     def test_reserved_commands_cannot_be_replaced_by_runtime(self):
         self.runtime.extra_commands = [{"name": "status", "help": "bad"}]
@@ -363,6 +391,102 @@ class SchoolRuntimeCliTests(unittest.TestCase):
 
         self.assertTrue(handled)
         self.assertIn("runtime action failed", message)
+
+
+class HotUpdateScriptTests(unittest.TestCase):
+    def test_hot_update_defaults_to_current_router_host(self):
+        hot_update = load_hot_update_module(self)
+
+        self.assertEqual(hot_update.ROUTER_HOST, "10.0.0.1")
+
+    def test_hot_update_uploads_runtime_payload_dependency_closure(self):
+        hot_update = load_hot_update_module(self)
+
+        uploaded = [item["local"] for item in hot_update.UPLOAD_TARGETS]
+        expected_runtime_payload = {
+            "root/usr/bin/srunnet",
+            "root/usr/lib/jxnu_srun/client.py",
+            "root/usr/lib/jxnu_srun/config.py",
+            "root/usr/lib/jxnu_srun/crypto.py",
+            "root/usr/lib/jxnu_srun/network.py",
+            "root/usr/lib/jxnu_srun/wireless.py",
+            "root/usr/lib/jxnu_srun/srun_auth.py",
+            "root/usr/lib/jxnu_srun/orchestrator.py",
+            "root/usr/lib/jxnu_srun/daemon.py",
+            "root/usr/lib/jxnu_srun/snapshot.py",
+            "root/usr/lib/jxnu_srun/school_runtime.py",
+            "root/usr/lib/jxnu_srun/defaults.json",
+            "root/usr/lib/jxnu_srun/schools/__init__.py",
+            "root/usr/lib/jxnu_srun/schools/_base.py",
+            "root/usr/lib/jxnu_srun/schools/jxnu.py",
+        }
+
+        self.assertTrue(
+            expected_runtime_payload.issubset(set(uploaded)),
+            "hot update payload must include runtime dependency closure",
+        )
+
+    def test_hot_update_forces_lf_for_init_script_upload(self):
+        hot_update = load_hot_update_module(self)
+
+        self.assertIn("/etc/init.d/jxnu_srun", hot_update.FORCE_LF_TARGETS)
+        self.assertIn("/usr/bin/srunnet", hot_update.FORCE_LF_TARGETS)
+
+    def test_hot_update_can_read_luci_login_page_from_http_403(self):
+        hot_update = load_hot_update_module(self)
+
+        class FakeOpener(object):
+            def open(self, url, data=None, timeout=10):
+                del url, data, timeout
+                raise HTTPError(
+                    "http://router/cgi-bin/luci/",
+                    403,
+                    "Forbidden",
+                    None,
+                    io.BytesIO(b"<form>login</form>"),
+                )
+
+        status, body, final_url = hot_update.open_url(
+            FakeOpener(),
+            "http://router/cgi-bin/luci/",
+            allow_statuses=(403,),
+        )
+
+        self.assertEqual(status, 403)
+        self.assertEqual(body, "<form>login</form>")
+        self.assertEqual(final_url, "http://router/cgi-bin/luci/")
+
+    def test_hot_update_remote_checks_cover_runtime_loader_smoke_paths(self):
+        hot_update = load_hot_update_module(self)
+
+        commands = hot_update.build_remote_commands()
+        syntax_commands = commands["syntax_checks"]
+        sanity_commands = commands["sanity_checks"]
+        restart_commands = commands["restart"]
+
+        self.assertTrue(
+            any(
+                "/usr/lib/jxnu_srun/school_runtime.py" in command
+                for command in syntax_commands
+            )
+        )
+        self.assertTrue(
+            any(
+                "/usr/lib/jxnu_srun/schools/__init__.py" in command
+                for command in syntax_commands
+            )
+        )
+        self.assertTrue(
+            any(
+                "import school_runtime" in command and "import schools" in command
+                for command in sanity_commands
+            ),
+            "hot update sanity checks must smoke-test runtime loader imports",
+        )
+        self.assertIn("srunnet schools", sanity_commands)
+        self.assertIn("srunnet schools inspect --selected", sanity_commands)
+        self.assertIn("/etc/init.d/jxnu_srun restart", restart_commands)
+        self.assertIn("/etc/init.d/uwsgi restart", restart_commands)
 
 
 if __name__ == "__main__":
