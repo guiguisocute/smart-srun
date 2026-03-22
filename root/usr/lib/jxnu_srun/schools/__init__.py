@@ -53,6 +53,7 @@ def list_schools():
             "description": p.DESCRIPTION,
             "contributors": list(p.CONTRIBUTORS),
             "operators": list(p.OPERATORS),
+            "no_suffix_operators": list(p.NO_SUFFIX_OPERATORS),
         }
         for p in sorted(_PROFILES.values(), key=lambda p: p.SHORT_NAME)
     ]

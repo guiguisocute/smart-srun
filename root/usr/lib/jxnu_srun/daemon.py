@@ -361,6 +361,7 @@ def run_daemon():
         else:
             message, sleep = _daemon_tick_active(cfg, state, interval)
 
+        log("INFO", "daemon_tick", message)
         save_runtime_status(
             message,
             state,
@@ -533,19 +534,23 @@ def _print_account_table(raw):
         print("  (none)")
         return
     # Header
-    print("  %-12s %-20s %-16s %-6s %-6s %-14s" % ("ID", "Label", "User", "Op", "Mode", "SSID"))
-    print("  " + "-" * 76)
+    print("  %-12s %-20s %-16s %-10s %-6s %-14s" % ("ID", "Label", "User", "Op", "Mode", "SSID"))
+    print("  " + "-" * 80)
     for acc in accounts:
         aid = str(acc.get("id", ""))
         is_default = aid == default_campus
         user_id = acc.get("user_id", "")
         op = acc.get("operator", "")
+        suffix = str(acc.get("operator_suffix", "")).strip()
+        op_display = op
+        if suffix and suffix != op:
+            op_display = "%s(%s)" % (op, suffix)
         mode = "wired" if acc.get("access_mode") == "wired" else "wifi"
         label = acc.get("label", "") or ("%s@%s" % (user_id, op) if op else user_id)
         ssid = acc.get("ssid", "") if mode != "wired" else "-"
         marker = " *" if is_default else ""
-        print("  %-12s %-20s %-16s %-6s %-6s %-14s%s" % (
-            aid, label[:20], user_id[:16], op, mode, ssid[:14], marker))
+        print("  %-12s %-20s %-16s %-10s %-6s %-14s%s" % (
+            aid, label[:20], user_id[:16], op_display[:10], mode, ssid[:14], marker))
     print("  (* = default)")
 
 
@@ -635,7 +640,30 @@ def _config_set(pairs, json_file=None):
 # CLI: config account / config hotspot CRUD
 # ---------------------------------------------------------------------------
 
-OPERATOR_LABELS = {"cmcc": "移动", "ctcc": "电信", "cucc": "联通", "xn": "校内网"}
+OPERATOR_LABELS_FALLBACK = {"cmcc": "移动", "ctcc": "电信", "cucc": "联通", "xn": "校内网"}
+
+
+def _get_current_profile():
+    try:
+        import schools
+        raw = load_json_raw_config()
+        school_key = str(raw.get("school", "jxnu")).strip()
+        return schools.get_profile(school_key)
+    except Exception:
+        return None
+
+
+def _get_operator_choices(profile=None):
+    if profile and profile.OPERATORS:
+        ids = [o["id"] for o in profile.OPERATORS]
+        labels = {o["id"]: o["label"] for o in profile.OPERATORS}
+        no_suffix = set(profile.NO_SUFFIX_OPERATORS)
+        return ids, labels, no_suffix
+    return (
+        ["cmcc", "ctcc", "cucc", "xn"],
+        OPERATOR_LABELS_FALLBACK,
+        {"xn"},
+    )
 ENC_LABELS = {
     "none": "Open", "psk": "WPA-PSK", "psk2": "WPA2-PSK",
     "psk-mixed": "WPA/WPA2", "sae": "WPA3-SAE", "sae-mixed": "WPA2/WPA3",
@@ -676,13 +704,22 @@ def _interactive_campus(existing=None):
     """Interactive prompts for campus account fields. Returns dict."""
     item = existing or {}
     fields = {}
+    profile = _get_current_profile()
+    op_ids, op_labels, no_suffix_ops = _get_operator_choices(profile)
+
     fields["label"] = _prompt("标签（选填）", item.get("label", ""))
     fields["user_id"] = _prompt("学工号", item.get("user_id", ""))
     if not fields["user_id"]:
         print("学工号不能为空")
         return None
-    fields["operator"] = _prompt("运营商", item.get("operator", "cucc"),
-                                  choices=["cmcc", "ctcc", "cucc", "xn"])
+    fields["operator"] = _prompt("运营商", item.get("operator", op_ids[0]),
+                                  choices=op_ids)
+
+    default_suffix_hint = "(无后缀)" if fields["operator"] in no_suffix_ops else fields["operator"]
+    fields["operator_suffix"] = _prompt(
+        "运营商后缀（留空使用默认: %s）" % default_suffix_hint,
+        item.get("operator_suffix", ""))
+
     fields["password"] = _prompt("密码", item.get("password", ""), password=True)
     fields["access_mode"] = _prompt("接入方式", item.get("access_mode", "wifi"),
                                      choices=["wifi", "wired"])
@@ -698,8 +735,12 @@ def _interactive_campus(existing=None):
         fields["radio"] = item.get("radio", "")
 
     if not fields["label"]:
-        if fields["operator"] != "xn" and fields["operator"]:
-            fields["label"] = "%s@%s" % (fields["user_id"], fields["operator"])
+        suffix = fields.get("operator_suffix", "")
+        op = fields["operator"]
+        if suffix:
+            fields["label"] = "%s@%s" % (fields["user_id"], suffix)
+        elif op and op not in no_suffix_ops:
+            fields["label"] = "%s@%s" % (fields["user_id"], op)
         else:
             fields["label"] = fields["user_id"]
     return fields

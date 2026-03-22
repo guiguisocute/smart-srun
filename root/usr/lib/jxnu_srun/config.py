@@ -436,7 +436,10 @@ def _make_campus_label(account):
     if label:
         return label
     user_id = str(account.get("user_id", "")).strip()
+    suffix = str(account.get("operator_suffix", "")).strip()
     operator = str(account.get("operator", "")).strip()
+    if suffix and user_id:
+        return "%s@%s" % (user_id, suffix)
     if user_id and operator and operator != "xn":
         return "%s@%s" % (user_id, operator)
     return user_id or "未命名账号"
@@ -541,6 +544,7 @@ def _migrate_legacy_config(raw):
         "user_id": user_id,
         "password": str(raw.get("password", "")).strip(),
         "operator": str(raw.get("operator", "cucc")).strip().lower(),
+        "operator_suffix": "",
         "ssid": str(raw.get("campus_ssid", "jxnu_stu")).strip(),
         "bssid": str(raw.get("campus_bssid", "")).strip(),
         "radio": str(raw.get("campus_radio", "")).strip(),
@@ -617,6 +621,18 @@ def get_active_hotspot_profile(cfg):
     return profiles[0]
 
 
+def _get_no_suffix_operators(cfg):
+    try:
+        import schools
+        school_key = str(cfg.get("school", "jxnu")).strip()
+        profile = schools.get_profile(school_key)
+        if profile:
+            return set(profile.NO_SUFFIX_OPERATORS)
+    except Exception:
+        pass
+    return {"xn"}
+
+
 def resolve_active_items(cfg):
 
     campus = get_active_campus_account(cfg)
@@ -641,6 +657,7 @@ def resolve_active_items(cfg):
         str(campus.get("encryption", "none")).strip() or "none"
     )
     cfg["campus_key"] = ""
+    cfg["operator_suffix"] = str(campus.get("operator_suffix", "")).strip()
     cfg["campus_account_label"] = _make_campus_label(campus)
 
     cfg["hotspot_ssid"] = str(hotspot.get("ssid", "")).strip()
@@ -653,10 +670,14 @@ def resolve_active_items(cfg):
 
     cfg["username"] = ""
     if cfg["user_id"]:
-        if cfg["operator"] == "xn":
-            cfg["username"] = cfg["user_id"]
+        if cfg["operator_suffix"]:
+            cfg["username"] = cfg["user_id"] + "@" + cfg["operator_suffix"]
         else:
-            cfg["username"] = cfg["user_id"] + "@" + cfg["operator"]
+            no_suffix_ops = _get_no_suffix_operators(cfg)
+            if cfg["operator"] in no_suffix_ops:
+                cfg["username"] = cfg["user_id"]
+            else:
+                cfg["username"] = cfg["user_id"] + "@" + cfg["operator"]
     return cfg
 
 

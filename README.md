@@ -17,11 +17,11 @@ OpenWrt 深澜校园网（SRun 4000）自动认证客户端，提供 CLI / LuCI 
 - 多校园网账号、多热点配置管理，一键登录登出切换
 - 可配置夜间时段自动切换到热点，恢复后自动切回校园网（适应宿舍定时断网环境）
 - 结构化运行日志落盘（`/var/log/jxnu_srun.log`）
-- 完整 CLI（`srunnet`）：状态查询、登录登出、配置管理、账号 / 热点 CRUD，功能对齐 LuCI
+- 完整 CLI支持（`srunnet`）：状态查询、登录登出、配置管理、账号 / 热点 CRUD，功能对齐 LuCI
 - 支持多学校配置文件，可扩展适配其他深澜校园网环境
 
 ### 未来功能
-- 适配 UA3F
+- 适配 UA3F应对多设备检查
 - 支持多号多拨负载均衡网络叠加
 - 适配更多高校的深澜校园网环境
 - 更多账号功能，如账号分组、规则管理
@@ -29,40 +29,63 @@ OpenWrt 深澜校园网（SRun 4000）自动认证客户端，提供 CLI / LuCI 
 
 ## 安装包说明
 
-仓库构建产出两个 ipk 包：
+仓库构建产出三个 ipk 包：
 
 | 包名 | 说明 | 依赖 |
 |------|------|------|
 | `jxnu-srun` | 基础包：守护进程 + CLI | `python3-light` |
-| `luci-app-jxnu-srun` | LuCI Web 界面（自动依赖 `jxnu-srun`） | `jxnu-srun`、`luci-base` |
+| `luci-app-jxnu-srun` | 标准 LuCI Web 界面包（用于 opkg / LuCI 软件包管理升级） | `jxnu-srun`、LuCI 运行环境 |
+| `luci-app-jxnu-srun-bundle` | 自包含安装包：CLI + LuCI 一起打包，适合手动下载安装 | `python3-light`、LuCI 运行环境 |
 
 - 只需要 CLI：安装 `jxnu-srun` 即可
-- 需要 Web 管理界面：安装 `luci-app-jxnu-srun`（会自动拉取基础包）
+- 通过 LuCI / opkg 正常升级：安装 `jxnu-srun` + `luci-app-jxnu-srun`
+- 手动下载安装、想少折腾：直接安装 `luci-app-jxnu-srun-bundle`
 
 ## 安装与使用
 
 ### 安装
+**以下操作请在路由器连上互联网的情况进行！**
 
 1. 下载最新 ipk 包：[Releases](https://github.com/matthewlu070111/luci-app-jxnu-srun/releases)
-2. 上传到路由器并安装：
+2. 安装：
+   #### 使用 LuCI 网页面板安装：
+   1. 登录 LuCI 界面，进入 **系统**——**软件包** 页面。
+   2. 点击 **更新列表** 按钮，等待`opkg update`完成。
+   3. 点击 **上传软件包...** 按钮，选择自己下载的 ipk 包。
+    - 如果需要LuCI Web界面，请**先**安装 `jxnu-srun`的ipk， **再**安装 `luci-app-jxnu-srun` 的ipk。
+    - 如果你想直接安装一个包完成部署，直接上传 `luci-app-jxnu-srun-bundle` 的ipk。（推荐）
+   4. 点击 **安装** 按钮，等待安装完成。
+   5. 出现安装成功的弹窗后，退出 LuCI 界面，重新登录，使新软件包生效。
+   
+   #### 使用命令行界面安装：
+   6. 将ipk文件上传到OpenWrt设备，并切换到设备目录，执行：
    ```sh
-   # 仅 CLI
-   opkg install jxnu-srun_*.ipk
+    # 仅 CLI
+    opkg install jxnu-srun_*.ipk
+    ```
+    ```sh
+    # 标准 split 安装
+    opkg install jxnu-srun_*.ipk
+    opkg install luci-app-jxnu-srun_*.ipk
+    ``` 
+    ```sh
+    # bundle版本单ipk文件安装
+    opkg install luci-app-jxnu-srun-bundle_*.ipk
+    ```
+   7. 启用服务：
+   ```sh
+    /etc/init.d/jxnu_srun enable
+    /etc/init.d/jxnu_srun restart
+    ```
 
-   # 含 LuCI 界面
-   opkg install luci-app-jxnu-srun_*.ipk
-   ```
-3. 启用服务：
-   ```sh
-   /etc/init.d/jxnu_srun enable
-   /etc/init.d/jxnu_srun restart
-   ```
+安装建议：
+- **不要把 `luci-app-jxnu-srun-bundle` 和标准 split 包混装**
 
 ### LuCI 使用
 
 在 LuCI 页面进入 **服务 → JXNU Srun**，在「基础设置」标签页中：
 
-- **登录配置**：选择学校（支持多校区）
+- **登录配置**：选择学校
 - **校园网账号**：添加学工号、密码、运营商，支持多账号管理
 - **热点配置**：配置个人热点 SSID 和密码，供夜间自动切换使用
 - **手动登录 / 登出**：随时触发，带进度反馈弹窗
@@ -130,20 +153,7 @@ srunnet config hotspot edit hotspot-1
 srunnet config hotspot rm hotspot-2
 srunnet config hotspot default hotspot-1
 ```
-
-## GitHub Actions 一键编译
-
-仓库内置两个工作流：
-
-| 工作流 | 用途 |
-|--------|------|
-| `pre-release build` | 开发预览构建，可选发布 pre-release |
-| `Version Release Build` | 正式版本构建 + 发布 |
-
-在 GitHub 页面进入 **Actions**，选择对应工作流，点击 **Run workflow** 即可构建。产物包含 `jxnu-srun` 和 `luci-app-jxnu-srun` 两个 ipk。
-
-
-
+****
 ## 开发者指南
 ### 项目结构
 
@@ -191,6 +201,28 @@ class Profile(SchoolProfile):
     )
     NO_SUFFIX_OPERATORS = ()
 ```
+
+### GitHub Actions 一键编译
+
+仓库内置两个工作流：
+
+| 工作流                  | 用途                               |
+| ----------------------- | ---------------------------------- |
+| `pre-release build`     | 开发预览构建，可选发布 pre-release |
+| `Version Release Build` | 正式版本构建 + 发布                |
+
+在 GitHub 页面进入 **Actions**，选择对应工作流，点击 **Run workflow** 即可构建。
+
+构建产物包含：
+
+- `jxnu-srun_*.ipk`
+- `luci-app-jxnu-srun_*.ipk`
+- `luci-app-jxnu-srun-bundle_*.ipk`
+
+其中：
+
+- `jxnu-srun` + `luci-app-jxnu-srun` 是标准 split 包，适合通过 LuCI / opkg 管理和升级
+- `luci-app-jxnu-srun-bundle` 是单文件手动安装包，适合没有下载源、一键安装的场景
 
 放入后重启服务即可在 LuCI 中选择。欢迎提交 PR 分享你的学校配置！
 

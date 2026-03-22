@@ -306,7 +306,8 @@ function action_enqueue()
         local id = fv("id")
         local item = {
             label = fv("label"), user_id = fv("user_id"),
-            operator = fv("operator"), password = fv("password"),
+            operator = fv("operator"), operator_suffix = fv("operator_suffix"),
+            password = fv("password"),
             access_mode = fv("access_mode"),
             base_url = fv("base_url"), ac_id = fv("ac_id"),
             ssid = fv("ssid"), bssid = fv("bssid"), radio = fv("radio"),
@@ -320,8 +321,11 @@ function action_enqueue()
             item.radio = ""
         end
         if item.label == "" then
+            local suffix = item.operator_suffix or ""
             local op = item.operator or ""
-            if item.user_id ~= "" and op ~= "" and op ~= "xn" then
+            if suffix ~= "" and item.user_id ~= "" then
+                item.label = item.user_id .. "@" .. suffix
+            elseif item.user_id ~= "" and op ~= "" and op ~= "xn" then
                 item.label = item.user_id .. "@" .. op
             elseif item.user_id ~= "" then
                 item.label = item.user_id

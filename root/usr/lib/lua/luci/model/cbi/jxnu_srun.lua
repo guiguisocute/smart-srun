@@ -81,7 +81,7 @@ local function migrate_legacy_config(parsed)
         base_url = tostring(parsed.base_url or "http://172.17.1.2"):match("^%s*(.-)%s*$"),
         ac_id = tostring(parsed.ac_id or "1"):match("^%s*(.-)%s*$"),
         user_id = uid, password = tostring(parsed.password or ""):match("^%s*(.-)%s*$"),
-        operator = op,
+        operator = op, operator_suffix = "",
         ssid = tostring(parsed.campus_ssid or "jxnu_stu"):match("^%s*(.-)%s*$"),
         bssid = tostring(parsed.campus_bssid or ""):match("^%s*(.-)%s*$"),
     }
@@ -1014,6 +1014,7 @@ function tables_html.cfgvalue()
                 .. '<td class="td">' .. util.pcdata(tostring(a.ac_id or "1")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.user_id or "")) .. '</td>'
                 .. '<td class="td">' .. (operator_labels[tostring(a.operator or "")] or tostring(a.operator or "")) .. '</td>'
+                .. '<td class="td">' .. util.pcdata(tostring(a.operator_suffix or "")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(ssid_display) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.bssid or "")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(radio_labels[tostring(a.radio or "")] or tostring(a.radio or "自动")) .. '</td>'
@@ -1024,7 +1025,7 @@ function tables_html.cfgvalue()
         end
     end
     if campus_rows == "" then
-        campus_rows = '<tr class="tr"><td class="td" colspan="10" style="text-align:center;color:#999;">暂无账号，请点击"新增"添加</td></tr>'
+        campus_rows = '<tr class="tr"><td class="td" colspan="11" style="text-align:center;color:#999;">暂无账号，请点击"新增"添加</td></tr>'
     end
 
     -- 构建热点配置表格行
@@ -1090,7 +1091,7 @@ function tables_html.cfgvalue()
 <div class="cbi-section cbi-tblsection jxnu-native-box">
   <h3>校园网账号</h3>
   <table class="table cbi-section-table">
-    <tr class="tr table-titles"><th class="th" style="width:80px;">状态</th><th class="th">标签</th><th class="th">认证地址</th><th class="th">ACID</th><th class="th">学工号</th><th class="th">运营商</th><th class="th">SSID</th><th class="th">BSSID</th><th class="th">频段</th><th class="th cbi-section-actions" style="width:120px;">操作</th></tr>
+    <tr class="tr table-titles"><th class="th" style="width:80px;">状态</th><th class="th">标签</th><th class="th">认证地址</th><th class="th">ACID</th><th class="th">学工号</th><th class="th">运营商</th><th class="th">后缀</th><th class="th">SSID</th><th class="th">BSSID</th><th class="th">频段</th><th class="th cbi-section-actions" style="width:120px;">操作</th></tr>
     <tbody>]] .. campus_rows .. [[</tbody>
   </table>
   <div class="jxnu-box-actions">
@@ -1233,10 +1234,36 @@ window.jxnuEditCampus = function(id) {
   modalType = 'campus';
   modalEditId = id;
   var item = id ? findById(campusData, id) : {};
+
+  // 动态构建运营商选项
+  var schoolDataEl = document.getElementById('jxnu-school-data');
+  var allSchools = [];
+  try { allSchools = JSON.parse(schoolDataEl ? (schoolDataEl.value || schoolDataEl.textContent || '[]') : '[]'); } catch(e) {}
+  var curSchoolSel = document.getElementById('widget.cbid.jxnu_srun.main.school')
+    || document.getElementById('cbid.jxnu_srun.main.school')
+    || document.querySelector('select[name="cbid.jxnu_srun.main.school"]');
+  var curSchool = curSchoolSel ? curSchoolSel.value : 'jxnu';
+  var schoolObj = null;
+  for (var si = 0; si < allSchools.length; si++) {
+    if (allSchools[si].short_name === curSchool) { schoolObj = allSchools[si]; break; }
+  }
+  var ops = (schoolObj && schoolObj.operators && schoolObj.operators.length) ? schoolObj.operators : [
+    {id:'cmcc', label:'中国移动'}, {id:'ctcc', label:'中国电信'},
+    {id:'cucc', label:'中国联通'}, {id:'xn', label:'校内网'}
+  ];
+  var noSuffixOps = (schoolObj && schoolObj.no_suffix_operators) ? schoolObj.no_suffix_operators : ['xn'];
+  var opOptions = '';
+  for (var oi = 0; oi < ops.length; oi++) {
+    var sel = (ops[oi].id === (item.operator || ops[0].id)) ? ' selected' : '';
+    var badge = ops[oi].verified ? ' [已验证]' : '';
+    opOptions += '<option value="' + ops[oi].id + '"' + sel + '>' + ops[oi].label + badge + '</option>';
+  }
+
   var bodyHtml =
     '<div class="jxnu-native-row"><label>标签（选填）</label><input id="jm-label" value="' + (item.label || '') + '"></div>' +
     '<div class="jxnu-native-row"><label>学工号</label><input id="jm-user_id" value="' + (item.user_id || '') + '"></div>' +
-    '<div class="jxnu-native-row"><label>运营商</label><select id="jm-operator"><option value="cmcc"' + (item.operator==='cmcc'?' selected':'') + '>中国移动</option><option value="ctcc"' + (item.operator==='ctcc'?' selected':'') + '>中国电信</option><option value="cucc"' + (item.operator==='cucc'?' selected':'') + '>中国联通</option><option value="xn"' + (item.operator==='xn'?' selected':'') + '>校内网</option></select></div>' +
+    '<div class="jxnu-native-row"><label>运营商</label><select id="jm-operator">' + opOptions + '</select></div>' +
+    '<div class="jxnu-native-row"><label>运营商后缀（选填）</label><input id="jm-operator_suffix" value="' + (item.operator_suffix || '') + '" placeholder=""></div>' +
     '<div class="jxnu-native-row"><label>接入方式</label><select id="jm-access_mode"><option value="wifi"' + (((item.access_mode || 'wifi')==='wifi')?' selected':'') + '>无线</option><option value="wired"' + ((item.access_mode==='wired')?' selected':'') + '>有线（WAN）</option></select></div>' +
     '<div class="jxnu-native-row"><label>密码</label><div id="jm-password-field"></div></div>' +
     '<div class="jxnu-native-row"><label>认证地址</label><input id="jm-base_url" value="' + (item.base_url || 'http://172.17.1.2') + '"></div>' +
@@ -1244,13 +1271,30 @@ window.jxnuEditCampus = function(id) {
     '<div class="jxnu-native-row" id="jm-ssid-row"><label>校园网 SSID</label><input id="jm-ssid" value="' + (item.ssid || 'jxnu_stu') + '"></div>' +
     '<div class="jxnu-native-row" id="jm-bssid-row"><label>BSSID（留空则不锁定）</label><input id="jm-bssid" value="' + (item.bssid || '') + '"></div>' +
     '<div class="jxnu-native-row" id="jm-radio-row"><label>频段</label><select id="jm-radio">]] .. radio_options .. [[</select></div>';
+
+  // 后缀 placeholder 联动函数
+  var _noSuffixOps = noSuffixOps;
+  function updateSuffixPlaceholder() {
+    var opSel = document.getElementById('jm-operator');
+    var sfx = document.getElementById('jm-operator_suffix');
+    if (!opSel || !sfx) return;
+    var opId = opSel.value;
+    var isNoSuffix = false;
+    for (var k = 0; k < _noSuffixOps.length; k++) {
+      if (_noSuffixOps[k] === opId) { isNoSuffix = true; break; }
+    }
+    sfx.placeholder = isNoSuffix ? '(无后缀)' : ('留空则使用 "' + opId + '"');
+  }
+
   showNativeModal(
     id ? '编辑校园网账号' : '新增校园网账号',
     bodyHtml,
     function() {
       document.getElementById('jm-radio').value = item.radio || '';
       document.getElementById('jm-access_mode').addEventListener('change', updateCampusAccessModeUI);
+      document.getElementById('jm-operator').addEventListener('change', updateSuffixPlaceholder);
       updateCampusAccessModeUI();
+      updateSuffixPlaceholder();
       renderPasswordField('jm-password-field', 'jm-password', item.password || '');
     },
     function() { jxnuModalSave(); }
@@ -1288,6 +1332,7 @@ window.jxnuModalSave = function() {
     fd.append('label', document.getElementById('jm-label').value);
     fd.append('user_id', document.getElementById('jm-user_id').value);
     fd.append('operator', document.getElementById('jm-operator').value);
+    fd.append('operator_suffix', document.getElementById('jm-operator_suffix').value);
     fd.append('access_mode', document.getElementById('jm-access_mode').value);
     fd.append('password', getFieldValue('jm-password'));
     fd.append('base_url', document.getElementById('jm-base_url').value);
