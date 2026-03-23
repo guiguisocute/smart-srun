@@ -17,7 +17,7 @@ local GLOBAL_SCALAR_KEYS = {
     "connectivity_check_mode",
     "backoff_exponent_factor", "backoff_inter_const_factor",
     "backoff_outer_const_factor", "interval", "developer_mode",
-    "sta_iface", "n", "type", "enc",
+    "sta_iface", "n", "type", "enc", "school",
 }
 -- 指针字段名
 local POINTER_KEYS = {
@@ -26,6 +26,14 @@ local POINTER_KEYS = {
 }
 -- 列表字段名
 local LIST_KEYS = { "campus_accounts", "hotspot_profiles" }
+local SUPPORTED_SCHOOL_EXTRA_TYPES = {
+    string = true,
+    bool = true,
+    int = true,
+    enum = true,
+}
+local cfg
+local changed = false
 -- 标量默认值
 local SCALAR_DEFAULTS = {
     enabled = "0", quiet_hours_enabled = "1",
@@ -43,6 +51,7 @@ local SCALAR_DEFAULTS = {
     backoff_outer_const_factor = "0", interval = "60",
     developer_mode = "0", sta_iface = "",
     n = "200", ["type"] = "1", enc = "srun_bx1",
+    school = "jxnu",
 }
 -- 旧版字段（用于迁移检测）
 local LEGACY_CAMPUS_KEYS = {
@@ -80,7 +89,7 @@ local function migrate_legacy_config(parsed)
         base_url = tostring(parsed.base_url or "http://172.17.1.2"):match("^%s*(.-)%s*$"),
         ac_id = tostring(parsed.ac_id or "1"):match("^%s*(.-)%s*$"),
         user_id = uid, password = tostring(parsed.password or ""):match("^%s*(.-)%s*$"),
-        operator = op,
+        operator = op, operator_suffix = "",
         ssid = tostring(parsed.campus_ssid or "jxnu_stu"):match("^%s*(.-)%s*$"),
         bssid = tostring(parsed.campus_bssid or ""):match("^%s*(.-)%s*$"),
     }
@@ -134,6 +143,7 @@ local function load_cfg()
     for _, key in ipairs(LIST_KEYS) do
         cfg[key] = type(parsed[key]) == "table" and parsed[key] or {}
     end
+    cfg.school_extra = type(parsed.school_extra) == "table" and parsed.school_extra or {}
     return cfg
 end
 
@@ -148,6 +158,7 @@ local function save_cfg(cfg)
     for _, key in ipairs(LIST_KEYS) do
         out[key] = type(cfg[key]) == "table" and cfg[key] or {}
     end
+    out.school_extra = type(cfg.school_extra) == "table" and cfg.school_extra or {}
     ensure_json_file()
     fs.writefile(CONFIG_FILE, (jsonc.stringify(out) or "{}") .. "\n")
 end
@@ -194,17 +205,6 @@ local function run_client(args, stderr_to_stdout)
     end
 
     return util.trim(sys.exec(cmd) or ""), nil
-end
-
-local function last_nonempty_line(text)
-    local last = ""
-    for line in tostring(text or ""):gmatch("[^\n]+") do
-        local v = util.trim(line)
-        if v ~= "" then
-            last = v
-        end
-    end
-    return last
 end
 
 local function validate_hhmm(v)
@@ -271,8 +271,354 @@ end
 
 local RADIO_CHOICES = load_radio_choices()
 
-local cfg = load_cfg()
-local changed = false
+local function is_github_username(value)
+    local username = tostring(value or "")
+    if #username < 2 or #username > 39 then
+        return false
+    end
+    if username:find("%-%-", 1, true) then
+        return false
+    end
+    return username:match("^@[A-Za-z0-9][A-Za-z0-9%-]*[A-Za-z0-9]$") ~= nil
+        or username:match("^@[A-Za-z0-9]$") ~= nil
+end
+
+local function render_school_info_html(schools, current_school)
+    local cur_desc = ""
+    local cur_contributors = {}
+    local helper_prefix = "如果该配置无法在您的学校使用，请直接前往"
+    local helper_suffix = "提交 Issue 或 PR"
+    local helper_link = "https://github.com/matthewlu070111/luci-app-jxnu-srun"
+
+    for _, sch in ipairs(schools or {}) do
+        if sch.short_name == current_school then
+            cur_desc = tostring(sch.description or "")
+            if type(sch.contributors) == "table" then
+                cur_contributors = sch.contributors
+            end
+            break
+        end
+    end
+
+    local show_desc = cur_desc ~= ""
+    local show_contrib = #cur_contributors > 0
+    local contrib_spacing = "4px"
+    local helper_spacing = "4px"
+    local cur_contrib_html = {}
+    local js_data = jsonc.stringify(schools or {}) or "[]"
+
+    for _, contributor in ipairs(cur_contributors) do
+        local text = tostring(contributor or "")
+        if is_github_username(text) then
+            cur_contrib_html[#cur_contrib_html + 1] = string.format(
+                '<a href="https://github.com/%s" target="_blank" rel="noopener noreferrer">%s</a>',
+                util.pcdata(text:sub(2)),
+                util.pcdata(text)
+            )
+        else
+            cur_contrib_html[#cur_contrib_html + 1] = string.format('<span>%s</span>', util.pcdata(text))
+        end
+    end
+
+    return string.format([[
+<div id="jxnu-school-info" class="cbi-value-description" style="color:#14532d;opacity:0.9;display:block;line-height:1.6;">
+  <div id="jxnu-school-desc" style="display:%s;">
+    <strong>该配置在以下学校已得到验证：</strong> <span id="jxnu-school-desc-text">%s</span>
+  </div>
+  <div id="jxnu-school-contrib" style="display:%s;margin-top:%s;">
+    <strong>贡献者:</strong> <span id="jxnu-school-contrib-text">%s</span>
+  </div>
+  <div id="jxnu-school-helper" style="display:block;margin-top:%s;color:#6b7280;font-size:0.92em;">
+    %s<a id="jxnu-school-repo-link" href="%s" target="_blank" rel="noopener noreferrer">插件仓库</a>%s
+  </div>
+  <textarea id="jxnu-school-data" style="display:none;">%s</textarea>
+</div>
+<script type="text/javascript">
+(function() {
+  if (window.__jxnuSchoolInfoInit) return;
+  window.__jxnuSchoolInfoInit = true;
+  var schoolDataEl = document.getElementById('jxnu-school-data');
+  var schools = [];
+  var infoBox = document.getElementById('jxnu-school-info');
+  var descEl = document.getElementById('jxnu-school-desc');
+  var descTextEl = document.getElementById('jxnu-school-desc-text');
+  var contribEl = document.getElementById('jxnu-school-contrib');
+  var contribTextEl = document.getElementById('jxnu-school-contrib-text');
+  var helperEl = document.getElementById('jxnu-school-helper');
+  var outerDescEl = null;
+  if (!infoBox || !descEl || !descTextEl || !contribEl || !contribTextEl || !helperEl) return;
+
+  for (var parent = infoBox.parentNode; parent; parent = parent.parentNode) {
+    if (parent.className && String(parent.className).indexOf('cbi-value-description') >= 0) {
+      outerDescEl = parent;
+      break;
+    }
+  }
+
+  if (schoolDataEl) {
+    try {
+      schools = JSON.parse(schoolDataEl.value || schoolDataEl.textContent || '[]');
+    } catch (e) {
+      schools = [];
+    }
+  }
+
+  function lookup(sn) {
+    for (var i = 0; i < schools.length; i++) {
+      if (schools[i].short_name === sn) return schools[i];
+    }
+    return null;
+  }
+
+  function isGithubUsername(value) {
+    return /^@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37})$/.test(value || '')
+      && !/--/.test(value || '')
+      && !/-$/.test(value || '');
+  }
+
+  function clearNode(node) {
+    while (node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  function renderContributors(contributors) {
+    clearNode(contribTextEl);
+    for (var i = 0; i < contributors.length; i++) {
+      var text = String(contributors[i] == null ? '' : contributors[i]);
+      if (i > 0) contribTextEl.appendChild(document.createTextNode(', '));
+      if (isGithubUsername(text)) {
+        var link = document.createElement('a');
+        link.href = 'https://github.com/' + text.substring(1);
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = text;
+        contribTextEl.appendChild(link);
+      } else {
+        var span = document.createElement('span');
+        span.textContent = text;
+        contribTextEl.appendChild(span);
+      }
+    }
+  }
+
+  function sync(desc, contributors) {
+    var hasDesc = !!desc;
+    var hasContrib = contributors && contributors.length;
+    var hasHelper = true;
+    infoBox.style.display = (hasDesc || hasContrib || hasHelper) ? 'block' : 'none';
+    if (outerDescEl) outerDescEl.style.display = (hasDesc || hasContrib || hasHelper) ? 'block' : 'none';
+    descEl.style.display = hasDesc ? 'block' : 'none';
+    contribEl.style.display = hasContrib ? 'block' : 'none';
+    helperEl.style.display = hasHelper ? 'block' : 'none';
+    contribEl.style.marginTop = hasDesc ? '%s' : '0';
+    helperEl.style.marginTop = (hasDesc || hasContrib) ? '%s' : '0';
+    descTextEl.textContent = desc || '';
+    renderContributors(hasContrib ? contributors : []);
+  }
+
+  function update(val) {
+    var school = lookup(val);
+    if (!school) {
+      sync('', []);
+      return;
+    }
+    sync(
+      school.description || '',
+      (school.contributors && school.contributors.length)
+        ? school.contributors
+        : []
+    );
+  }
+
+  function findSchoolSelect() {
+    var node = infoBox;
+    while (node) {
+      if (node.className && String(node.className).indexOf('cbi-value-field') >= 0) {
+        var inner = node.querySelector('select');
+        if (inner) return inner;
+        break;
+      }
+      node = node.parentNode;
+    }
+
+    return document.getElementById('widget.cbid.jxnu_srun.main.school')
+      || document.getElementById('cbid.jxnu_srun.main.school')
+      || document.querySelector('select[name="cbid.jxnu_srun.main.school"]');
+  }
+
+  var sel = findSchoolSelect();
+  if (!sel) return;
+  update(sel.value);
+  sel.addEventListener('change', function() { update(sel.value); });
+})();
+</script>
+]],
+        show_desc and "block" or "none",
+        util.pcdata(cur_desc),
+        show_contrib and "block" or "none",
+        show_desc and show_contrib and contrib_spacing or "0",
+        table.concat(cur_contrib_html, ", "),
+        (show_desc or show_contrib) and helper_spacing or "0",
+        helper_prefix,
+        helper_link,
+        helper_suffix,
+        util.pcdata(js_data),
+        contrib_spacing,
+        helper_spacing)
+end
+
+local function ensure_school_extra_table()
+    if type(cfg.school_extra) ~= "table" then
+        cfg.school_extra = {}
+    end
+    return cfg.school_extra
+end
+
+local function set_school_extra_value(key, value)
+    local school_extra = ensure_school_extra_table()
+    local normalized = tostring(value or "")
+    if school_extra[key] ~= normalized then
+        school_extra[key] = normalized
+        changed = true
+    end
+end
+
+local function remove_school_extra_value(key)
+    local school_extra = ensure_school_extra_table()
+    if school_extra[key] ~= nil then
+        school_extra[key] = nil
+        changed = true
+    end
+end
+
+local function get_school_extra_value(key, default_value)
+    local school_extra = ensure_school_extra_table()
+    local value = school_extra[key]
+    if value == nil or tostring(value) == "" then
+        return tostring(default_value or "")
+    end
+    return tostring(value)
+end
+
+local function normalize_school_runtime_descriptor(descriptor)
+    if type(descriptor) ~= "table" then
+        return nil
+    end
+
+    local key = util.trim(tostring(descriptor.key or ""))
+    if key == "" then
+        return nil
+    end
+
+    local value_type = util.trim(tostring(descriptor.type or "string")):lower()
+    local item = {
+        key = key,
+        type = value_type ~= "" and value_type or "string",
+        label = util.trim(tostring(descriptor.label or key)),
+        description = tostring(descriptor.description or ""),
+        required = descriptor.required == true,
+        default = descriptor.default ~= nil and tostring(descriptor.default) or "",
+        choices = {},
+    }
+
+    if type(descriptor.choices) == "table" then
+        for _, choice in ipairs(descriptor.choices) do
+            item.choices[#item.choices + 1] = tostring(choice)
+        end
+    end
+
+    if item.label == "" then
+        item.label = key
+    end
+    return item
+end
+
+local function parse_school_runtime_contract(raw_json)
+    local parsed = jsonc.parse(raw_json or "")
+    if type(parsed) ~= "table" then
+        parsed = {}
+    end
+    return parsed
+end
+
+local function bind_school_extra_flag(opt, descriptor, school_changed_ref)
+    opt.rmempty = false
+    function opt.cfgvalue()
+        return get_school_extra_value(descriptor.key, descriptor.default) == "1" and "1" or "0"
+    end
+    function opt.write(self, section, value)
+        if school_changed_ref() then
+            return
+        end
+        set_school_extra_value(descriptor.key, value == "1" and "1" or "0")
+    end
+    function opt.remove(self, section)
+        if school_changed_ref() then
+            return
+        end
+        set_school_extra_value(descriptor.key, "0")
+    end
+end
+
+local function bind_school_extra_text(opt, descriptor, school_changed_ref, normalize_fn)
+    opt.rmempty = not descriptor.required
+    function opt.cfgvalue()
+        return get_school_extra_value(descriptor.key, descriptor.default)
+    end
+    function opt.write(self, section, value)
+        if school_changed_ref() then
+            return
+        end
+        local raw = util.trim(value or "")
+        if raw == "" and not descriptor.required then
+            remove_school_extra_value(descriptor.key)
+            return
+        end
+        if normalize_fn then
+            local normalized = normalize_fn(raw)
+            if normalized == nil then
+                return
+            end
+            set_school_extra_value(descriptor.key, normalized)
+            return
+        end
+        set_school_extra_value(descriptor.key, raw)
+    end
+    function opt.remove(self, section)
+        if school_changed_ref() then
+            return
+        end
+        if descriptor.required then
+            return
+        end
+        remove_school_extra_value(descriptor.key)
+    end
+end
+
+cfg = load_cfg()
+changed = false
+
+-- 加载学校 Profile 列表
+local schools_json = select(1, run_client("schools", false)) or ""
+local schools = jsonc.parse(schools_json)
+if type(schools) ~= "table" then schools = {} end
+
+local school_runtime_json = select(1, run_client("schools inspect --selected", false)) or ""
+local school_runtime_contract = parse_school_runtime_contract(school_runtime_json)
+if type(school_runtime_contract.school_extra) == "table" then
+    cfg.school_extra = school_runtime_contract.school_extra
+end
+local school_runtime_descriptors = {}
+local school_runtime_renderable = type(school_runtime_contract.field_descriptors) == "table"
+    and type(school_runtime_contract.school_extra) == "table"
+
+if school_runtime_renderable then
+    for _, descriptor in ipairs(school_runtime_contract.field_descriptors) do
+        local item = normalize_school_runtime_descriptor(descriptor)
+        if item and SUPPORTED_SCHOOL_EXTRA_TYPES[item.type] then
+            school_runtime_descriptors[#school_runtime_descriptors + 1] = item
+        end
+    end
+end
 
 local function set_value(key, value)
     local v = tostring(value or "")
@@ -280,6 +626,12 @@ local function set_value(key, value)
         cfg[key] = v
         changed = true
     end
+end
+
+local school_changed_during_parse = false
+
+local function school_extra_write_blocked()
+    return school_changed_during_parse
 end
 
 local function bind_flag(opt, key)
@@ -316,7 +668,7 @@ end
 
 local quiet_desc = string.format("当前下线/上线时间：%s / %s", cfg.quiet_start or "00:00", cfg.quiet_end or "06:00")
 
-m = Map("jxnu_srun", "师大校园网", "江西师范大学校园网认证配置（JSON后端）")
+m = Map("jxnu_srun", "深澜校园网", "深澜校园网认证配置")
 if not m.uci:get("jxnu_srun", "main") then
     m.uci:section("jxnu_srun", "main", "main")
     m.uci:save("jxnu_srun")
@@ -415,6 +767,84 @@ s.anonymous = true
 s:tab("basic", "基础设置")
 s:tab("advanced", "进阶设置")
 s:tab("log", "日志")
+
+-- 学校配置选择器
+school = s:taboption("basic", ListValue, "school", "登录配置")
+if #schools == 0 then
+    school:value("jxnu", "默认配置")
+else
+    for _, sch in ipairs(schools) do
+        school:value(sch.short_name, sch.name)
+    end
+end
+function school.cfgvalue()
+    return cfg.school or "jxnu"
+end
+function school.write(self, section, value)
+    local next_school = util.trim(value or "jxnu")
+    if next_school == "" then
+        next_school = "jxnu"
+    end
+    if next_school ~= (cfg.school or "jxnu") then
+        school_changed_during_parse = true
+        cfg.school_extra = {}
+        changed = true
+    end
+    set_value("school", next_school)
+end
+school.description = render_school_info_html(schools, cfg.school or "jxnu")
+
+if school_runtime_renderable then
+    for idx, descriptor in ipairs(school_runtime_descriptors) do
+        local option_name = "_school_extra_" .. idx .. "_" .. descriptor.key:gsub("[^%w_]", "_")
+        local label = descriptor.label
+        local description = descriptor.description
+        if descriptor.type == "bool" then
+            local opt = s:taboption("basic", Flag, option_name, label, description)
+            bind_school_extra_flag(opt, descriptor, school_extra_write_blocked)
+        elseif descriptor.type == "enum" then
+            local opt = s:taboption("basic", ListValue, option_name, label, description)
+            for _, choice in ipairs(descriptor.choices or {}) do
+                opt:value(choice, choice)
+            end
+            bind_school_extra_text(opt, descriptor, school_extra_write_blocked, function(raw)
+                if raw == "" and not descriptor.required then
+                    return ""
+                end
+                for _, choice in ipairs(descriptor.choices or {}) do
+                    if raw == choice then
+                        return raw
+                    end
+                end
+                return nil
+            end)
+        elseif descriptor.type == "int" then
+            local opt = s:taboption("basic", Value, option_name, label, description)
+            function opt.validate(self, value)
+                local raw = util.trim(value or "")
+                if raw == "" and not descriptor.required then
+                    return raw
+                end
+                if raw:match("^-?%d+$") then
+                    return raw
+                end
+                return nil, "该字段必须是整数"
+            end
+            bind_school_extra_text(opt, descriptor, school_extra_write_blocked, function(raw)
+                if raw == "" and not descriptor.required then
+                    return ""
+                end
+                if raw:match("^-?%d+$") then
+                    return tostring(tonumber(raw))
+                end
+                return nil
+            end)
+        else
+            local opt = s:taboption("basic", Value, option_name, label, description)
+            bind_school_extra_text(opt, descriptor, school_extra_write_blocked)
+        end
+    end
+end
 
 manual_login = s:taboption("basic", DummyValue, "_manual_login", "手动登录")
 manual_login.rawhtml = true
@@ -569,7 +999,7 @@ function manual_login.cfgvalue()
         showForceStopButton();
       }
 
-      fetchJson('/cgi-bin/luci/admin/services/jxnu_srun/log_tail?lines=200&since=' + encodeURIComponent(requestedAt) + '&_=' + Date.now(), function(err, logData) {
+      fetchJson('/cgi-bin/luci/admin/services/jxnu_srun/log_tail?lines=200&format=friendly&since=' + encodeURIComponent(requestedAt) + '&_=' + Date.now(), function(err, logData) {
         if (!err && logData && typeof logData.log === 'string') {
           logBox.textContent = logData.log;
           logBox.scrollTop = logBox.scrollHeight;
@@ -794,6 +1224,7 @@ function tables_html.cfgvalue()
                 .. '<td class="td">' .. util.pcdata(tostring(a.ac_id or "1")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.user_id or "")) .. '</td>'
                 .. '<td class="td">' .. (operator_labels[tostring(a.operator or "")] or tostring(a.operator or "")) .. '</td>'
+                .. '<td class="td">' .. util.pcdata(tostring(a.operator_suffix or "")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(ssid_display) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.bssid or "")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(radio_labels[tostring(a.radio or "")] or tostring(a.radio or "自动")) .. '</td>'
@@ -804,7 +1235,7 @@ function tables_html.cfgvalue()
         end
     end
     if campus_rows == "" then
-        campus_rows = '<tr class="tr"><td class="td" colspan="10" style="text-align:center;color:#999;">暂无账号，请点击"新增"添加</td></tr>'
+        campus_rows = '<tr class="tr"><td class="td" colspan="11" style="text-align:center;color:#999;">暂无账号，请点击"新增"添加</td></tr>'
     end
 
     -- 构建热点配置表格行
@@ -870,7 +1301,7 @@ function tables_html.cfgvalue()
 <div class="cbi-section cbi-tblsection jxnu-native-box">
   <h3>校园网账号</h3>
   <table class="table cbi-section-table">
-    <tr class="tr table-titles"><th class="th" style="width:80px;">状态</th><th class="th">标签</th><th class="th">认证地址</th><th class="th">ACID</th><th class="th">学工号</th><th class="th">运营商</th><th class="th">SSID</th><th class="th">BSSID</th><th class="th">频段</th><th class="th cbi-section-actions" style="width:120px;">操作</th></tr>
+    <tr class="tr table-titles"><th class="th" style="width:80px;">状态</th><th class="th">标签</th><th class="th">认证地址</th><th class="th">ACID</th><th class="th">学工号</th><th class="th">运营商</th><th class="th">后缀</th><th class="th">SSID</th><th class="th">BSSID</th><th class="th">频段</th><th class="th cbi-section-actions" style="width:120px;">操作</th></tr>
     <tbody>]] .. campus_rows .. [[</tbody>
   </table>
   <div class="jxnu-box-actions">
@@ -1013,10 +1444,36 @@ window.jxnuEditCampus = function(id) {
   modalType = 'campus';
   modalEditId = id;
   var item = id ? findById(campusData, id) : {};
+
+  // 动态构建运营商选项
+  var schoolDataEl = document.getElementById('jxnu-school-data');
+  var allSchools = [];
+  try { allSchools = JSON.parse(schoolDataEl ? (schoolDataEl.value || schoolDataEl.textContent || '[]') : '[]'); } catch(e) {}
+  var curSchoolSel = document.getElementById('widget.cbid.jxnu_srun.main.school')
+    || document.getElementById('cbid.jxnu_srun.main.school')
+    || document.querySelector('select[name="cbid.jxnu_srun.main.school"]');
+  var curSchool = curSchoolSel ? curSchoolSel.value : 'jxnu';
+  var schoolObj = null;
+  for (var si = 0; si < allSchools.length; si++) {
+    if (allSchools[si].short_name === curSchool) { schoolObj = allSchools[si]; break; }
+  }
+  var ops = (schoolObj && schoolObj.operators && schoolObj.operators.length) ? schoolObj.operators : [
+    {id:'cmcc', label:'中国移动'}, {id:'ctcc', label:'中国电信'},
+    {id:'cucc', label:'中国联通'}, {id:'xn', label:'校内网'}
+  ];
+  var noSuffixOps = (schoolObj && schoolObj.no_suffix_operators) ? schoolObj.no_suffix_operators : ['xn'];
+  var opOptions = '';
+  for (var oi = 0; oi < ops.length; oi++) {
+    var sel = (ops[oi].id === (item.operator || ops[0].id)) ? ' selected' : '';
+    var badge = ops[oi].verified ? ' [已验证]' : '';
+    opOptions += '<option value="' + ops[oi].id + '"' + sel + '>' + ops[oi].label + badge + '</option>';
+  }
+
   var bodyHtml =
     '<div class="jxnu-native-row"><label>标签（选填）</label><input id="jm-label" value="' + (item.label || '') + '"></div>' +
     '<div class="jxnu-native-row"><label>学工号</label><input id="jm-user_id" value="' + (item.user_id || '') + '"></div>' +
-    '<div class="jxnu-native-row"><label>运营商</label><select id="jm-operator"><option value="cmcc"' + (item.operator==='cmcc'?' selected':'') + '>中国移动</option><option value="ctcc"' + (item.operator==='ctcc'?' selected':'') + '>中国电信</option><option value="cucc"' + (item.operator==='cucc'?' selected':'') + '>中国联通</option><option value="xn"' + (item.operator==='xn'?' selected':'') + '>校内网</option></select></div>' +
+    '<div class="jxnu-native-row"><label>运营商</label><select id="jm-operator">' + opOptions + '</select></div>' +
+    '<div class="jxnu-native-row"><label>运营商后缀（选填）</label><input id="jm-operator_suffix" value="' + (item.operator_suffix || '') + '" placeholder=""></div>' +
     '<div class="jxnu-native-row"><label>接入方式</label><select id="jm-access_mode"><option value="wifi"' + (((item.access_mode || 'wifi')==='wifi')?' selected':'') + '>无线</option><option value="wired"' + ((item.access_mode==='wired')?' selected':'') + '>有线（WAN）</option></select></div>' +
     '<div class="jxnu-native-row"><label>密码</label><div id="jm-password-field"></div></div>' +
     '<div class="jxnu-native-row"><label>认证地址</label><input id="jm-base_url" value="' + (item.base_url || 'http://172.17.1.2') + '"></div>' +
@@ -1024,13 +1481,30 @@ window.jxnuEditCampus = function(id) {
     '<div class="jxnu-native-row" id="jm-ssid-row"><label>校园网 SSID</label><input id="jm-ssid" value="' + (item.ssid || 'jxnu_stu') + '"></div>' +
     '<div class="jxnu-native-row" id="jm-bssid-row"><label>BSSID（留空则不锁定）</label><input id="jm-bssid" value="' + (item.bssid || '') + '"></div>' +
     '<div class="jxnu-native-row" id="jm-radio-row"><label>频段</label><select id="jm-radio">]] .. radio_options .. [[</select></div>';
+
+  // 后缀 placeholder 联动函数
+  var _noSuffixOps = noSuffixOps;
+  function updateSuffixPlaceholder() {
+    var opSel = document.getElementById('jm-operator');
+    var sfx = document.getElementById('jm-operator_suffix');
+    if (!opSel || !sfx) return;
+    var opId = opSel.value;
+    var isNoSuffix = false;
+    for (var k = 0; k < _noSuffixOps.length; k++) {
+      if (_noSuffixOps[k] === opId) { isNoSuffix = true; break; }
+    }
+    sfx.placeholder = isNoSuffix ? '(无后缀)' : ('留空则使用 "' + opId + '"');
+  }
+
   showNativeModal(
     id ? '编辑校园网账号' : '新增校园网账号',
     bodyHtml,
     function() {
       document.getElementById('jm-radio').value = item.radio || '';
       document.getElementById('jm-access_mode').addEventListener('change', updateCampusAccessModeUI);
+      document.getElementById('jm-operator').addEventListener('change', updateSuffixPlaceholder);
       updateCampusAccessModeUI();
+      updateSuffixPlaceholder();
       renderPasswordField('jm-password-field', 'jm-password', item.password || '');
     },
     function() { jxnuModalSave(); }
@@ -1068,6 +1542,7 @@ window.jxnuModalSave = function() {
     fd.append('label', document.getElementById('jm-label').value);
     fd.append('user_id', document.getElementById('jm-user_id').value);
     fd.append('operator', document.getElementById('jm-operator').value);
+    fd.append('operator_suffix', document.getElementById('jm-operator_suffix').value);
     fd.append('access_mode', document.getElementById('jm-access_mode').value);
     fd.append('password', getFieldValue('jm-password'));
     fd.append('base_url', document.getElementById('jm-base_url').value);
@@ -1194,7 +1669,7 @@ function log_text.cfgvalue(self, section)
   }
   function refresh() {
     var xhr = new XMLHttpRequest();
-    xhr.open('GET', '/cgi-bin/luci/admin/services/jxnu_srun/log_tail?lines=80&_=' + Date.now(), true);
+    xhr.open('GET', '/cgi-bin/luci/admin/services/jxnu_srun/log_tail?lines=80&format=friendly&_=' + Date.now(), true);
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4 || xhr.status !== 200) return;
       try {
