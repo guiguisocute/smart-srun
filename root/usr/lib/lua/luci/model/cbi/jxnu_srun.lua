@@ -207,17 +207,6 @@ local function run_client(args, stderr_to_stdout)
     return util.trim(sys.exec(cmd) or ""), nil
 end
 
-local function last_nonempty_line(text)
-    local last = ""
-    for line in tostring(text or ""):gmatch("[^\n]+") do
-        local v = util.trim(line)
-        if v ~= "" then
-            last = v
-        end
-    end
-    return last
-end
-
 local function validate_hhmm(v)
     local value = util.trim(v or "")
     local h, m = value:match("^(%d%d?):(%d%d)$")
@@ -543,58 +532,12 @@ local function normalize_school_runtime_descriptor(descriptor)
     return item
 end
 
-local function parse_school_runtime_contract(raw_json, err)
-    local diagnostics = {}
+local function parse_school_runtime_contract(raw_json)
     local parsed = jsonc.parse(raw_json or "")
-    if err then
-        diagnostics[#diagnostics + 1] = err
-    end
     if type(parsed) ~= "table" then
-        if raw_json and util.trim(raw_json) ~= "" then
-            diagnostics[#diagnostics + 1] = "运行时检查 JSON 解析失败：" .. last_nonempty_line(raw_json)
-        else
-            diagnostics[#diagnostics + 1] = "运行时检查未返回有效 JSON。"
-        end
         parsed = {}
     end
-    return parsed, diagnostics
-end
-
-local function render_school_runtime_diagnostics_html(contract, diagnostics)
-    local info_lines = {}
-    local notes = {}
-    local capabilities = {}
-
-    if type(contract.capabilities) == "table" then
-        for _, item in ipairs(contract.capabilities) do
-            capabilities[#capabilities + 1] = tostring(item)
-        end
-    end
-
-    info_lines[#info_lines + 1] = string.format(
-        "<div><strong>运行时模式：</strong>%s</div>",
-        util.pcdata(tostring(contract.runtime_type or "unknown"))
-    )
-    info_lines[#info_lines + 1] = string.format(
-        "<div><strong>API 版本：</strong>%s</div>",
-        util.pcdata(tostring(contract.runtime_api_version or "unknown"))
-    )
-    info_lines[#info_lines + 1] = string.format(
-        "<div><strong>能力覆盖：</strong>%s</div>",
-        util.pcdata(#capabilities > 0 and table.concat(capabilities, ", ") or "无")
-    )
-
-    for _, item in ipairs(diagnostics or {}) do
-        notes[#notes + 1] = "<li>" .. util.pcdata(tostring(item)) .. "</li>"
-    end
-
-    return string.format([[
-<div class="cbi-value-description" style="display:block;line-height:1.6;">
-  <div><strong>runtime diagnostics</strong></div>
-  %s
-  <ul style="margin:.5em 0 0 1.2em;">%s</ul>
-</div>
-]], table.concat(info_lines, ""), #notes > 0 and table.concat(notes, "") or "<li>当前已按已保存学校加载；切换学校后请保存并刷新页面以重新生成动态字段。</li>")
+    return parsed
 end
 
 local function bind_school_extra_flag(opt, descriptor, school_changed_ref)
@@ -659,11 +602,8 @@ local schools_json = select(1, run_client("schools", false)) or ""
 local schools = jsonc.parse(schools_json)
 if type(schools) ~= "table" then schools = {} end
 
-local school_runtime_json, school_runtime_err = run_client("schools inspect --selected", true)
-local school_runtime_contract, school_runtime_diagnostics = parse_school_runtime_contract(
-    school_runtime_json,
-    school_runtime_err
-)
+local school_runtime_json = select(1, run_client("schools inspect --selected", false)) or ""
+local school_runtime_contract = parse_school_runtime_contract(school_runtime_json)
 if type(school_runtime_contract.school_extra) == "table" then
     cfg.school_extra = school_runtime_contract.school_extra
 end
@@ -671,25 +611,11 @@ local school_runtime_descriptors = {}
 local school_runtime_renderable = type(school_runtime_contract.field_descriptors) == "table"
     and type(school_runtime_contract.school_extra) == "table"
 
-if type(school_runtime_contract.field_descriptors) ~= "table" then
-    school_runtime_diagnostics[#school_runtime_diagnostics + 1] = "运行时未提供 field_descriptors，已禁用动态字段渲染。"
-end
-if type(school_runtime_contract.school_extra) ~= "table" then
-    school_runtime_diagnostics[#school_runtime_diagnostics + 1] = "运行时未提供 school_extra，已禁用动态字段渲染。"
-end
 if school_runtime_renderable then
     for _, descriptor in ipairs(school_runtime_contract.field_descriptors) do
         local item = normalize_school_runtime_descriptor(descriptor)
-        if item then
-            if SUPPORTED_SCHOOL_EXTRA_TYPES[item.type] then
-                school_runtime_descriptors[#school_runtime_descriptors + 1] = item
-            else
-                school_runtime_diagnostics[#school_runtime_diagnostics + 1] = string.format(
-                    "字段 %s 使用了暂不支持的类型 %s；当前仅显示诊断信息。",
-                    item.label,
-                    item.type
-                )
-            end
+        if item and SUPPORTED_SCHOOL_EXTRA_TYPES[item.type] then
+            school_runtime_descriptors[#school_runtime_descriptors + 1] = item
         end
     end
 end
@@ -867,16 +793,6 @@ function school.write(self, section, value)
     set_value("school", next_school)
 end
 school.description = render_school_info_html(schools, cfg.school or "jxnu")
-
--- runtime diagnostics
-school_runtime_diag = s:taboption("basic", DummyValue, "_school_runtime_diagnostics", "学校运行时诊断")
-school_runtime_diag.rawhtml = true
-function school_runtime_diag.cfgvalue()
-    return render_school_runtime_diagnostics_html(
-        school_runtime_contract,
-        school_runtime_diagnostics
-    )
-end
 
 if school_runtime_renderable then
     for idx, descriptor in ipairs(school_runtime_descriptors) do

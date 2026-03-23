@@ -174,12 +174,12 @@ root/
     └── schools/
         ├── __init__.py            # 学校配置自动发现
         ├── _base.py               # SchoolProfile 基类
-        └── jxnu.py                # 江西师范大学配置
+        └── jxnu.py                # 江西师范大学(默认)配置
 ```
 
 ### 适配其他学校
 
-学校适配现在有两种模式，先搞清楚再写：
+学校适配现在有两种模式：
 
 - **legacy `Profile`**：只适合“换一组元数据 + 换协议常量”的学校。你继承 `SchoolProfile`，覆盖 `ALPHA`、`DEFAULT_BASE_URL`、运营商列表这些静态参数，登录/登出/状态查询仍走内置默认实现。
 - **full runtime mode**：适合学校需要自定义登录流程、状态探测、CLI 扩展、守护循环钩子，或者要给 LuCI 暴露动态学校字段时使用。入口可以是 `build_runtime(core_api, cfg)`，也可以是 `Runtime(core_api, cfg)`。

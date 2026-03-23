@@ -292,6 +292,110 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         run_daemon.assert_called_once_with(runtime=self.runtime)
         self.assertNotIn(("cli_daemon", "daemon"), self.runtime.calls)
 
+    def test_log_runtime_prints_selected_runtime_block(self):
+        inspect_payload = {
+            "short_name": "custom",
+            "runtime_type": "runtime_class",
+            "runtime_api_version": 3,
+            "capabilities": ["cli", "daemon"],
+            "field_descriptors": [{"key": "region", "label": "Region", "type": "text"}],
+            "school_extra": {"region": "north"},
+        }
+
+        with mock.patch.object(
+            daemon,
+            "build_school_runtime_luci_contract",
+            return_value=inspect_payload,
+        ) as build_contract:
+            with mock.patch.object(
+                school_runtime,
+                "inspect_runtime",
+                return_value={"short_name": "custom"},
+            ) as inspect_runtime:
+                code, output = self.run_main(["log", "runtime"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            output,
+            "School: custom\n"
+            "Runtime type: runtime_class\n"
+            "Runtime API version: 3\n"
+            "Capabilities: cli, daemon\n"
+            'Field descriptors: [{"key": "region", "label": "Region", "type": "text"}]\n'
+            'School extra: {"region": "north"}\n',
+        )
+        inspect_runtime.assert_called_once_with(self.cfg)
+        build_contract.assert_called_once_with(self.cfg, {"short_name": "custom"})
+
+    def test_log_runtime_uses_stable_fallbacks_for_minimal_or_empty_payload(self):
+        cases = [
+            ({}, self.cfg.get("school", "jxnu")),
+            (
+                {
+                    "short_name": "",
+                    "runtime_type": "",
+                    "runtime_api_version": None,
+                    "capabilities": [None, ""],
+                    "field_descriptors": None,
+                    "school_extra": None,
+                },
+                self.cfg.get("school", "jxnu"),
+            ),
+        ]
+
+        for payload, expected_school in cases:
+            with self.subTest(payload=payload):
+                with mock.patch.object(
+                    daemon,
+                    "build_school_runtime_luci_contract",
+                    return_value=payload,
+                ):
+                    with mock.patch.object(
+                        school_runtime,
+                        "inspect_runtime",
+                        return_value={"short_name": "custom"},
+                    ):
+                        code, output = self.run_main(["log", "runtime"])
+
+                self.assertEqual(code, 0)
+                self.assertEqual(
+                    output,
+                    "School: %s\n"
+                    "Runtime type: unknown\n"
+                    "Runtime API version: 1\n"
+                    "Capabilities: (none)\n"
+                    "Field descriptors: null\n"
+                    "School extra: null\n" % expected_school,
+                )
+
+    def test_log_runtime_handles_runtime_inspection_failure_without_traceback(self):
+        with mock.patch.object(
+            school_runtime,
+            "inspect_runtime",
+            side_effect=LookupError("boom"),
+        ):
+            code, output = self.run_main(["log", "runtime"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("Runtime inspection failed: boom", output)
+        self.assertNotIn("Traceback", output)
+
+    def test_log_n_still_dispatches_to_tail_log(self):
+        with mock.patch.object(daemon, "_tail_log") as tail_log:
+            code, output = self.run_main(["log", "-n", "5"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(output, "")
+        tail_log.assert_called_once_with(5)
+
+    def test_log_without_args_still_dispatches_to_tail_log_follow_mode(self):
+        with mock.patch.object(daemon, "_tail_log") as tail_log:
+            code, output = self.run_main(["log"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(output, "")
+        tail_log.assert_called_once_with(0)
+
     def test_schools_command_works_when_runtime_resolution_is_broken(self):
         payload = [{"short_name": "jxnu"}]
         stdout = io.StringIO()
@@ -502,6 +606,40 @@ class HotUpdateScriptTests(unittest.TestCase):
         self.assertIn("srunnet schools inspect --selected", sanity_commands)
         self.assertIn("/etc/init.d/jxnu_srun restart", restart_commands)
         self.assertIn("/etc/init.d/uwsgi restart", restart_commands)
+
+    def test_hot_update_restores_executable_permissions_for_entrypoints(self):
+        hot_update = load_hot_update_module(self)
+
+        class FakeSsh(object):
+            pass
+
+        with mock.patch.object(
+            hot_update, "run_remote", return_value=(0, "", "")
+        ) as run_remote:
+            hot_update.restore_executable_permissions(FakeSsh())
+
+        run_remote.assert_called_once_with(
+            mock.ANY,
+            "chmod 755 /usr/bin/srunnet /etc/init.d/jxnu_srun",
+        )
+
+    def test_verify_luci_page_accepts_school_runtime_markup_without_diagnostics(self):
+        hot_update = load_hot_update_module(self)
+        page = """
+        <html>
+            <input id="cbid.jxnu_srun.main.school" />
+            <input id="cbid.jxnu_srun.main._school_extra_region" />
+        </html>
+        """
+
+        with mock.patch.object(hot_update, "build_luci_opener", return_value=object()):
+            with mock.patch.object(hot_update, "login_luci", return_value="ok"):
+                with mock.patch.object(
+                    hot_update, "fetch_luci_page", return_value=page
+                ):
+                    verified = hot_update.verify_luci_page(expected_descriptor_count=1)
+
+        self.assertEqual(verified, page)
 
 
 if __name__ == "__main__":

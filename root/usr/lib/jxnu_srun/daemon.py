@@ -471,6 +471,48 @@ def _tail_log(last_n):
         pass
 
 
+def _show_runtime_log(cfg):
+    import json as _json
+
+    try:
+        inspect_payload = build_school_runtime_luci_contract(
+            cfg, school_runtime.inspect_runtime(cfg)
+        )
+    except Exception as exc:
+        print("Runtime inspection failed: %s" % localize_error(exc))
+        raise SystemExit(1)
+    capabilities = inspect_payload.get("capabilities")
+    if not isinstance(capabilities, list):
+        capabilities = []
+    capabilities_text = (
+        ", ".join(
+            [
+                str(item).strip()
+                for item in capabilities
+                if item is not None and str(item).strip()
+            ]
+        )
+        or "(none)"
+    )
+    school_name = str(inspect_payload.get("short_name") or cfg.get("school") or "jxnu")
+    runtime_type = str(inspect_payload.get("runtime_type") or "unknown")
+    runtime_api_version = inspect_payload.get("runtime_api_version")
+    if runtime_api_version in (None, ""):
+        runtime_api_version = 1
+    print("School: %s" % school_name)
+    print("Runtime type: %s" % runtime_type)
+    print("Runtime API version: %s" % runtime_api_version)
+    print("Capabilities: %s" % capabilities_text)
+    print(
+        "Field descriptors: %s"
+        % _json.dumps(inspect_payload.get("field_descriptors"), ensure_ascii=False)
+    )
+    print(
+        "School extra: %s"
+        % _json.dumps(inspect_payload.get("school_extra"), ensure_ascii=False)
+    )
+
+
 # ---------------------------------------------------------------------------
 # CLI: status
 # ---------------------------------------------------------------------------
@@ -1108,6 +1150,12 @@ def main():
     p_log.add_argument(
         "-n", type=int, default=0, help="show last N lines then exit (default: follow)"
     )
+    p_log.add_argument(
+        "log_target",
+        nargs="?",
+        choices=["runtime"],
+        help="show selected runtime diagnostics",
+    )
 
     p_switch = sub.add_parser("switch", help="switch network mode")
     p_switch.add_argument(
@@ -1196,6 +1244,9 @@ def main():
         return
 
     if args.command == "log":
+        if getattr(args, "log_target", "") == "runtime":
+            _show_runtime_log(cfg)
+            return
         _tail_log(args.n)
         return
 

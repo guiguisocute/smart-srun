@@ -20,6 +20,7 @@ LUCI_BASE_URL = os.environ.get(
     "JXSRUN_LUCI_BASE_URL", "http://%s/cgi-bin/luci" % ROUTER_HOST
 )
 FORCE_LF_TARGETS = {"/etc/init.d/jxnu_srun", "/usr/bin/srunnet"}
+EXECUTABLE_TARGETS = ["/usr/bin/srunnet", "/etc/init.d/jxnu_srun"]
 
 RUNTIME_TARGETS = [
     {
@@ -202,6 +203,18 @@ def upload_files(sftp):
         sftp.put(str(local_path), remote_path)
 
 
+def restore_executable_permissions(ssh):
+    command = "chmod 755 %s" % " ".join(
+        shlex.quote(path) for path in EXECUTABLE_TARGETS
+    )
+    code, output, error = run_remote(ssh, command)
+    if code != 0:
+        raise RuntimeError(
+            "failed to restore executable permissions: %s"
+            % (output or error or "no output")
+        )
+
+
 def run_command_group(ssh, name, commands, timeout=60):
     results = []
     for command in commands:
@@ -268,18 +281,23 @@ def verify_luci_page(expected_descriptor_count):
         raise RuntimeError("LuCI login failed")
 
     page = fetch_luci_page(opener)
-    checks = [
-        ("school selector", "cbid.jxnu_srun.main.school"),
-        ("runtime diagnostics block", "学校运行时诊断"),
-        ("runtime diagnostics marker", "runtime diagnostics"),
-    ]
+    required = [("school selector", "cbid.jxnu_srun.main.school")]
     if expected_descriptor_count > 0:
-        checks.append(("school_extra fields", "_school_extra_"))
+        required.append(("school_extra fields", "_school_extra_"))
 
-    missing = [label for label, needle in checks if needle not in page]
+    missing = [label for label, needle in required if needle not in page]
     if missing:
         raise RuntimeError(
             "LuCI page missing expected markers: %s" % ", ".join(missing)
+        )
+    forbidden = [
+        ("runtime diagnostics block", "学校运行时诊断"),
+        ("runtime diagnostics marker", "runtime diagnostics"),
+    ]
+    present = [label for label, needle in forbidden if needle in page]
+    if present:
+        raise RuntimeError(
+            "LuCI page still contains removed markers: %s" % ", ".join(present)
         )
     return page
 
@@ -318,6 +336,7 @@ def main():
     try:
         ensure_remote_parent_dirs(ssh)
         upload_files(sftp)
+        restore_executable_permissions(ssh)
         print("UPLOAD OK")
 
         run_command_group(ssh, "syntax", commands["syntax_checks"], timeout=90)

@@ -22,6 +22,11 @@ def require_regex(text, pattern, label, failures):
         failures.append("missing %s: %s" % (label, pattern))
 
 
+def require_not_contains(text, needle, label, failures):
+    if needle in text:
+        failures.append("unexpected %s: %s" % (label, needle))
+
+
 def main():
     failures = []
 
@@ -31,7 +36,7 @@ def main():
 
     require_contains(
         lua_source,
-        'run_client("schools inspect --selected", true)',
+        'run_client("schools inspect --selected", false)',
         "LuCI runtime inspection command",
         failures,
     )
@@ -55,14 +60,44 @@ def main():
     )
     require_contains(
         lua_source,
-        "runtime diagnostics",
-        "runtime diagnostics marker",
+        'if type(school_runtime_contract.school_extra) == "table" then',
+        "school_extra guarded load path",
         failures,
     )
     require_regex(
         lua_source,
         r"cfg\.school_extra\s*=\s*school_runtime_contract\.school_extra",
         "LuCI consumes normalized contract school_extra",
+        failures,
+    )
+    require_regex(
+        lua_source,
+        r"local school_runtime_renderable\s*=\s*type\(school_runtime_contract\.field_descriptors\) == \"table\"\s*and\s*type\(school_runtime_contract\.school_extra\) == \"table\"",
+        "fail-closed render gate",
+        failures,
+    )
+    require_regex(
+        lua_source,
+        r"if school_runtime_renderable then\s*for _, descriptor in ipairs\(school_runtime_contract\.field_descriptors\) do",
+        "dynamic fields only render behind contract gate",
+        failures,
+    )
+    require_not_contains(
+        lua_source,
+        "render_school_runtime_diagnostics_html",
+        "LuCI runtime diagnostics renderer",
+        failures,
+    )
+    require_not_contains(
+        lua_source,
+        "_school_runtime_diagnostics",
+        "LuCI runtime diagnostics field",
+        failures,
+    )
+    require_not_contains(
+        lua_source,
+        "runtime diagnostics",
+        "runtime diagnostics marker",
         failures,
     )
 
