@@ -500,6 +500,14 @@ local function parse_structured(line)
     return ts, level, event, rest
 end
 
+-- Extract a key=value pair from structured log rest string.
+-- Supports both unquoted (key=val) and quoted (key="val with spaces").
+local function extract_kv(rest, key)
+    local quoted = rest:match(key .. '="(.-)"')
+    if quoted then return quoted end
+    return rest:match(key .. "=(%S+)")
+end
+
 -- Translate a structured log line to user-friendly Chinese
 local function friendly_line(line)
     local ts, level, event, rest = parse_structured(line)
@@ -515,10 +523,10 @@ local function friendly_line(line)
     end
     parts[#parts + 1] = zh
 
-    local account = rest:match("account=(%S+)")
+    local account = extract_kv(rest, "account")
     if account then parts[#parts + 1] = " [" .. account .. "]" end
 
-    local reason = rest:match("reason=(%S+)")
+    local reason = extract_kv(rest, "reason")
     if reason then
         local rzh = reason_zh[reason]
         parts[#parts + 1] = ": " .. (rzh or reason)

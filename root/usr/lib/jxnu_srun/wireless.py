@@ -864,7 +864,7 @@ def switch_sta_profile(cfg, expect_hotspot):
                 if portal_detail:
                     conn_hint = conn_hint + ": " + portal_detail
             log("INFO", "switch_campus_done", "campus switch complete",
-                radio=radio or "?", ssid=bl, portal=conn_hint)
+                radio=radio or "?", band=bl, portal=conn_hint)
             hint = "已切换为%s配置（%s %s, %s）" % (
                 target["label"],
                 radio or "?",
@@ -875,7 +875,7 @@ def switch_sta_profile(cfg, expect_hotspot):
                 hint = hint + "；" + select_msg
             return True, hint
         log("WARN", "switch_campus_no_ip", "no IPv4 after campus switch",
-            radio=radio or "?", ssid=bl)
+            radio=radio or "?", band=bl)
         return False, "已切换为%s配置但未获取到IPv4地址（%s %s）" % (
             target["label"],
             radio or "?",
