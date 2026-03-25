@@ -664,7 +664,7 @@ end
 
 local quiet_desc = string.format("当前下线/上线时间：%s / %s", cfg.quiet_start or "00:00", cfg.quiet_end or "06:00")
 
-m = Map("smart_srun", "深澜校园网", "深澜校园网认证配置")
+m = Map("smart_srun", "智慧深澜", "深澜校园网认证配置")
 if not m.uci:get("smart_srun", "main") then
     m.uci:section("smart_srun", "main", "main")
     m.uci:save("smart_srun")

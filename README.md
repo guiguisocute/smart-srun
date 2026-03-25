@@ -1,6 +1,6 @@
 # luci-app-smart-srun
 
-OpenWrt 深澜校园网（SRun 4000）自动认证客户端，提供 CLI / LuCI 两种使用方式。
+智慧深澜，OpenWrt 深澜校园网（SRun 4000）自动认证客户端，提供 CLI / LuCI 两种使用方式。
 
 感谢 [@guiguisocute](https://github.com/guiguisocute) 的协助！
 
@@ -8,7 +8,7 @@ OpenWrt 深澜校园网（SRun 4000）自动认证客户端，提供 CLI / LuCI 
 
 ### LuCI Web 界面
 <p align="center">
-    <img src="https://raw.githubusercontent.com/guiguisocute/Guis_image/main/test/20260323203552354.jpg">
+    <img src="https://r2.guiguisocute.cloud/PicGo/2026/03/25/aaa7b014a8a2db7fcc05edb9f81c242b.png">
 </p>
 
 ## 功能
