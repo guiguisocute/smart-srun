@@ -1,7 +1,7 @@
 """
 网络基础设施 -- HTTP 客户端、IP 工具、shell 命令封装。
 
-不依赖 wireless/SRun/config 业务逻辑，仅依赖 config 模块的常量和 append_log。
+主要提供通用网络能力；绑定 IP 选择在非有线模式下会按需借助 wireless。
 """
 
 import ipaddress
@@ -11,6 +11,8 @@ import re
 import socket
 import subprocess
 import time
+
+from config import campus_uses_wired
 
 try:
     import urllib.error as urllib_error
@@ -198,7 +200,6 @@ def get_ipv4_from_network_interface(iface_name):
     return None
 
 
-
 def wait_for_network_interface_ipv4(iface_name, timeout_seconds=12, interval_seconds=1):
     deadline = time.time() + max(int(timeout_seconds), 1)
     while time.time() < deadline:
@@ -213,10 +214,13 @@ def resolve_bind_ip(url, cfg):
     host = extract_host_from_url(url)
     bind_ip = get_local_ip_for_target(host) if host else None
     host_ip = pick_valid_ip(host)
-    if host_ip:
+    if host_ip and not campus_uses_wired(cfg):
         try:
             if ipaddress.ip_address(host_ip).is_private:
-                from wireless import get_sta_section, get_network_interface_from_sta_section
+                from wireless import (
+                    get_sta_section,
+                    get_network_interface_from_sta_section,
+                )
 
                 sta_section = get_sta_section(cfg)
                 if sta_section:
