@@ -116,7 +116,7 @@ jobs:
       - name: Compile package
         working-directory: openwrt
         run: |
-          make package/smart-srun/{clean,compile} package/luci-app-smart-srun/{clean,compile} package/luci-app-smart-srun-bundle/{clean,compile} -j1 V=s
+          make package/luci-app-smart-srun/{clean,compile} -j1 V=s
 
       - name: Collect artifact
         run: |
