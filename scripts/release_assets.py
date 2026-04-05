@@ -23,6 +23,14 @@ def _split_zip_name(version):
     return "smart-srun-split-packages-%s.zip" % version
 
 
+def _require_single_match(paths, label):
+    if not paths:
+        raise ValueError("Missing %s package" % label)
+    if len(paths) != 1:
+        raise ValueError("Expected exactly one %s package" % label)
+    return paths[0]
+
+
 def prepare_release_outputs(artifacts_dir, release_dir, split_dir, version):
     artifacts_dir = Path(artifacts_dir)
     release_dir = Path(release_dir)
@@ -33,28 +41,28 @@ def prepare_release_outputs(artifacts_dir, release_dir, split_dir, version):
     release_dir.mkdir(parents=True, exist_ok=True)
     split_dir.mkdir(parents=True, exist_ok=True)
 
-    for stale_bundle_path in release_dir.glob("luci-app-smart-srun-bundle_*.ipk"):
-        stale_bundle_path.unlink()
+    for stale_release_ipk_path in release_dir.glob("*.ipk"):
+        stale_release_ipk_path.unlink()
 
     for stale_split_zip_path in split_dir.glob("smart-srun-split-packages-*.zip"):
         stale_split_zip_path.unlink()
 
-    bundle_paths = sorted(artifacts_dir.glob("luci-app-smart-srun-bundle_*.ipk"))
-    if not bundle_paths:
-        raise ValueError("Missing luci-app-smart-srun bundle package")
+    bundle_path = _require_single_match(
+        sorted(artifacts_dir.glob("luci-app-smart-srun-bundle_*.ipk")),
+        "luci-app-smart-srun bundle",
+    )
+    shutil.copy2(str(bundle_path), str(release_dir / bundle_path.name))
 
-    for bundle_path in bundle_paths:
-        shutil.copy2(str(bundle_path), str(release_dir / bundle_path.name))
-
-    core_package_paths = sorted(artifacts_dir.glob("smart-srun_*.ipk"))
-    luci_package_paths = sorted(artifacts_dir.glob("luci-app-smart-srun_*.ipk"))
-
-    if not core_package_paths:
-        raise ValueError("Missing smart-srun split package")
-    if not luci_package_paths:
-        raise ValueError("Missing luci-app-smart-srun split package")
-
-    split_package_paths = [core_package_paths[0], luci_package_paths[0]]
+    split_package_paths = [
+        _require_single_match(
+            sorted(artifacts_dir.glob("smart-srun_*.ipk")),
+            "smart-srun split",
+        ),
+        _require_single_match(
+            sorted(artifacts_dir.glob("luci-app-smart-srun_*.ipk")),
+            "luci-app-smart-srun split",
+        ),
+    ]
 
     with zipfile.ZipFile(str(split_zip_path), "w", zipfile.ZIP_DEFLATED) as archive:
         for package_path in split_package_paths:

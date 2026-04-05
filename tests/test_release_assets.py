@@ -140,6 +140,39 @@ class ReleaseAssetsTests(unittest.TestCase):
                 ["luci-app-smart-srun-bundle_1.2.3_all.ipk"],
             )
 
+    def test_prepare_release_outputs_removes_stale_non_bundle_ipks(self):
+        release_assets = load_release_assets_module(self)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            artifacts_dir = temp_path / "artifacts"
+            release_dir = temp_path / "release"
+            split_dir = temp_path / "split"
+            artifacts_dir.mkdir()
+            release_dir.mkdir()
+
+            stale_split_ipk = release_dir / "smart-srun_0.9.0_all.ipk"
+            stale_split_ipk.write_text("stale", encoding="utf-8")
+
+            (artifacts_dir / "luci-app-smart-srun-bundle_1.2.3_all.ipk").write_text(
+                "bundle", encoding="utf-8"
+            )
+            (artifacts_dir / "smart-srun_1.2.3_all.ipk").write_text(
+                "core", encoding="utf-8"
+            )
+            (artifacts_dir / "luci-app-smart-srun_1.2.3_all.ipk").write_text(
+                "luci", encoding="utf-8"
+            )
+
+            release_assets.prepare_release_outputs(
+                artifacts_dir, release_dir, split_dir, "v1.2.3"
+            )
+
+            self.assertEqual(
+                sorted(path.name for path in release_dir.iterdir()),
+                ["luci-app-smart-srun-bundle_1.2.3_all.ipk"],
+            )
+
     def test_prepare_release_outputs_removes_stale_split_zip_files(self):
         release_assets = load_release_assets_module(self)
 
@@ -172,6 +205,34 @@ class ReleaseAssetsTests(unittest.TestCase):
                 sorted(path.name for path in split_dir.iterdir()),
                 ["smart-srun-split-packages-v1.2.3.zip"],
             )
+
+    def test_prepare_release_outputs_rejects_ambiguous_bundle_matches(self):
+        release_assets = load_release_assets_module(self)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            artifacts_dir = temp_path / "artifacts"
+            release_dir = temp_path / "release"
+            split_dir = temp_path / "split"
+            artifacts_dir.mkdir()
+
+            (artifacts_dir / "luci-app-smart-srun-bundle_1.2.3_all.ipk").write_text(
+                "bundle1", encoding="utf-8"
+            )
+            (artifacts_dir / "luci-app-smart-srun-bundle_1.2.4_all.ipk").write_text(
+                "bundle2", encoding="utf-8"
+            )
+            (artifacts_dir / "smart-srun_1.2.3_all.ipk").write_text(
+                "core", encoding="utf-8"
+            )
+            (artifacts_dir / "luci-app-smart-srun_1.2.3_all.ipk").write_text(
+                "luci", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(ValueError, "Expected exactly one"):
+                release_assets.prepare_release_outputs(
+                    artifacts_dir, release_dir, split_dir, "v1.2.3"
+                )
 
     def test_build_split_packages_url_uses_downloads_branch_raw_url(self):
         release_assets = load_release_assets_module(self)
