@@ -1,6 +1,7 @@
 import contextlib
 import importlib
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -393,6 +394,64 @@ class ReleaseAssetsTests(unittest.TestCase):
                 sorted(path.name for path in release_dir.iterdir()),
                 ["luci-app-smart-srun-bundle_1.2.3_all.ipk"],
             )
+
+    def test_main_prepare_metadata_can_drive_followup_commands(self):
+        release_assets = load_release_assets_module(self)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            artifacts_dir = temp_path / "artifacts"
+            release_dir = temp_path / "release-assets"
+            split_dir = temp_path / "split-downloads"
+            template_path = temp_path / "release-template.md"
+            output_path = temp_path / "release-notes.md"
+            artifacts_dir.mkdir()
+
+            (artifacts_dir / "luci-app-smart-srun-bundle_1.2.3_all.ipk").write_text(
+                "bundle", encoding="utf-8"
+            )
+            (artifacts_dir / "smart-srun_1.2.3_all.ipk").write_text(
+                "core", encoding="utf-8"
+            )
+            (artifacts_dir / "luci-app-smart-srun_1.2.3_all.ipk").write_text(
+                "luci", encoding="utf-8"
+            )
+            template_path.write_text("Download ${SPLIT_PACKAGES_URL}", encoding="utf-8")
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = release_assets.main(
+                    [
+                        "prepare",
+                        str(artifacts_dir),
+                        str(release_dir),
+                        str(split_dir),
+                        "v1.2.3",
+                    ]
+                )
+
+            metadata = json.loads(stdout.getvalue())
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                metadata["split_zip_name"],
+                "smart-srun-split-packages-v1.2.3.zip",
+            )
+
+            exit_code = release_assets.main(
+                [
+                    "render-notes",
+                    str(template_path),
+                    str(output_path),
+                    "SPLIT_PACKAGES_URL="
+                    + release_assets.build_split_packages_url(
+                        "example", "smart-srun", "v1.2.3"
+                    ),
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn(metadata["split_zip_name"], output_path.read_text("utf-8"))
 
     def test_main_prints_split_packages_url(self):
         release_assets = load_release_assets_module(self)

@@ -183,7 +183,7 @@ jobs:
       - name: Prepare release assets
         run: |
           VERSION='${{ github.event.inputs.version }}'
-          python scripts/release_assets.py prepare artifacts release-assets split-downloads "$VERSION"
+          python scripts/release_assets.py prepare artifacts release-assets split-downloads "$VERSION" > release-assets-metadata.json
 
       - name: Render pre-release notes from template
         run: |
@@ -194,16 +194,17 @@ jobs:
           if [ -z "$OPENWRT_VERSION" ]; then OPENWRT_VERSION='23.05.5'; fi
           SPLIT_PACKAGES_URL="$(python scripts/release_assets.py build-split-url "$OWNER" "$REPO" "$VERSION")"
 
-          sed \
-            -e "s/\${VERSION}/${VERSION}/g" \
-            -e "s/\${OPENWRT_VERSION}/${OPENWRT_VERSION}/g" \
-            -e "s|\${SPLIT_PACKAGES_URL}|${SPLIT_PACKAGES_URL}|g" \
-            .github/prerelease-template.md > prerelease-notes.md
+          python scripts/release_assets.py render-notes \
+            .github/prerelease-template.md \
+            prerelease-notes.md \
+            "VERSION=${VERSION}" \
+            "OPENWRT_VERSION=${OPENWRT_VERSION}" \
+            "SPLIT_PACKAGES_URL=${SPLIT_PACKAGES_URL}"
 
       - name: Publish split packages to downloads branch
         run: |
           VERSION='${{ github.event.inputs.version }}'
-          SPLIT_ZIP_NAME="smart-srun-split-packages-${VERSION}.zip"
+          SPLIT_ZIP_NAME="$(python -c "import json; print(json.load(open('release-assets-metadata.json', 'r', encoding='utf-8'))['split_zip_name'])")"
           WORKTREE_DIR="downloads-branch"
 
           rm -rf "$WORKTREE_DIR"
