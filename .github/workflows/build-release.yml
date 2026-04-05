@@ -159,25 +159,69 @@ jobs:
           pattern: smart-srun-ipk*
           merge-multiple: true
 
+      - name: Prepare release assets
+        run: |
+          VERSION='${{ github.event.inputs.version }}'
+          if [[ ! "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "$VERSION" == "." ]] || [[ "$VERSION" == ".." ]] || [[ "$VERSION" == -* ]]; then
+            echo "unsafe version: $VERSION"
+            exit 1
+          fi
+          python scripts/release_assets.py prepare artifacts release-assets split-downloads "$VERSION" > release-assets-metadata.json
+
       - name: Render release notes from template
         run: |
           VERSION='${{ github.event.inputs.version }}'
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
           OPENWRT_VERSION='${{ github.event.inputs.openwrt_version }}'
           if [ -z "$OPENWRT_VERSION" ]; then OPENWRT_VERSION='23.05.5'; fi
-          COMPARE_REF="main...${VERSION}"
+          SPLIT_PACKAGES_URL="$(python scripts/release_assets.py build-split-url "$OWNER" "$REPO" "$VERSION")"
 
-          sed \
-            -e "s/\${VERSION}/${VERSION}/g" \
-            -e "s/\${OPENWRT_VERSION}/${OPENWRT_VERSION}/g" \
-            -e "s/\${COMPARE_REF}/${COMPARE_REF}/g" \
-            .github/release-template.md > release-notes.md
+          python scripts/release_assets.py render-notes \
+            .github/release-template.md \
+            release-notes.md \
+            "VERSION=${VERSION}" \
+            "OPENWRT_VERSION=${OPENWRT_VERSION}" \
+            "SPLIT_PACKAGES_URL=${SPLIT_PACKAGES_URL}"
+
+      - name: Publish split packages to downloads branch
+        run: |
+          VERSION='${{ github.event.inputs.version }}'
+          SPLIT_ZIP_NAME="$(python -c "import json; print(json.load(open('release-assets-metadata.json', 'r', encoding='utf-8'))['split_zip_name'])")"
+          WORKTREE_DIR="downloads-branch"
+
+          rm -rf "$WORKTREE_DIR"
+          if git ls-remote --exit-code --heads origin downloads; then
+            git fetch origin downloads
+            git worktree add "$WORKTREE_DIR" origin/downloads
+          else
+            git worktree add --detach "$WORKTREE_DIR"
+            git -C "$WORKTREE_DIR" checkout --orphan downloads
+            git -C "$WORKTREE_DIR" rm -rf . || true
+            git -C "$WORKTREE_DIR" clean -fdx
+          fi
+
+          mkdir -p "$WORKTREE_DIR/${VERSION}"
+          cp -f "split-downloads/${SPLIT_ZIP_NAME}" "$WORKTREE_DIR/${VERSION}/${SPLIT_ZIP_NAME}"
+
+          git -C "$WORKTREE_DIR" add -- "${VERSION}/"
+          if git -C "$WORKTREE_DIR" diff --cached --quiet; then
+            echo "No downloads branch changes to publish"
+          else
+            git -C "$WORKTREE_DIR" config user.name "github-actions[bot]"
+            git -C "$WORKTREE_DIR" config user.email "github-actions[bot]@users.noreply.github.com"
+            git -C "$WORKTREE_DIR" commit -m "Publish split packages for ${VERSION}"
+            git -C "$WORKTREE_DIR" push origin HEAD:downloads
+          fi
+
+          git worktree remove --force "$WORKTREE_DIR"
 
       - name: Publish release and upload assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.version }}
           name: ${{ github.event.inputs.version }}
-          files: artifacts/*.ipk
+          files: release-assets/*.ipk
           body_path: release-notes.md
           draft: true
           prerelease: false
