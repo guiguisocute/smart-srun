@@ -8,6 +8,7 @@ import types
 import crypto
 import schools
 
+from config import log
 from schools._base import SchoolProfile
 
 
@@ -24,6 +25,8 @@ CORE_RESERVED_COMMANDS = (
     "log",
     "enable",
     "disable",
+    "help",
+    "man",
 )
 
 
@@ -203,6 +206,13 @@ def resolve_runtime(cfg):
     cfg = cfg or {}
     short_name = str(cfg.get("school", "")).strip()
     if not short_name or short_name == "default":
+        log(
+            "DEBUG",
+            "runtime_resolved",
+            school="default",
+            runtime_type="DefaultRuntime",
+            source="builtin",
+        )
         return DefaultRuntime()
 
     entry = schools.get_school_entry(short_name)
@@ -215,6 +225,13 @@ def resolve_runtime(cfg):
 
     if callable(getattr(module, "build_runtime", None)):
         runtime = module.build_runtime(core_api, cfg)
+        log(
+            "DEBUG",
+            "runtime_resolved",
+            school=short_name,
+            runtime_type="build_runtime",
+            source=entry["source_file"],
+        )
         return _finalize_runtime(
             runtime, metadata, "build_runtime", entry["source_file"]
         )
@@ -222,12 +239,26 @@ def resolve_runtime(cfg):
     runtime_class = getattr(module, "Runtime", None)
     if runtime_class:
         runtime = runtime_class(core_api, cfg)
+        log(
+            "DEBUG",
+            "runtime_resolved",
+            school=short_name,
+            runtime_type="runtime_class",
+            source=entry["source_file"],
+        )
         return _finalize_runtime(
             runtime, metadata, "runtime_class", entry["source_file"]
         )
 
     profile_class = getattr(module, "Profile", None)
     if profile_class:
+        log(
+            "DEBUG",
+            "runtime_resolved",
+            school=short_name,
+            runtime_type="legacy_profile",
+            source=entry["source_file"],
+        )
         return LegacyProfileRuntimeAdapter(
             profile_class(),
             source_file=entry["source_file"],
@@ -359,6 +390,13 @@ def dispatch_daemon_hook(runtime, hook_name, app_ctx, state, interval):
         message = ""
     elif not isinstance(message, str):
         message = str(message)
+    log(
+        "DEBUG",
+        "runtime_hook",
+        hook=hook_name,
+        ok=ok,
+        runtime_type=getattr(runtime, "runtime_type", "unknown"),
+    )
     return ok, message
 
 
@@ -368,6 +406,12 @@ def dispatch_runtime_action(runtime, app_ctx, action, state):
         raise RuntimeError(
             "runtime action contract error: handle_runtime_action missing"
         )
+    log(
+        "DEBUG",
+        "runtime_dispatch",
+        action=action,
+        runtime_type=getattr(runtime, "runtime_type", "unknown"),
+    )
     try:
         result = fn(app_ctx, action, state)
     except Exception as exc:

@@ -14,6 +14,7 @@ from config import (
     build_school_runtime_luci_contract,
     log,
     campus_uses_wired,
+    clear_log_context,
     ensure_parent_dir,
     failover_enabled,
     in_quiet_window,
@@ -25,6 +26,8 @@ from config import (
     pop_runtime_action,
     save_runtime_status,
     reconcile_manual_login_service_guard,
+    set_log_context,
+    timed,
     wifi_key_required,
 )
 from network import (
@@ -179,48 +182,63 @@ def handle_runtime_action(cfg, state, runtime=None, app_ctx=None):
     app_ctx = app_ctx or school_runtime.build_app_context(cfg, runtime=runtime)
 
     action_started_at = int(time.time())
-    save_runtime_status(
-        "正在执行动作: %s" % action,
-        state,
-        last_action=action,
-        last_action_ts=action_started_at,
-        action_result="pending",
-        pending_action=action,
-        action_started_at=action_started_at,
-        **build_runtime_snapshot(cfg, state),
-    )
+    requested_at = int(payload.get("requested_at") or action_started_at)
+    op_id = "act-%d" % requested_at
+    set_log_context(op_id=op_id, action=action)
+    try:
+        log(
+            "INFO",
+            "action_started",
+            "dispatching runtime action",
+            requested_at=requested_at,
+            queue_lag_ms=max(0, (action_started_at - requested_at) * 1000),
+        )
+        save_runtime_status(
+            "正在执行动作: %s" % action,
+            state,
+            last_action=action,
+            last_action_ts=action_started_at,
+            action_result="pending",
+            pending_action=action,
+            action_started_at=action_started_at,
+            **build_runtime_snapshot(cfg, state),
+        )
 
-    ok, message = school_runtime.dispatch_runtime_action(
-        runtime, app_ctx, action, state
-    )
-    action_result = "ok" if ok else "error"
-    if message.startswith("忽略未知动作:"):
-        action_result = "ignored"
-    if action.startswith("switch_") and ok:
-        if action == "switch_hotspot":
-            state["current_mode"] = "hotspot"
-        elif action == "switch_campus":
-            state["current_mode"] = "campus"
-            state["last_switch_ts"] = 0
-    if action.startswith("manual_"):
-        log("INFO", "action_result", message, action=action, ok=ok)
-    elif action.startswith("switch_"):
-        log("INFO", "action_result", message, action=action, ok=ok)
-    elif ok:
-        log("INFO", "action_result", message, action=action, ok=ok)
-    else:
-        log("WARN", "action_result", message, action=action, ok=ok)
-    save_runtime_status(
-        message,
-        state,
-        last_action=action,
-        last_action_ts=int(time.time()),
-        action_result=action_result,
-        action_started_at=0,
-        pending_action="",
-        **build_runtime_snapshot(cfg, state),
-    )
-    return True, message
+        with timed() as t:
+            ok, message = school_runtime.dispatch_runtime_action(
+                runtime, app_ctx, action, state
+            )
+        action_result = "ok" if ok else "error"
+        if message.startswith("忽略未知动作:"):
+            action_result = "ignored"
+        if action.startswith("switch_") and ok:
+            if action == "switch_hotspot":
+                state["current_mode"] = "hotspot"
+            elif action == "switch_campus":
+                state["current_mode"] = "campus"
+                state["last_switch_ts"] = 0
+        level = "INFO" if ok or action_result == "ignored" else "WARN"
+        log(
+            level,
+            "action_result",
+            message,
+            result=action_result,
+            ok=ok,
+            duration_ms=t.ms,
+        )
+        save_runtime_status(
+            message,
+            state,
+            last_action=action,
+            last_action_ts=int(time.time()),
+            action_result=action_result,
+            action_started_at=0,
+            pending_action="",
+            **build_runtime_snapshot(cfg, state),
+        )
+        return True, message
+    finally:
+        clear_log_context("op_id", "action")
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +444,17 @@ def run_daemon(runtime=None):
     startup_cfg = load_config()
     runtime = runtime or school_runtime.resolve_runtime(startup_cfg)
     startup_message, startup_action_state = _build_startup_status_payload()
+    log(
+        "INFO",
+        "daemon_start",
+        "daemon entering main loop",
+        pid=os.getpid(),
+        school=startup_cfg.get("school", "jxnu"),
+        enabled=startup_cfg.get("enabled", "0"),
+        interval=startup_cfg.get("interval", "60"),
+        failover=startup_cfg.get("failover_enabled", "0"),
+        log_level=startup_cfg.get("log_level", "INFO"),
+    )
     save_runtime_status(
         startup_message,
         state,
@@ -435,11 +464,22 @@ def run_daemon(runtime=None):
         **build_runtime_snapshot(startup_cfg, state),
     )
 
+    tick_counter = 0
     while True:
         cfg = load_config()
         interval = max(int(cfg["interval"]), 5)
         runtime = school_runtime.resolve_runtime(cfg)
         app_ctx = school_runtime.build_app_context(cfg, runtime=runtime)
+
+        tick_counter += 1
+        log(
+            "DEBUG",
+            "tick_begin",
+            "daemon tick",
+            tick=tick_counter,
+            mode=state.get("current_mode", "?"),
+            was_online=state.get("was_online", False),
+        )
 
         action_handled, action_message = handle_runtime_action(
             cfg, state, runtime=runtime, app_ctx=app_ctx

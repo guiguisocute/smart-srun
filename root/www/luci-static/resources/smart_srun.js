@@ -34,6 +34,42 @@
       .replace(/'/g, '&#39;');
   }
 
+  function logLineLevel(line) {
+    if (line.indexOf('[错误]') !== -1) return 'error';
+    if (line.indexOf('[警告]') !== -1) return 'warn';
+    if (line.indexOf('[调试]') !== -1) return 'debug';
+    if (line.indexOf('[信息]') !== -1) return 'info';
+    return 'info';
+  }
+
+  var LOG_LEVEL_COLORS = {
+    error: '#ff6b6b',
+    warn:  '#ffb454',
+    debug: '#6c7a89',
+    info:  '#9ef19e'
+  };
+
+  function renderFriendlyLogHtml(text) {
+    var lines = String(text || '').split('\n');
+    var out = [];
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (line === '') {
+        out.push('');
+        continue;
+      }
+      var level = logLineLevel(line);
+      var color = LOG_LEVEL_COLORS[level] || LOG_LEVEL_COLORS.info;
+      var weight = (level === 'error' || level === 'warn') ? '600' : '400';
+      var opacity = (level === 'debug') ? '0.78' : '1';
+      out.push(
+        '<span style="color:' + color + ';font-weight:' + weight +
+        ';opacity:' + opacity + ';">' + escapeHtml(line) + '</span>'
+      );
+    }
+    return out.join('\n');
+  }
+
   function fetchJson(url, callback) {
     var xhr = new XMLHttpRequest();
     xhr.open('GET', url, true);
@@ -205,8 +241,8 @@
 
     function poll() {
       fetchJson('/cgi-bin/luci/admin/services/smart_srun/log_tail?lines=200&format=friendly&since=' + encodeURIComponent(requestedAt) + '&_=' + Date.now(), function(err, logData) {
-        if (!err && logData && typeof logData.log === 'string') {
-          logBox.textContent = logData.log;
+        if (!err && logData && typeof logData.log === 'string' && !logData.empty) {
+          logBox.innerHTML = renderFriendlyLogHtml(logData.log);
           logBox.scrollTop = logBox.scrollHeight;
         }
       });
@@ -745,14 +781,44 @@
     hotspotData = readJson('smart-hotspot-data', []);
   }
 
+  var LOG_LEVEL_WEIGHTS = { ALL: 0, DEBUG: 10, INFO: 20, WARN: 30, ERROR: 40 };
+  var LOG_LIVE_LINES = 100;
+  var LOG_DOWNLOAD_LINES = 0;
+
+  function logLineWeight(line) {
+    if (line.indexOf('[错误]') !== -1) return 40;
+    if (line.indexOf('[警告]') !== -1) return 30;
+    if (line.indexOf('[信息]') !== -1) return 20;
+    if (line.indexOf('[调试]') !== -1) return 10;
+    return 20;
+  }
+
+  function findLogLevelSelect() {
+    return document.getElementById('widget.cbid.smart_srun.main.log_level')
+      || document.getElementById('cbid.smart_srun.main.log_level')
+      || document.querySelector('select[name="cbid.smart_srun.main.log_level"]');
+  }
+
   function initLogView() {
     var box = document.getElementById('smart-srun-log-box');
     var pre = document.getElementById('smart-srun-log-pre');
-    var toggle = document.getElementById('smart-srun-refresh-toggle');
-    if (!box || !pre || !toggle || window.__smartSrunLogInit) return;
+    var channels = document.getElementById('smart-srun-log-channels');
+    var startButton = document.getElementById('smart-srun-log-start');
+    var stopButton = document.getElementById('smart-srun-log-stop');
+    var clearButton = document.getElementById('smart-srun-log-clear');
+    var downloadButton = document.getElementById('smart-srun-log-download');
+    if (!box || !pre || !channels || !startButton || !stopButton || !clearButton || !downloadButton || window.__smartSrunLogInit) return;
     window.__smartSrunLogInit = true;
-    var autoRefresh = true;
-    var timer = null;
+    var channelButtons = channels.getElementsByTagName('button');
+    var levelSelect = findLogLevelSelect();
+    var logState = {
+      channel: 'plugin',
+      refreshing: true,
+      timer: null,
+      rawText: pre.textContent || '',
+      displayLevel: (levelSelect && levelSelect.value) ? String(levelSelect.value).toUpperCase() : 'ALL'
+    };
+    if (!(logState.displayLevel in LOG_LEVEL_WEIGHTS)) logState.displayLevel = 'ALL';
 
     function atBottom() {
       return (box.scrollHeight - box.scrollTop - box.clientHeight) < 24;
@@ -762,34 +828,172 @@
       box.scrollTop = box.scrollHeight;
     }
 
-    function setToggleText() {
-      toggle.textContent = autoRefresh ? '刷新: 开' : '刷新: 关';
+    function filterByLevel(text) {
+      var threshold = LOG_LEVEL_WEIGHTS[logState.displayLevel] || 0;
+      if (threshold <= 0) return text;
+      var lines = String(text || '').split('\n');
+      var kept = [];
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (line === '' || logLineWeight(line) >= threshold) kept.push(line);
+      }
+      return kept.join('\n');
+    }
+
+    function renderFromRaw() {
+      var keepBottom = atBottom();
+      var filtered = filterByLevel(logState.rawText);
+      pre.innerHTML = filtered ? renderFriendlyLogHtml(filtered) : '';
+      if (keepBottom) stickBottom();
+    }
+
+    function setRefreshButtons() {
+      startButton.disabled = !!logState.refreshing;
+      stopButton.disabled = !logState.refreshing;
+      startButton.className = logState.refreshing ? 'cbi-button' : 'cbi-button cbi-button-apply';
+      stopButton.className = logState.refreshing ? 'cbi-button cbi-button-apply' : 'cbi-button';
+    }
+
+    function setChannelButtons() {
+      for (var i = 0; i < channelButtons.length; i++) {
+        var button = channelButtons[i];
+        var active = button.getAttribute('data-channel') === logState.channel;
+        button.className = active ? 'cbi-button cbi-button-action' : 'cbi-button cbi-button-neutral';
+      }
+    }
+
+    function buildLogUrl(lines, format, download) {
+      return '/cgi-bin/luci/admin/services/smart_srun/log_tail?channel=' +
+        encodeURIComponent(logState.channel) + '&lines=' + lines +
+        '&format=' + encodeURIComponent(format || 'friendly') +
+        (download ? '&download=1' : '') + '&_=' + Date.now();
+    }
+
+    function buildDownloadName() {
+      var now = new Date();
+      function pad(value) { return value < 10 ? '0' + value : String(value); }
+      return 'smart_srun_' + logState.channel + '_' + now.getFullYear() +
+        pad(now.getMonth() + 1) + pad(now.getDate()) + '_' +
+        pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds()) + '.log';
     }
 
     function refresh() {
-      fetchJson('/cgi-bin/luci/admin/services/smart_srun/log_tail?lines=80&format=friendly&_=' + Date.now(), function(err, data) {
-        if (err || typeof data.log !== 'string') return;
-        var keepBottom = atBottom();
-        pre.textContent = data.log;
-        if (keepBottom) stickBottom();
+      fetchJson(buildLogUrl(LOG_LIVE_LINES, 'friendly', false), function(err, data) {
+        if (err || !data || typeof data.log !== 'string') return;
+        if (data.channel && data.channel !== logState.channel) return;
+        logState.rawText = data.log;
+        renderFromRaw();
       });
     }
 
     function startLoop() {
-      if (timer) clearInterval(timer);
-      timer = setInterval(function() {
-        if (autoRefresh) refresh();
+      if (logState.timer) return;
+      logState.timer = setInterval(function() {
+        if (logState.refreshing) refresh();
       }, 2000);
     }
 
-    toggle.addEventListener('click', function() {
-      autoRefresh = !autoRefresh;
-      setToggleText();
-      if (autoRefresh) refresh();
+    function clearDisplay() {
+      pre.innerHTML = '';
+      logState.rawText = '';
+    }
+
+    function triggerBlobDownload(text) {
+      var urlApi = window.URL || window.webkitURL;
+      if (!urlApi || !urlApi.createObjectURL) return;
+      var blob = new Blob([text || ''], { type: 'text/plain;charset=utf-8' });
+      var objUrl = urlApi.createObjectURL(blob);
+      var link = document.createElement('a');
+      link.href = objUrl;
+      link.download = buildDownloadName();
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      urlApi.revokeObjectURL(objUrl);
+    }
+
+    function downloadCurrentLog() {
+      downloadButton.disabled = true;
+      fetchJson(buildLogUrl(LOG_DOWNLOAD_LINES, 'raw', true), function(err, data) {
+        downloadButton.disabled = false;
+        if (err || !data || typeof data.log !== 'string') {
+          alert('下载失败');
+          return;
+        }
+        triggerBlobDownload(data.log);
+      });
+    }
+
+    for (var i = 0; i < channelButtons.length; i++) {
+      channelButtons[i].addEventListener('click', function() {
+        var nextChannel = this.getAttribute('data-channel') || 'plugin';
+        if (nextChannel !== 'plugin' && nextChannel !== 'network') nextChannel = 'plugin';
+        if (logState.channel === nextChannel) return;
+        logState.channel = nextChannel;
+        setChannelButtons();
+        refresh();
+      });
+    }
+
+    startButton.addEventListener('click', function() {
+      if (logState.refreshing) return;
+      logState.refreshing = true;
+      setRefreshButtons();
+      refresh();
     });
 
-    setToggleText();
-    stickBottom();
+    stopButton.addEventListener('click', function() {
+      if (!logState.refreshing) return;
+      logState.refreshing = false;
+      setRefreshButtons();
+    });
+
+    clearButton.addEventListener('click', clearDisplay);
+    downloadButton.addEventListener('click', downloadCurrentLog);
+
+    function applyDisplayLevel(rawValue) {
+      var next = String(rawValue == null ? '' : rawValue).toUpperCase();
+      if (!(next in LOG_LEVEL_WEIGHTS)) next = 'ALL';
+      if (logState.displayLevel === next) return;
+      logState.displayLevel = next;
+      renderFromRaw();
+    }
+
+    function readLevelFromEvent(ev) {
+      var t = ev && ev.target;
+      if (!t || !t.tagName) return null;
+      var id = t.id || '';
+      var name = (t.getAttribute && t.getAttribute('name')) || '';
+      var dataName = (t.getAttribute && t.getAttribute('data-name')) || '';
+      if (id.indexOf('log_level') === -1 &&
+          name.indexOf('log_level') === -1 &&
+          dataName.indexOf('log_level') === -1) return null;
+      if (t.value != null && t.value !== '') return t.value;
+      var dv = t.getAttribute && t.getAttribute('data-value');
+      return dv != null ? dv : null;
+    }
+
+    document.addEventListener('change', function(ev) {
+      var v = readLevelFromEvent(ev);
+      if (v != null) applyDisplayLevel(v);
+    }, true);
+    document.addEventListener('cbi-dropdown-change', function(ev) {
+      var v = readLevelFromEvent(ev);
+      if (v != null) applyDisplayLevel(v);
+    }, true);
+    if (levelSelect) {
+      levelSelect.addEventListener('change', function() {
+        applyDisplayLevel(levelSelect.value);
+      });
+    }
+
+    setChannelButtons();
+    setRefreshButtons();
+    if (logState.rawText) {
+      renderFromRaw();
+      stickBottom();
+    }
+    if (logState.refreshing) refresh();
     startLoop();
   }
 

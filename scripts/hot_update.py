@@ -49,6 +49,10 @@ RUNTIME_TARGETS = [
         "remote": "/usr/lib/smart_srun/crypto.py",
     },
     {
+        "local": "root/usr/lib/smart_srun/logger.py",
+        "remote": "/usr/lib/smart_srun/logger.py",
+    },
+    {
         "local": "root/usr/lib/smart_srun/network.py",
         "remote": "/usr/lib/smart_srun/network.py",
     },

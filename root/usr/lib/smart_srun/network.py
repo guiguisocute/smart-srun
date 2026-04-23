@@ -12,7 +12,7 @@ import socket
 import subprocess
 import time
 
-from config import campus_uses_wired
+from config import campus_uses_wired, log, timed
 
 try:
     import urllib.error as urllib_error
@@ -81,6 +81,19 @@ def _urlencode(params):
 def extract_host_from_url(url):
     match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/:?#]+)", str(url or ""))
     return match.group(1) if match else ""
+
+
+def redact_url_for_log(url):
+    text = str(url or "").strip()
+    if not text:
+        return ""
+
+    match = re.match(r"^([a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]+(?:/[^?#]*)?)", text)
+    if match:
+        return match.group(1)
+
+    text = text.split("#", 1)[0]
+    return text.split("?", 1)[0]
 
 
 def compact_http_error_detail(detail, max_len=180):
@@ -213,6 +226,7 @@ def wait_for_network_interface_ipv4(iface_name, timeout_seconds=12, interval_sec
 def resolve_bind_ip(url, cfg):
     host = extract_host_from_url(url)
     bind_ip = get_local_ip_for_target(host) if host else None
+    reason = "route_to_host" if bind_ip else "no_route"
     host_ip = pick_valid_ip(host)
     if host_ip and not campus_uses_wired(cfg):
         try:
@@ -229,8 +243,16 @@ def resolve_bind_ip(url, cfg):
                         sta_ip = get_ipv4_from_network_interface(sta_net)
                         if sta_ip:
                             bind_ip = sta_ip
+                            reason = "sta_override"
         except ValueError:
             pass
+    log(
+        "DEBUG",
+        "bind_ip_resolved",
+        host=host,
+        bind_ip=bind_ip or "",
+        reason=reason,
+    )
     return bind_ip
 
 
@@ -239,58 +261,113 @@ def http_get(url, params=None, timeout=5, bind_ip=None):
         query = _urlencode(params)
         url = url + ("&" if "?" in url else "?") + query
 
+    host = extract_host_from_url(url)
+    log_url = redact_url_for_log(url)
+    log(
+        "DEBUG",
+        "http_fetch",
+        method="GET",
+        url=log_url,
+        host=host,
+        timeout=timeout,
+        bind_ip=bind_ip or "",
+    )
+
     errors = []
+    dns_failure_host = ""
 
-    if HAVE_URLLIB and not bind_ip:
-        try:
-            req = urllib_request.Request(url, headers=HEADER, method="GET")
-            with urllib_request.urlopen(req, timeout=timeout) as resp:
-                return resp.read().decode("utf-8", errors="replace")
-        except Exception as exc:
-            errors.append("urllib: %s" % str(exc))
+    with timed() as t:
+        if HAVE_URLLIB and not bind_ip:
+            try:
+                req = urllib_request.Request(url, headers=HEADER, method="GET")
+                with urllib_request.urlopen(req, timeout=timeout) as resp:
+                    body = resp.read().decode("utf-8", errors="replace")
+                    status_code = getattr(resp, "status", None) or resp.getcode()
+                    log(
+                        "DEBUG",
+                        "http_fetch_result",
+                        url=log_url,
+                        host=host,
+                        client="urllib",
+                        status_code=status_code,
+                        bytes_received=len(body),
+                        duration_ms=t.ms,
+                    )
+                    return body
+            except Exception as exc:
+                msg = str(exc)
+                errors.append("urllib: %s" % msg)
+                lower = msg.lower()
+                if ("name or service not known" in lower
+                        or "nodename nor servname" in lower
+                        or "temporary failure in name resolution" in lower
+                        or "getaddrinfo" in lower):
+                    dns_failure_host = host
 
-    if bind_ip is None:
-        host = extract_host_from_url(url)
-        bind_ip = get_local_ip_for_target(host) if host else None
+        if bind_ip is None:
+            bind_ip = get_local_ip_for_target(host) if host else None
 
-    candidates = [
-        ("/usr/bin/wget", "wget"),
-        ("/bin/wget", "wget"),
-        ("/bin/uclient-fetch", "uclient-fetch"),
-        ("/usr/bin/uclient-fetch", "uclient-fetch"),
-    ]
+        candidates = [
+            ("/usr/bin/wget", "wget"),
+            ("/bin/wget", "wget"),
+            ("/bin/uclient-fetch", "uclient-fetch"),
+            ("/usr/bin/uclient-fetch", "uclient-fetch"),
+        ]
 
-    available = False
-    bind_capable = False
-    for path, kind in candidates:
-        if not os.path.exists(path):
-            continue
-        available = True
-        if kind == "wget":
-            bind_capable = True
+        available = False
+        bind_capable = False
+        for path, kind in candidates:
+            if not os.path.exists(path):
+                continue
+            available = True
+            if kind == "wget":
+                bind_capable = True
 
-        if bind_ip and kind != "wget":
-            errors.append("%s: bind_ip requires wget --bind-address support" % kind)
-            continue
+            if bind_ip and kind != "wget":
+                errors.append("%s: bind_ip requires wget --bind-address support" % kind)
+                continue
 
-        if kind == "wget":
-            cmd = [path, "-q", "-O", "-", "--timeout=%d" % int(timeout)]
-            if bind_ip:
-                cmd.append("--bind-address=%s" % bind_ip)
-            cmd.append(url)
-        else:
-            cmd = [path, "-q", "-O", "-", "--timeout", str(int(timeout)), url]
+            if kind == "wget":
+                cmd = [path, "-q", "-O", "-", "--timeout=%d" % int(timeout)]
+                if bind_ip:
+                    cmd.append("--bind-address=%s" % bind_ip)
+                cmd.append(url)
+            else:
+                cmd = [path, "-q", "-O", "-", "--timeout", str(int(timeout)), url]
 
-        try:
-            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-            return output.decode("utf-8", errors="replace")
-        except subprocess.CalledProcessError as exc:
-            details = exc.output.decode("utf-8", errors="replace") if exc.output else ""
-            if not details:
-                details = "exit status %s" % getattr(exc, "returncode", "unknown")
-            errors.append("%s: %s" % (kind, details.strip()))
-        except OSError as exc:
-            errors.append("%s: %s" % (kind, str(exc)))
+            try:
+                output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+                body = output.decode("utf-8", errors="replace")
+                log(
+                    "DEBUG",
+                    "http_fetch_result",
+                    url=log_url,
+                    host=host,
+                    client=kind,
+                    bytes_received=len(body),
+                    duration_ms=t.ms,
+                )
+                return body
+            except subprocess.CalledProcessError as exc:
+                details = exc.output.decode("utf-8", errors="replace") if exc.output else ""
+                if not details:
+                    details = "exit status %s" % getattr(exc, "returncode", "unknown")
+                errors.append("%s: %s" % (kind, details.strip()))
+            except OSError as exc:
+                errors.append("%s: %s" % (kind, str(exc)))
+
+    if dns_failure_host:
+        log("WARN", "dns_probe_failed", host=dns_failure_host, url=log_url)
+
+    log(
+        "WARN",
+        "http_fetch_result",
+        url=log_url,
+        host=host,
+        outcome="error",
+        duration_ms=t.ms,
+        errors=len(errors),
+    )
 
     if not available:
         raise RuntimeError("未找到可用 HTTP 客户端（uclient-fetch/wget）")
@@ -298,7 +375,7 @@ def http_get(url, params=None, timeout=5, bind_ip=None):
     if bind_ip and not bind_capable:
         raise RuntimeError("bind_ip requires wget --bind-address support")
 
-    raise RuntimeError(humanize_http_errors(url, [e for e in errors if e]))
+    raise RuntimeError(humanize_http_errors(log_url, [e for e in errors if e]))
 
 
 def parse_jsonp(text):
@@ -309,13 +386,40 @@ def parse_jsonp(text):
 
 def test_internet_connectivity(timeout=5):
     for url in CONNECTIVITY_CHECK_URLS:
-        try:
-            body = http_get(url, timeout=timeout)
-            if len(str(body or "")) < 64:
+        log("DEBUG", "connectivity_probe_begin", url=url, timeout=timeout)
+        with timed() as t:
+            try:
+                body = http_get(url, timeout=timeout)
+            except Exception as exc:
+                log(
+                    "DEBUG",
+                    "connectivity_probe_result",
+                    url=url,
+                    outcome="error",
+                    duration_ms=t.ms,
+                    error=str(exc),
+                )
+                continue
+            size = len(str(body or ""))
+            if size < 64:
+                log(
+                    "DEBUG",
+                    "connectivity_probe_result",
+                    url=url,
+                    outcome="online",
+                    bytes_received=size,
+                    duration_ms=t.ms,
+                )
                 return True, ""
+            log(
+                "WARN",
+                "connectivity_probe_result",
+                url=url,
+                outcome="portal",
+                bytes_received=size,
+                duration_ms=t.ms,
+            )
             return False, "疑似被重定向到认证页面"
-        except Exception:
-            continue
     return False, "无法访问连通性检测服务器"
 
 

@@ -7,7 +7,7 @@ SRun 认证 API -- challenge、login、logout、在线查询。
 
 import time
 
-from config import append_log, localize_error
+from config import append_log, localize_error, log, timed
 from network import (
     HTTP_EXCEPTIONS,
     extract_ip_from_text,
@@ -63,25 +63,89 @@ def get_token(get_challenge_api, username, ip, bind_ip=None):
         "ip": ip,
         "_": now,
     }
-    data = parse_jsonp(
-        http_get(get_challenge_api, params=params, timeout=5, bind_ip=bind_ip)
+    log(
+        "DEBUG",
+        "srun_challenge",
+        "requesting SRun challenge token",
+        username=username,
+        ip=ip,
+        bind_ip=bind_ip or "",
     )
+    with timed() as t:
+        raw = http_get(get_challenge_api, params=params, timeout=5, bind_ip=bind_ip)
+    try:
+        data = parse_jsonp(raw)
+    except ValueError as exc:
+        log(
+            "WARN",
+            "srun_challenge_result",
+            "challenge response parse failed",
+            username=username,
+            duration_ms=t.ms,
+            error=str(exc),
+        )
+        raise
     token = data.get("challenge")
     if not token:
         msg = data.get("error_msg") or data.get("error") or "unknown response"
+        log(
+            "WARN",
+            "srun_challenge_result",
+            "challenge rejected",
+            username=username,
+            duration_ms=t.ms,
+            error_code=str(msg),
+        )
         raise RuntimeError("获取挑战码失败: " + localize_error(msg))
     resolved_ip = pick_valid_ip(data.get("client_ip"), data.get("online_ip"), ip)
     if not resolved_ip:
+        log(
+            "WARN",
+            "srun_challenge_result",
+            "challenge returned no client IP",
+            username=username,
+            duration_ms=t.ms,
+        )
         raise RuntimeError("获取挑战码失败: 未获得有效客户端 IP")
+    log(
+        "DEBUG",
+        "srun_challenge_result",
+        challenge_ok=True,
+        username=username,
+        resolved_ip=resolved_ip,
+        duration_ms=t.ms,
+    )
     return token, resolved_ip
 
 
 def login(profile, srun_portal_api, cfg, ip, i_value, hmd5, chksum, bind_ip=None):
     params = profile.build_login_params(cfg, ip, i_value, hmd5, chksum)
-    data = parse_jsonp(
-        http_get(srun_portal_api, params=params, timeout=5, bind_ip=bind_ip)
+    log(
+        "DEBUG",
+        "srun_login_submit",
+        "submitting SRun login request",
+        username=cfg.get("username", ""),
+        ip=ip,
+        bind_ip=bind_ip or "",
+        enc=cfg.get("enc", ""),
+        n=cfg.get("n", ""),
+        type=cfg.get("type", ""),
     )
-    return profile.parse_login_response(data)
+    with timed() as t:
+        data = parse_jsonp(
+            http_get(srun_portal_api, params=params, timeout=5, bind_ip=bind_ip)
+        )
+    ok, message = profile.parse_login_response(data)
+    log(
+        "INFO" if ok else "WARN",
+        "srun_login_response",
+        "login response received",
+        username=cfg.get("username", ""),
+        ok=ok,
+        error_code=message if not ok else "ok",
+        duration_ms=t.ms,
+    )
+    return ok, message
 
 
 def logout(profile, rad_user_dm_api, cfg, ip, bind_ip=None):
@@ -106,10 +170,38 @@ def query_online_identity(
             app_ctx, expected_username=resolved_username, bind_ip=bind_ip
         )
     params = profile.build_online_query_params()
-    data = parse_jsonp(
-        http_get(rad_user_info_api, params=params, timeout=5, bind_ip=bind_ip)
+    log(
+        "DEBUG",
+        "srun_online_query",
+        "querying SRun online status",
+        expected_username=expected_username or "",
+        bind_ip=bind_ip or "",
     )
-    return profile.parse_online_status(data, expected_username)
+    with timed() as t:
+        try:
+            data = parse_jsonp(
+                http_get(rad_user_info_api, params=params, timeout=5, bind_ip=bind_ip)
+            )
+        except ValueError as exc:
+            log(
+                "WARN",
+                "srun_online_result",
+                "online query response parse failed",
+                duration_ms=t.ms,
+                error=str(exc),
+            )
+            raise
+    online, username_reported, message = profile.parse_online_status(
+        data, expected_username
+    )
+    log(
+        "DEBUG",
+        "srun_online_result",
+        online=online,
+        username_reported=username_reported or "",
+        duration_ms=t.ms,
+    )
+    return online, username_reported, message
 
 
 def query_online_status(

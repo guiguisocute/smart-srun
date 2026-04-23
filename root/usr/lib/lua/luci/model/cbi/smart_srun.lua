@@ -2,6 +2,7 @@ local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local util = require "luci.util"
 local jsonc = require "luci.jsonc"
+local log_controller = require "luci.controller.smart_srun"
 local schema = require "luci.smart_srun.schema"
 
 local CONFIG_FILE = "/usr/lib/smart_srun/config.json"
@@ -961,20 +962,42 @@ interval = s:taboption("advanced", Value, "interval", "检测间隔（秒）")
 interval.datatype = "uinteger"
 bind_text(interval, "interval")
 
+log_level = s:taboption("log", ListValue, "log_level", "日志等级",
+    "ALL = 全部；DEBUG = 含调试细节；INFO = 默认；WARN/ERROR 仅记录警告与错误。")
+log_level:value("ALL", "ALL（全部）")
+log_level:value("DEBUG", "DEBUG（调试）")
+log_level:value("INFO", "INFO（信息，默认）")
+log_level:value("WARN", "WARN（仅警告与错误）")
+log_level:value("ERROR", "ERROR（仅错误）")
+log_level.rmempty = false
+log_level.default = "INFO"
+bind_text(log_level, "log_level")
+
 log_text = s:taboption("log", DummyValue, "_log_text", "运行日志")
 log_text.rawhtml = true
 function log_text.cfgvalue(self, section)
-    local t = sys.exec("tail -n 80 /var/log/smart_srun.log 2>/dev/null") or ""
+    local t = sys.exec("tail -n 100 /var/log/smart_srun.log 2>/dev/null") or ""
+    if t ~= "" then
+        t = log_controller.friendly_log_text(t)
+    end
     if t == "" then
         t = "暂无日志"
     end
 
     local escaped = util.pcdata and util.pcdata(t) or t
     return [[
-<div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:6px;">
-  <button id="smart-srun-refresh-toggle" type="button" class="cbi-button cbi-button-apply">刷新: 开</button>
+<div id="smart-srun-log-toolbar" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px;">
+  <div id="smart-srun-log-channels" role="tablist" style="display:inline-flex;gap:4px;">
+    <button id="smart-srun-log-channel-plugin" data-channel="plugin" type="button" class="cbi-button cbi-button-action">插件日志</button>
+    <button id="smart-srun-log-channel-network" data-channel="network" type="button" class="cbi-button cbi-button-neutral">网络日志</button>
+  </div>
+  <div style="flex:1;"></div>
+  <button id="smart-srun-log-start" type="button" class="cbi-button cbi-button-apply">开始刷新</button>
+  <button id="smart-srun-log-stop" type="button" class="cbi-button">停止刷新</button>
+  <button id="smart-srun-log-clear" type="button" class="cbi-button">清空显示</button>
+  <button id="smart-srun-log-download" type="button" class="cbi-button cbi-button-apply">下载日志</button>
 </div>
-<div id="smart-srun-log-box" style="max-height:420px;overflow:auto;border:1px solid #2b2b2b;padding:10px;background:#0b0f14;border-radius:4px;">
+<div id="smart-srun-log-box" style="max-height:560px;overflow:auto;border:1px solid #2b2b2b;padding:10px;background:#0b0f14;border-radius:4px;">
   <pre id="smart-srun-log-pre" style="margin:0;white-space:pre-wrap;word-break:break-all;color:#9ef19e;font-family:monospace;line-height:1.35;">]] .. escaped .. [[</pre>
 </div>
 ]]

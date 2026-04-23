@@ -227,6 +227,8 @@ class SchoolRuntimeCliTests(unittest.TestCase):
             "log",
             "enable",
             "disable",
+            "help",
+            "man",
         ]
 
         for name in reserved:
@@ -234,6 +236,83 @@ class SchoolRuntimeCliTests(unittest.TestCase):
                 self.runtime.extra_commands = [{"name": name, "help": "bad"}]
                 with self.assertRaisesRegex(ValueError, "reserved command"):
                     self.run_main(["custom"])
+
+    def test_man_command_prints_full_manual_with_key_sections(self):
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "man"]),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            redirect_stdout(stdout),
+        ):
+            daemon.main()
+
+        text = stdout.getvalue()
+        for marker in (
+            "SMART SRun",
+            "名称",
+            "用法",
+            "命令分组",
+            "主要配置项",
+            "日志等级",
+            "文件",
+            "退出码",
+            "示例",
+            "log_level",
+            "switch hotspot",
+            "/var/log/smart_srun.log",
+        ):
+            self.assertIn(marker, text)
+
+    def test_help_without_args_prints_top_level_help(self):
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "help"]),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            redirect_stdout(stdout),
+        ):
+            daemon.main()
+
+        text = stdout.getvalue()
+        self.assertIn("usage: srunnet", text)
+        self.assertIn("常用命令组", text)
+
+    def test_help_with_command_prints_subcommand_help(self):
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "help", "config"]),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            redirect_stdout(stdout),
+        ):
+            daemon.main()
+
+        text = stdout.getvalue()
+        self.assertIn("usage: srunnet config", text)
+        self.assertIn("show", text)
+
+    def test_help_with_nested_command_walks_subparser_chain(self):
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "help", "config", "account"]),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            redirect_stdout(stdout),
+        ):
+            daemon.main()
+
+        text = stdout.getvalue()
+        self.assertIn("usage: srunnet config account", text)
+
+    def test_help_with_unknown_command_returns_nonzero_and_writes_to_stderr(self):
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "help", "no-such-cmd"]),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            mock.patch.object(sys, "stderr", stderr),
+        ):
+            with self.assertRaises(SystemExit) as exc:
+                daemon.main()
+
+        self.assertEqual(exc.exception.code, 2)
+        self.assertIn("no-such-cmd", stderr.getvalue())
 
     def test_runtime_cli_dispatch_requires_fixed_result_shape(self):
         self.runtime.extra_commands = [{"name": "custom", "help": "custom command"}]
