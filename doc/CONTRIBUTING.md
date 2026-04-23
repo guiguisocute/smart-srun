@@ -15,6 +15,7 @@ root/
 │   ├── cli.py                     # CLI 参数解析与命令分发
 │   ├── daemon.py                  # 守护循环与 runtime action 执行
 │   ├── config.py                  # 配置读写 + 状态管理
+│   ├── logger.py                  # 结构化日志叶子模块：阈值过滤、上下文传播、timed、append_log 兼容、512 KiB 轮转
 │   ├── srun_auth.py               # SRun 认证协议实现
 │   ├── crypto.py                  # 加密算法（自定义 Base64、HMAC、BX1）
 │   ├── network.py                 # HTTP 客户端（urllib/wget/uclient-fetch）
@@ -34,6 +35,52 @@ root/
 ```
 
 其中，LuCI 页面现在拆成了 "Lua 负责渲染与接口，`smart_srun.js` 负责前端交互" 的结构。打包时 `luci-app-smart-srun` 和 `luci-app-smart-srun-bundle` 都会一起包含 `schema.lua` 和静态 JS 资源。`scripts/` 与 `tests/` 属于开发态文件，不会进入最终 ipk 包。
+
+`logger.py` 是一个刻意保持无内部依赖的 leaf module，`network.py`、`config.py`、`wireless.py` 等都会直接 import 它来避开循环依赖。这里如果再反向依赖别的 `smart_srun` 模块，通常很容易把运行时 import 链搞坏。
+
+## 提交前先这样验证
+
+先跑完整测试：
+
+```sh
+python -m pytest tests/ -v
+```
+
+只想验证某一块时，可以直接跑：
+
+```sh
+python -m pytest tests/test_school_runtime_loader.py -v
+python -m pytest tests/ -k runtime -v
+ruff check root/usr/lib/smart_srun/
+```
+
+这个仓库很常见的一类改动，是只改了 Lua / JS / 打包脚本，没有很好地做路由器侧自动化。遇到这种情况，补一个 source-level 的 Python 回归测试是正常做法，比如直接断言某个 Lua 端点、按钮 ID、命令字符串或打包规则仍然存在。
+
+## 用热更新脚本做路由器验证
+
+先安装依赖并设置环境变量：
+
+```sh
+python -m pip install paramiko
+export SMARTSRUN_ROUTER_PASSWORD=<password>
+export SMARTSRUN_ROUTER_HOST=10.0.0.1
+python scripts/hot_update.py
+```
+
+`SMARTSRUN_ROUTER_USER` 和 `SMARTSRUN_LUCI_BASE_URL` 是可选的。
+
+这个脚本会上传文件、跑远端语法检查、清 LuCI / Python 缓存、重启 `smart_srun` 和 `uwsgi`，然后再做 `srunnet status`、`srunnet schools`、`srunnet schools inspect --selected` 这些冒烟检查。
+
+注意：`scripts/hot_update.py` 维护的是一份显式上传列表，不会自动扫描新文件。如果你新增了 shipped Python / Lua / JS 文件，记得把它加进去，不然本地改了、路由器上却没有。
+
+## 改 LuCI 日志面板前先看这里
+
+日志面板不是单点实现，下面几个地方是绑在一起的：
+
+- `root/usr/lib/lua/luci/controller/smart_srun.lua` 的 `action_log_tail()` 同时服务于主日志面板和动作进度弹窗；默认行为必须继续兼容 `channel=plugin` + `since=...` 这条老调用链。
+- 友好日志渲染在 controller 里的 `friendly_line()` / `friendly_log_text()`；`model/cbi/smart_srun.lua` 的首屏 SSR 也直接复用它，所以改这里会同时影响首屏和前端轮询结果。
+- 如果新增 structured log event，想让 LuCI 显示中文，就要同步更新 controller 里的 `event_zh`。
+- 前端颜色判断靠 `[错误]`、`[警告]`、`[调试]`、`[信息]` 这些前缀。只改翻译文案、不保留前缀，颜色就会失效。
 
 ## 适配其他学校
 

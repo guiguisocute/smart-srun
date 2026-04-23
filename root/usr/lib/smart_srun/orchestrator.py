@@ -15,6 +15,7 @@ from config import (
     backoff_enabled,
     begin_manual_login_service_guard,
     campus_uses_wired,
+    clear_log_context,
     get_manual_terminal_check_attempts,
     get_manual_terminal_check_interval_seconds,
     get_manual_terminal_check_label,
@@ -27,6 +28,8 @@ from config import (
     localize_error,
     quiet_window_label,
     restore_manual_login_service_guard,
+    set_log_context,
+    timed,
 )
 from network import (
     HTTP_EXCEPTIONS,
@@ -103,74 +106,192 @@ def _interruptible_sleep(total_seconds):
 
 
 def run_once_with_retry(cfg, ignore_service_disabled=False):
-    ok, message = srun_auth.run_once_safe(cfg)
-    if ok:
-        return True, message
-
-    log("ERROR", "login_failed", "first attempt failed", reason=message)
-
-    if not backoff_enabled(cfg):
+    cycle_id = "retry-%d" % int(time.time())
+    set_log_context(cycle_id=cycle_id)
+    try:
         log(
             "INFO",
-            "retry_scheduled",
-            "single retry scheduled",
-            delay=int(get_retry_cooldown_seconds(cfg)),
-            backoff="off",
+            "retry_cycle_start",
+            "beginning login + retry cycle",
+            backoff=("on" if backoff_enabled(cfg) else "off"),
+            max_retries=int(cfg.get("backoff_max_retries", 0) or 0),
+            base_cooldown=get_retry_cooldown_seconds(cfg),
+            max_cooldown=get_retry_max_cooldown_seconds(cfg),
         )
-        time.sleep(get_retry_cooldown_seconds(cfg))
-        retry_ok, retry_message = srun_auth.run_once_safe(cfg)
-        if retry_ok:
-            log("INFO", "retry_success", "single retry succeeded")
-            return True, "重试成功"
-        log("ERROR", "retry_failed", "single retry failed", reason=retry_message)
-        return False, retry_message
-
-    retries = 0
-    failures = 1
-
-    while True:
-        runtime_cfg = load_config()
-        max_retries = int(runtime_cfg.get("backoff_max_retries", 0))
-
-        if runtime_cfg.get("enabled") != "1" and not ignore_service_disabled:
-            return False, "服务已禁用，停止重试"
-        if not backoff_enabled(runtime_cfg):
-            return False, message
-        if in_quiet_window(runtime_cfg):
-            return False, "进入夜间停用时段，停止重试"
-        if max_retries > 0 and retries >= max_retries:
-            return False, message
-        pending_action = _pending_runtime_action()
-        if pending_action:
+        with timed() as first_attempt:
+            ok, message = srun_auth.run_once_safe(cfg)
+        if ok:
             log(
                 "INFO",
-                "retry_interrupted",
-                "pending action detected, aborting retry loop",
-                pending_action=pending_action,
+                "retry_cycle_end",
+                "cycle succeeded on first attempt",
+                result="ok",
+                attempts=1,
+                duration_ms=first_attempt.ms,
             )
-            return False, "检测到待处理操作，中断重试"
+            return True, message
 
-        delay = calc_backoff_delay_seconds(runtime_cfg, failures)
-        log("INFO", "retry_scheduled", attempt=retries + 1, delay=round(delay, 1))
-        if delay > 0 and not _interruptible_sleep(delay):
+        log(
+            "ERROR",
+            "login_failed",
+            "first attempt failed",
+            reason=message,
+            duration_ms=first_attempt.ms,
+        )
+
+        if not backoff_enabled(cfg):
+            log(
+                "INFO",
+                "retry_scheduled",
+                "single retry scheduled",
+                delay=int(get_retry_cooldown_seconds(cfg)),
+                backoff="off",
+            )
+            time.sleep(get_retry_cooldown_seconds(cfg))
+            retry_ok, retry_message = srun_auth.run_once_safe(cfg)
+            if retry_ok:
+                log("INFO", "retry_success", "single retry succeeded")
+                log(
+                    "INFO",
+                    "retry_cycle_end",
+                    "cycle succeeded after single retry",
+                    result="ok",
+                    attempts=2,
+                )
+                return True, "重试成功"
+            log("ERROR", "retry_failed", "single retry failed", reason=retry_message)
+            log(
+                "WARN",
+                "retry_cycle_end",
+                "cycle failed after single retry",
+                result="error",
+                attempts=2,
+                reason=retry_message,
+            )
+            return False, retry_message
+
+        retries = 0
+        failures = 1
+
+        while True:
+            runtime_cfg = load_config()
+            max_retries = int(runtime_cfg.get("backoff_max_retries", 0))
+
+            if runtime_cfg.get("enabled") != "1" and not ignore_service_disabled:
+                log(
+                    "INFO",
+                    "retry_cycle_end",
+                    "service disabled during retry",
+                    result="stopped",
+                    attempts=retries + 1,
+                    reason="service_disabled",
+                )
+                return False, "服务已禁用，停止重试"
+            if not backoff_enabled(runtime_cfg):
+                log(
+                    "INFO",
+                    "retry_cycle_end",
+                    "backoff disabled mid-cycle",
+                    result="stopped",
+                    attempts=retries + 1,
+                    reason="backoff_disabled",
+                )
+                return False, message
+            if in_quiet_window(runtime_cfg):
+                log(
+                    "INFO",
+                    "retry_cycle_end",
+                    "entered quiet window during retry",
+                    result="stopped",
+                    attempts=retries + 1,
+                    reason="quiet_window",
+                )
+                return False, "进入夜间停用时段，停止重试"
+            if max_retries > 0 and retries >= max_retries:
+                log(
+                    "WARN",
+                    "retry_cycle_end",
+                    "retry limit reached",
+                    result="exhausted",
+                    attempts=retries + 1,
+                    max_retries=max_retries,
+                    reason=message,
+                )
+                return False, message
             pending_action = _pending_runtime_action()
+            if pending_action:
+                log(
+                    "INFO",
+                    "retry_interrupted",
+                    "pending action detected, aborting retry loop",
+                    pending_action=pending_action,
+                )
+                log(
+                    "INFO",
+                    "retry_cycle_end",
+                    "interrupted by pending action",
+                    result="interrupted",
+                    attempts=retries + 1,
+                    pending_action=pending_action,
+                )
+                return False, "检测到待处理操作，中断重试"
+
+            delay = calc_backoff_delay_seconds(runtime_cfg, failures)
             log(
                 "INFO",
-                "retry_interrupted",
-                "pending action detected during retry wait",
-                pending_action=pending_action,
+                "retry_scheduled",
+                attempt=retries + 1,
+                delay=round(delay, 1),
+                failures=failures,
             )
-            return False, "检测到待处理操作，中断重试"
+            if delay > 0 and not _interruptible_sleep(delay):
+                pending_action = _pending_runtime_action()
+                log(
+                    "INFO",
+                    "retry_interrupted",
+                    "pending action detected during retry wait",
+                    pending_action=pending_action,
+                )
+                log(
+                    "INFO",
+                    "retry_cycle_end",
+                    "interrupted by pending action during wait",
+                    result="interrupted",
+                    attempts=retries + 1,
+                    pending_action=pending_action,
+                )
+                return False, "检测到待处理操作，中断重试"
 
-        retry_ok, retry_message = srun_auth.run_once_safe(runtime_cfg)
-        retries += 1
-        if retry_ok:
-            log("INFO", "retry_success", attempt=retries)
-            return True, "重试成功（第 %d 次）" % retries
+            with timed() as attempt_t:
+                retry_ok, retry_message = srun_auth.run_once_safe(runtime_cfg)
+            retries += 1
+            if retry_ok:
+                log(
+                    "INFO",
+                    "retry_success",
+                    attempt=retries,
+                    duration_ms=attempt_t.ms,
+                )
+                log(
+                    "INFO",
+                    "retry_cycle_end",
+                    "cycle succeeded via retry",
+                    result="ok",
+                    attempts=retries + 1,
+                )
+                return True, "重试成功（第 %d 次）" % retries
 
-        log("ERROR", "retry_failed", attempt=retries, reason=retry_message)
-        message = retry_message
-        failures += 1
+            log(
+                "ERROR",
+                "retry_failed",
+                attempt=retries,
+                reason=retry_message,
+                duration_ms=attempt_t.ms,
+            )
+            message = retry_message
+            failures += 1
+    finally:
+        clear_log_context("cycle_id")
 
 
 def run_once_manual(cfg):
@@ -288,6 +409,8 @@ def run_manual_logout(cfg, override_user_id=None):
     if not cfg["username"]:
         return False, "未配置学工号"
 
+    op_id = "logout-%d" % int(time.time())
+    set_log_context(op_id=op_id)
     app_ctx = build_app_context(cfg)
     runtime = app_ctx["runtime"]
     urls = runtime.build_urls(cfg["base_url"])
@@ -341,6 +464,8 @@ def run_manual_logout(cfg, override_user_id=None):
             return False, "登出失败: " + localized
     except Exception as exc:
         return False, "登出失败: " + localize_error(exc)
+    finally:
+        clear_log_context("op_id")
 
 
 def wait_for_manual_logout_ready(
@@ -538,6 +663,8 @@ def wait_for_manual_login_ready(cfg, attempts=5, delay_seconds=2):
 
 def run_manual_login(cfg):
     service_guard_enabled = False
+    op_id = "login-%d" % int(time.time())
+    set_log_context(op_id=op_id)
 
     try:
         service_guard_enabled, _ = begin_manual_login_service_guard()
@@ -606,3 +733,4 @@ def run_manual_login(cfg):
                     "manual_login_start",
                     "service guard restored: daemon re-enabled",
                 )
+        clear_log_context("op_id")

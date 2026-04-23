@@ -11,12 +11,25 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-BEIJING_TZ = timezone(timedelta(hours=8))
-LOG_FILE = "/var/log/smart_srun.log"
+from logger import (
+    BEIJING_TZ,
+    LOG_FILE,
+    LOG_MAX_BYTES,
+    LOG_LEVEL_NAMES,
+    DEFAULT_LOG_LEVEL,
+    append_log,
+    clear_log_context,
+    get_log_threshold,
+    log,
+    normalize_level as normalize_log_level,
+    set_log_context,
+    set_log_threshold,
+    timed,
+)
+
 JSON_CONFIG_FILE = "/usr/lib/smart_srun/config.json"
 STATE_FILE = "/var/run/smart_srun/state.json"
 ACTION_FILE = "/var/run/smart_srun/action.json"
-LOG_MAX_BYTES = 512 * 1024
 CONNECTIVITY_CACHE_SECONDS = 15
 SWITCH_DELAY_SECONDS = 2
 SSID_READY_TIMEOUT_SECONDS = 12
@@ -49,6 +62,7 @@ GLOBAL_SCALAR_KEYS = {
     "backoff_outer_const_factor",
     "interval",
     "developer_mode",
+    "log_level",
     "sta_iface",
     "n",
     "type",
@@ -135,6 +149,7 @@ def _load_defaults():
         "backoff_outer_const_factor": "0",
         "interval": "60",
         "developer_mode": "0",
+        "log_level": "INFO",
         "sta_iface": "",
         "n": "200",
         "type": "1",
@@ -281,53 +296,7 @@ def update_json_raw_config(updater):
 # ---------------------------------------------------------------------------
 
 
-def log(level, event, msg="", **ctx):
-    """
-    Structured log entry.
-
-    level: "INFO" | "WARN" | "ERROR"
-    event: english snake_case event key (e.g. "login_success")
-    msg:   optional human-readable english summary
-    ctx:   key=value context pairs
-    """
-    timestamp = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    parts = [level, event]
-    for k, v in ctx.items():
-        sv = str(v)
-        if " " in sv or not sv:
-            sv = '"%s"' % sv.replace('"', '\\"')
-        parts.append("%s=%s" % (k, sv))
-    if msg:
-        parts.append("| %s" % msg)
-    _write_log("[%s] %s" % (timestamp, " ".join(parts)))
-
-
-def append_log(line):
-    """Legacy compat wrapper. New code should use log()."""
-    _write_log(
-        "[%s] %s"
-        % (
-            datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
-            str(line).strip(),
-        )
-    )
-
-
-def _write_log(log_line):
-    """Write a pre-formatted log line to stdout and log file with rotation."""
-    print(log_line, flush=True)
-    try:
-        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > LOG_MAX_BYTES:
-            with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as rf:
-                content = rf.read()
-            keep = content[-(LOG_MAX_BYTES // 2) :]
-            with open(LOG_FILE, "w", encoding="utf-8") as wf:
-                wf.write(keep)
-
-        with open(LOG_FILE, "a", encoding="utf-8") as af:
-            af.write(log_line + "\n")
-    except OSError:
-        pass
+# log() / append_log() are imported from logger.py at module top.
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +634,12 @@ def queue_runtime_action(action):
         "requested_at": int(time.time()),
     }
     save_json_file(ACTION_FILE, payload)
+    log(
+        "DEBUG",
+        "config_action_queued",
+        action=payload["action"],
+        requested_at=payload["requested_at"],
+    )
 
 
 def pop_runtime_action():
@@ -673,6 +648,16 @@ def pop_runtime_action():
         os.remove(ACTION_FILE)
     except OSError:
         pass
+    if isinstance(payload, dict) and payload.get("action"):
+        requested_at = int(payload.get("requested_at") or 0)
+        lag_ms = int(max(0, time.time() - requested_at) * 1000) if requested_at else 0
+        log(
+            "DEBUG",
+            "config_action_consumed",
+            action=str(payload.get("action", "")),
+            requested_at=requested_at,
+            lag_ms=lag_ms,
+        )
     return payload if isinstance(payload, dict) else {}
 
 
@@ -1067,6 +1052,20 @@ def load_config():
         cfg["interval"] = interval if interval > 0 else 180
     except ValueError:
         cfg["interval"] = 180
+
+    cfg["log_level"] = set_log_threshold(cfg.get("log_level"))
+
+    log(
+        "DEBUG",
+        "config_loaded",
+        "config loaded",
+        school=cfg.get("school", ""),
+        enabled=cfg.get("enabled", ""),
+        failover_enabled=cfg.get("failover_enabled", ""),
+        log_level=cfg.get("log_level", ""),
+        interval=cfg.get("interval", ""),
+    )
+
     return cfg
 
 

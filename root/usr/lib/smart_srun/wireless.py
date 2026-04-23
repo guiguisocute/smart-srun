@@ -11,6 +11,7 @@ import time
 from config import (
     append_log,
     log,
+    timed,
     campus_uses_wired,
     failover_enabled,
     get_switch_ready_timeout_seconds,
@@ -166,15 +167,27 @@ def detect_runtime_mode(cfg, wireless_data=None):
     section = get_runtime_sta_section(cfg, data)
     profile = get_sta_profile_from_section(section, data) if section else {}
     ssid = str(profile.get("ssid", "")).strip()
+
+    def _emit(mode, reason):
+        log(
+            "DEBUG",
+            "runtime_mode_detect",
+            mode=mode,
+            reason=reason,
+            section=section or "",
+            ssid=ssid or "-",
+        )
+        return mode
+
     if ssid and ssid == str(cfg.get("hotspot_ssid", "")).strip():
-        return "hotspot"
+        return _emit("hotspot", "ssid_match_hotspot")
     if campus_uses_wired(cfg) and get_ipv4_from_network_interface("wan"):
-        return "campus"
+        return _emit("campus", "wired_wan_ip")
     if not section:
-        return "unknown"
+        return _emit("unknown", "no_sta_section")
     if ssid and ssid == str(cfg.get("campus_ssid", "")).strip():
-        return "campus"
-    return "unknown"
+        return _emit("campus", "ssid_match_campus")
+    return _emit("unknown", "ssid_mismatch")
 
 
 def get_network_interface_from_sta_section(section, wireless_data=None):
@@ -477,8 +490,17 @@ def create_sta_on_radio(radio, network_name, profile):
 
 
 def commit_reload_wireless():
-    ok1, msg1 = run_cmd(["uci", "commit", "wireless"])
-    ok2, msg2 = run_cmd(["wifi", "reload"])
+    with timed() as t:
+        ok1, msg1 = run_cmd(["uci", "commit", "wireless"])
+        ok2, msg2 = run_cmd(["wifi", "reload"])
+    log(
+        "DEBUG" if (ok1 and ok2) else "WARN",
+        "wifi_reload",
+        "uci commit + wifi reload",
+        commit_ok=ok1,
+        reload_ok=ok2,
+        duration_ms=t.ms,
+    )
     if ok1 and ok2:
         return True, ""
     return False, "；".join([x for x in [msg1, msg2] if x])
@@ -568,6 +590,20 @@ def _set_sta_profile_uci(section, profile):
     if wifi_key_required(encryption) and not key:
         return False, "目标 SSID 需要密码，但未配置 key。"
 
+    changed_fields = ["disabled", "ssid", "encryption", "jxnu_auto"]
+    if bssid:
+        changed_fields.append("bssid")
+    if wifi_key_required(encryption):
+        changed_fields.append("key")
+    log(
+        "DEBUG",
+        "uci_wireless_update",
+        "updating STA section via UCI",
+        section=sec,
+        changed=",".join(changed_fields),
+        encryption=encryption,
+    )
+
     msgs = []
     ok = True
 
@@ -651,6 +687,12 @@ def disable_managed_sta_sections(cfg, wireless_data=None):
     for sec in sorted(set(managed)):
         c_ok, c_msg = run_cmd(["uci", "set", "wireless.%s.disabled=1" % sec])
         ok = ok and c_ok
+        log(
+            "DEBUG",
+            "sta_section_disabled",
+            section=sec,
+            uci_ok=c_ok,
+        )
         if (not c_ok) and c_msg:
             msgs.append(c_msg)
 
@@ -805,8 +847,10 @@ def wait_for_sta_ipv4(
     section, timeout_seconds=SSID_READY_TIMEOUT_SECONDS, interval_seconds=1
 ):
     sec = str(section or "").strip()
-    deadline = time.time() + max(int(timeout_seconds), 1)
+    started_at = time.time()
+    deadline = started_at + max(int(timeout_seconds), 1)
     last_net = get_network_interface_from_sta_section(sec)
+    last_progress_log = 0.0
 
     while time.time() < deadline:
         net = get_network_interface_from_sta_section(sec)
@@ -814,9 +858,41 @@ def wait_for_sta_ipv4(
             last_net = net
             ip = get_ipv4_from_network_interface(net)
             if ip:
+                total_ms = int((time.time() - started_at) * 1000)
+                log(
+                    "INFO",
+                    "ip_wait_result",
+                    "STA acquired IPv4",
+                    section=sec,
+                    network=net,
+                    ip=ip,
+                    total_ms=total_ms,
+                    outcome="ok",
+                )
                 return net, ip
+        now = time.time()
+        if now - last_progress_log >= 2.0:
+            last_progress_log = now
+            log(
+                "DEBUG",
+                "ip_wait_progress",
+                section=sec,
+                network=net or (last_net or ""),
+                got_ip=False,
+                elapsed_ms=int((now - started_at) * 1000),
+            )
         time.sleep(max(int(interval_seconds), 1))
 
+    total_ms = int((time.time() - started_at) * 1000)
+    log(
+        "WARN",
+        "ip_wait_result",
+        "STA IPv4 wait timed out",
+        section=sec,
+        network=last_net or "",
+        total_ms=total_ms,
+        outcome="timeout",
+    )
     return last_net, None
 
 
@@ -828,6 +904,18 @@ def wait_for_sta_ipv4(
 def switch_sta_profile(cfg, expect_hotspot):
     cfg, _, _ = apply_default_selection_for_runtime(expect_hotspot, "执行无线切换前")
     data = parse_wireless_iface_data()
+    _eval_target = build_expected_profile(cfg, expect_hotspot)
+    _eval_encryption = normalize_wifi_encryption(_eval_target.get("encryption", "none"))
+    log(
+        "DEBUG",
+        "switch_evaluate",
+        "evaluating target STA profile",
+        current_mode=detect_runtime_mode(cfg, data),
+        target_ssid=_eval_target.get("ssid", "") or "?",
+        target_profile_type="hotspot" if expect_hotspot else "campus",
+        encryption=_eval_encryption,
+        have_key=bool(str(_eval_target.get("key", "")).strip()),
+    )
     ready_ok, ready_msg, data = ensure_runtime_wireless_prerequisites(
         cfg, expect_hotspot, data
     )
@@ -853,6 +941,14 @@ def switch_sta_profile(cfg, expect_hotspot):
         )
 
     data_after_select = parse_wireless_iface_data()
+    log(
+        "INFO",
+        "switch_progress",
+        "applying target SSID config",
+        stage="applying",
+        target=target["label"],
+        ssid=target["ssid"] or "?",
+    )
     ok, msg = apply_sta_profile(cfg, section, target, data_after_select)
     if (not ok) and msg:
         return False, msg
@@ -868,11 +964,29 @@ def switch_sta_profile(cfg, expect_hotspot):
     bands = parse_radio_bands()
     bl = band_label(bands.get(radio, ""))
 
+    ip_timeout = get_switch_ready_timeout_seconds(cfg)
+    log(
+        "INFO",
+        "switch_progress",
+        "waiting for IPv4",
+        stage="wait_ip",
+        target=target["label"],
+        radio=radio or "?",
+        band=bl,
+        timeout=ip_timeout,
+    )
+
     if not expect_hotspot:
-        _, ip = wait_for_sta_ipv4(
-            section, timeout_seconds=get_switch_ready_timeout_seconds(cfg)
-        )
+        _, ip = wait_for_sta_ipv4(section, timeout_seconds=ip_timeout)
         if ip:
+            log(
+                "INFO",
+                "switch_progress",
+                "testing portal reachability",
+                stage="probe",
+                target=target["label"],
+                ip=ip,
+            )
             portal_ok, portal_detail = test_portal_reachability(cfg)
             if portal_ok:
                 conn_hint = "网关可达"
@@ -910,10 +1024,16 @@ def switch_sta_profile(cfg, expect_hotspot):
             bl,
         )
 
-    _, ip = wait_for_sta_ipv4(
-        section, timeout_seconds=get_switch_ready_timeout_seconds(cfg)
-    )
+    _, ip = wait_for_sta_ipv4(section, timeout_seconds=ip_timeout)
     if ip:
+        log(
+            "INFO",
+            "switch_progress",
+            "testing internet connectivity",
+            stage="probe",
+            target=target["label"],
+            ip=ip,
+        )
         dns_ok, _ = test_internet_connectivity()
         conn_hint = "连通" if dns_ok else "不通"
         if (not dns_ok) and hotspot_failback_enabled(cfg):
@@ -1025,6 +1145,18 @@ def ensure_expected_profile(cfg, expect_hotspot, last_switch_ts=0):
     if last_switch_ts and (now - last_switch_ts) < SSID_EXPECTED_RETRY_SECONDS:
         return False, "%s未就绪，等待后重试切换。" % expected["label"], last_switch_ts
 
+    log(
+        "INFO",
+        "profile_rebuild",
+        "current STA profile drifted, rebuilding",
+        target=expected["label"],
+        expected_ssid=expected["ssid"],
+        current_ssid=current.get("ssid", "") or "-",
+        current_section=check,
+        active_section=active_section or "-",
+        enabled=check_enabled,
+        have_ip=bool(ip_now),
+    )
     switched, sw_msg = switch_sta_profile(cfg, expect_hotspot)
     switched_at = now
 

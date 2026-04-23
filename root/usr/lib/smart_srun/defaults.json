@@ -21,6 +21,7 @@
   "backoff_outer_const_factor": "0",
   "interval": "60",
   "developer_mode": "0",
+  "log_level": "INFO",
   "sta_iface": "",
   "n": "200",
   "type": "1",

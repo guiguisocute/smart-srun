@@ -12,6 +12,66 @@ local ACTION_FILE = "/var/run/smart_srun/action.json"
 local LOG_FILE = "/var/log/smart_srun.log"
 local restore_manual_guarded_enabled
 local ACTION_STALE_SECONDS = 20
+local LOG_TAIL_SOURCE_LINES = 2000
+
+local NETWORK_EVENTS = {
+    bind_ip_resolved = true,
+    http_fetch = true,
+    http_fetch_result = true,
+    connectivity_probe_begin = true,
+    connectivity_probe_result = true,
+    dns_probe_failed = true,
+    srun_challenge = true,
+    srun_challenge_result = true,
+    srun_login_submit = true,
+    srun_login_response = true,
+    srun_online_query = true,
+    srun_online_result = true,
+    ip_wait_progress = true,
+    ip_wait_result = true,
+    wifi_reload = true,
+    sta_section_disabled = true,
+    uci_wireless_update = true,
+}
+
+local SYSLOG_TAGS = {
+    netifd = true,
+    wpa_supplicant = true,
+    hostapd = true,
+    udhcpc = true,
+}
+
+local SYSLOG_KEYWORDS = {
+    "authentication",
+    "disconnected",
+    "dhcp",
+    "no lease",
+}
+
+local SYSLOG_LEVELS = {
+    err = "ERROR",
+    crit = "ERROR",
+    alert = "ERROR",
+    emerg = "ERROR",
+    warn = "WARN",
+    warning = "WARN",
+    debug = "DEBUG",
+}
+
+local MONTH_MAP = {
+    Jan = 1,
+    Feb = 2,
+    Mar = 3,
+    Apr = 4,
+    May = 5,
+    Jun = 6,
+    Jul = 7,
+    Aug = 8,
+    Sep = 9,
+    Oct = 10,
+    Nov = 11,
+    Dec = 12,
+}
 
 function index()
     entry({"admin", "services", "smart_srun"}, cbi("smart_srun"), _("SMART SRun"), 80).dependent = true
@@ -490,7 +550,9 @@ local event_zh = {
     manual_preclean     = "登录预清理",
     manual_preclean_done = "预清理完成",
     action_result       = "操作结果",
+    action_started      = "开始执行动作",
     action_unknown      = "未知操作",
+    switch_progress     = "切换进度",
     quiet_enter         = "进入夜间停用",
     quiet_exit          = "退出夜间停用",
     daemon_tick         = "状态更新",
@@ -505,7 +567,40 @@ local event_zh = {
     config_legacy_fix   = "修复遗留状态",
     config_default_applied = "应用默认配置",
     config_action_queued = "操作已入队",
+    config_action_consumed = "操作已出队",
+    config_loaded       = "配置已加载",
     status_query        = "状态查询",
+    -- 重试与生命周期
+    retry_cycle_start   = "进入重试循环",
+    retry_cycle_end     = "重试循环结束",
+    tick_begin          = "守护进程心跳",
+    -- 网络底层
+    bind_ip_resolved    = "绑定 IP 已解析",
+    http_fetch          = "发起 HTTP 请求",
+    http_fetch_result   = "HTTP 请求结果",
+    connectivity_probe_begin = "开始连通性探测",
+    connectivity_probe_result = "连通性探测结果",
+    dns_probe_failed    = "DNS 解析失败",
+    -- 无线模块
+    wifi_reload         = "重载无线配置",
+    sta_section_disabled = "已禁用 STA 配置段",
+    ip_wait_progress    = "等待 IPv4 中",
+    ip_wait_result      = "IPv4 等待结果",
+    runtime_mode_detect = "检测运行模式",
+    profile_rebuild     = "重建无线配置",
+    uci_wireless_update = "更新 UCI 无线配置",
+    switch_evaluate     = "评估切换决策",
+    -- SRun 认证
+    srun_challenge      = "请求 SRun 挑战码",
+    srun_challenge_result = "SRun 挑战码结果",
+    srun_login_submit   = "提交 SRun 登录",
+    srun_login_response = "SRun 登录响应",
+    srun_online_query   = "查询 SRun 在线状态",
+    srun_online_result  = "SRun 在线状态结果",
+    -- 学校运行时
+    runtime_resolved    = "学校运行时已加载",
+    runtime_hook        = "学校运行时钩子",
+    runtime_dispatch    = "学校运行时派发",
 }
 
 -- Error reason translation (reuses server-side mapping)
@@ -535,20 +630,46 @@ local function extract_kv(rest, key)
     return rest:match(key .. "=(%S+)")
 end
 
+local switch_stage_zh = {
+    applying = "应用无线配置",
+    wait_ip  = "等待获取 IPv4",
+    probe    = "检测连通性",
+}
+
 -- Translate a structured log line to user-friendly Chinese
-local function friendly_line(line)
+function friendly_line(line)
     local ts, level, event, rest = parse_structured(line)
     if not ts then return line end
     local zh = event_zh[event]
-    if not zh then return line end
 
     local parts = { ts, " " }
     if level == "ERROR" then
         parts[#parts + 1] = "[错误] "
     elseif level == "WARN" then
         parts[#parts + 1] = "[警告] "
+    elseif level == "DEBUG" then
+        parts[#parts + 1] = "[调试] "
+    elseif level == "INFO" then
+        parts[#parts + 1] = "[信息] "
+    else
+        parts[#parts + 1] = "[信息] "
     end
-    parts[#parts + 1] = zh
+    parts[#parts + 1] = zh or event
+
+    if event == "switch_progress" then
+        local stage = extract_kv(rest, "stage")
+        local stage_zh = stage and switch_stage_zh[stage]
+        if stage_zh then parts[#parts + 1] = " · " .. stage_zh end
+        local target = extract_kv(rest, "target")
+        if target then parts[#parts + 1] = "（" .. target .. "）" end
+        return table.concat(parts)
+    end
+
+    if event == "action_started" then
+        local action = extract_kv(rest, "action")
+        if action then parts[#parts + 1] = "：" .. action end
+        return table.concat(parts)
+    end
 
     local account = extract_kv(rest, "account")
     if account then parts[#parts + 1] = " [" .. account .. "]" end
@@ -570,49 +691,312 @@ local function friendly_line(line)
     return table.concat(parts)
 end
 
-function action_log_tail()
-    local since = tonumber(http.formvalue("since")) or 0
-    local lines = tonumber(http.formvalue("lines")) or 400
-    local fmt = http.formvalue("format") or "raw"
-    if lines < 10 then
-        lines = 10
-    elseif lines > 1000 then
-        lines = 1000
+function friendly_log_text(text)
+    if not text or text == "" then
+        return text or ""
     end
 
-    local text = sys.exec("tail -n " .. lines .. " /var/log/smart_srun.log 2>/dev/null") or ""
-    if since > 0 and text ~= "" then
-        local kept = {}
-        for line in text:gmatch("[^\n]+") do
-            local y, m, d, hh, mm, ss = line:match("^%[(%d+)%-(%d+)%-(%d+) (%d+):(%d+):(%d+)%]")
-            if y then
-                local ts = os.time({
-                    year = tonumber(y), month = tonumber(m), day = tonumber(d),
-                    hour = tonumber(hh), min = tonumber(mm), sec = tonumber(ss)
-                }) or 0
-                if ts >= since then
-                    kept[#kept + 1] = line
-                end
+    local translated = {}
+    for line in tostring(text):gmatch("[^\n]+") do
+        translated[#translated + 1] = friendly_line(line)
+    end
+    return table.concat(translated, "\n")
+end
+
+local function structured_unix_ts(line)
+    local y, m, d, hh, mm, ss = line:match("^%[(%d+)%-(%d+)%-(%d+) (%d+):(%d+):(%d+)%]")
+    if not y then
+        return nil
+    end
+    return os.time({
+        year = tonumber(y),
+        month = tonumber(m),
+        day = tonumber(d),
+        hour = tonumber(hh),
+        min = tonumber(mm),
+        sec = tonumber(ss),
+    })
+end
+
+local function read_plugin_log_text(lines)
+    return sys.exec("tail -n " .. lines .. " " .. LOG_FILE .. " 2>/dev/null") or ""
+end
+
+local function read_plugin_full_log_text()
+    return fs.readfile(LOG_FILE) or ""
+end
+
+local function filter_text_since(text, since)
+    if since <= 0 or text == "" then
+        return text
+    end
+
+    local kept = {}
+    for line in text:gmatch("[^\n]+") do
+        local ts = structured_unix_ts(line)
+        if ts and ts >= since then
+            kept[#kept + 1] = line
+        end
+    end
+    return table.concat(kept, "\n")
+end
+
+local function read_system_log_text()
+    local ok, text = pcall(sys.exec, "logread -l " .. LOG_TAIL_SOURCE_LINES .. " 2>/dev/null")
+    if ok and text and text ~= "" then
+        return text
+    end
+    ok, text = pcall(sys.exec, "logread 2>/dev/null | tail -n " .. LOG_TAIL_SOURCE_LINES)
+    if ok and text then
+        return text
+    end
+    return ""
+end
+
+local function parse_syslog_timestamp(line)
+    local now = os.date("*t")
+    local month_name, day, hh, mm, ss, year = line:match(
+        "^%a+ (%a+) +(%d+) (%d+):(%d+):(%d+) (%d%d%d%d)%s+"
+    )
+    if not month_name then
+        month_name, day, hh, mm, ss = line:match(
+            "^%a+ (%a+) +(%d+) (%d+):(%d+):(%d+)%s+"
+        )
+        year = tostring(now.year)
+    end
+    if not month_name then
+        return os.time(), true
+    end
+
+    local month = MONTH_MAP[month_name]
+    if not month then
+        return os.time(), true
+    end
+
+    local ts = os.time({
+        year = tonumber(year),
+        month = month,
+        day = tonumber(day),
+        hour = tonumber(hh),
+        min = tonumber(mm),
+        sec = tonumber(ss),
+    })
+    if not ts then
+        return os.time(), true
+    end
+    return ts, false
+end
+
+local function parse_syslog_payload(line)
+    local facility, severity, raw_tag, message = line:match(
+        "^.- ([%w_%-]+)%.([%w_%-]+) ([^:]+):%s*(.*)$"
+    )
+    if not facility or not severity or not raw_tag then
+        return nil
+    end
+
+    local tag = tostring(raw_tag):match("^([%w_%-]+)")
+    if not tag or not SYSLOG_TAGS[tag] then
+        return nil
+    end
+
+    return facility, severity, tag, message or ""
+end
+
+local function syslog_matches_context(line, state)
+    local line_lower = tostring(line or ""):lower()
+    local matched_context = false
+    local values = {
+        util.trim(tostring((state or {}).current_ssid or "")),
+        util.trim(tostring((state or {}).current_bssid or "")),
+        util.trim(tostring((state or {}).current_iface or "")),
+    }
+
+    for _, value in ipairs(values) do
+        if value ~= "" then
+            matched_context = true
+            if line_lower:find(value:lower(), 1, true) then
+                return true
             end
         end
-        text = table.concat(kept, "\n")
     end
+
+    if matched_context then
+        return false
+    end
+
+    for _, keyword in ipairs(SYSLOG_KEYWORDS) do
+        if line_lower:find(keyword, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function extract_syslog_iface(message, state)
+    local iface = tostring(message or ""):match("^([%w_.%-]+):")
+    if iface and iface ~= "" then
+        return iface
+    end
+
+    iface = tostring(message or ""):match("Interface '([%w_.%-]+)'")
+    if iface and iface ~= "" then
+        return iface
+    end
+
+    local current_iface = util.trim(tostring((state or {}).current_iface or ""))
+    if current_iface ~= "" and tostring(message or ""):find(current_iface, 1, true) then
+        return current_iface
+    end
+
+    return nil
+end
+
+local function build_system_log_entry(line, state, order)
+    local _, severity, tag, message = parse_syslog_payload(line)
+    if not tag or not syslog_matches_context(line, state) then
+        return nil
+    end
+
+    local ts, unparsed = parse_syslog_timestamp(line)
+    local parts = {
+        "[",
+        os.date("%Y-%m-%d %H:%M:%S", ts),
+        "] ",
+        SYSLOG_LEVELS[tostring(severity or ""):lower()] or "INFO",
+        " syslog_",
+        tag,
+    }
+    local iface = extract_syslog_iface(message, state)
+    if iface and iface ~= "" then
+        parts[#parts + 1] = " iface=" .. iface
+    end
+    parts[#parts + 1] = " source=system"
+    if unparsed then
+        parts[#parts + 1] = " unparsed=1"
+    end
+    parts[#parts + 1] = " | " .. tostring(message or "")
+
+    return {
+        line = table.concat(parts),
+        ts = ts,
+        source_priority = 1,
+        order = order,
+    }
+end
+
+local function trim_entries(entries, lines)
+    if #entries <= lines then
+        return entries
+    end
+    local trimmed = {}
+    for idx = #entries - lines + 1, #entries do
+        trimmed[#trimmed + 1] = entries[idx]
+    end
+    return trimmed
+end
+
+local function build_network_log_text(lines, since)
+    local entries = {}
+    local order_counter = 0
+    local plugin_text = read_plugin_log_text(LOG_TAIL_SOURCE_LINES)
+    for line in plugin_text:gmatch("[^\n]+") do
+        local _, _, event = parse_structured(line)
+        if event and NETWORK_EVENTS[event] then
+            order_counter = order_counter + 1
+            entries[#entries + 1] = {
+                line = line,
+                ts = structured_unix_ts(line) or os.time(),
+                source_priority = 0,
+                order = order_counter,
+            }
+        end
+    end
+
+    local state = read_json_file(STATE_FILE)
+    local system_text = read_system_log_text()
+    for line in system_text:gmatch("[^\n]+") do
+        order_counter = order_counter + 1
+        local entry = build_system_log_entry(line, state, order_counter)
+        if entry then
+            entries[#entries + 1] = entry
+        end
+    end
+
+    table.sort(entries, function(left, right)
+        if left.ts ~= right.ts then
+            return left.ts < right.ts
+        end
+        if left.source_priority ~= right.source_priority then
+            return left.source_priority < right.source_priority
+        end
+        return (left.order or 0) < (right.order or 0)
+    end)
+
+    if since > 0 then
+        local kept = {}
+        for _, entry in ipairs(entries) do
+            if (entry.ts or 0) >= since then
+                kept[#kept + 1] = entry
+            end
+        end
+        entries = kept
+    end
+
+    entries = trim_entries(entries, lines)
+
+    local output = {}
+    for _, entry in ipairs(entries) do
+        output[#output + 1] = entry.line
+    end
+    return table.concat(output, "\n")
+end
+
+local function build_log_text(channel, lines, since, download_mode)
+    if download_mode then
+        if channel == "network" then
+            return build_network_log_text(LOG_TAIL_SOURCE_LINES, since)
+        end
+        return read_plugin_full_log_text()
+    end
+
+    if channel == "network" then
+        return build_network_log_text(lines, since)
+    end
+    return filter_text_since(read_plugin_log_text(lines), since)
+end
+
+function action_log_tail()
+    local since = tonumber(http.formvalue("since")) or 0
+    local lines = tonumber(http.formvalue("lines")) or 1000
+    local fmt = http.formvalue("format") or "raw"
+    local channel = http.formvalue("channel") or "plugin"
+    local download_mode = tostring(http.formvalue("download") or "") == "1"
+    channel = channel == "network" and "network" or "plugin"
+    if not download_mode then
+        if lines < 10 then
+            lines = 10
+        elseif lines > 1000 then
+            lines = 1000
+        end
+    end
+
+    local text = build_log_text(channel, lines, since, download_mode)
 
     if fmt == "friendly" and text ~= "" then
-        local translated = {}
-        for line in text:gmatch("[^\n]+") do
-            translated[#translated + 1] = friendly_line(line)
-        end
-        text = table.concat(translated, "\n")
+        text = friendly_log_text(text)
     end
 
-    if text == "" then
+    local empty = (text == "")
+    if empty then
         text = "No logs yet."
     end
 
     http.prepare_content("application/json")
     http.write(jsonc.stringify({
         log = text,
+        empty = empty,
+        channel = channel,
         ts = os.time(),
     }))
 end
