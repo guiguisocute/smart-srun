@@ -45,6 +45,7 @@ from snapshot import build_runtime_snapshot
 
 
 DAEMON_LOCK_FILE = "/var/run/smart_srun/daemon.lock"
+ROUTINE_ONLINE_TICK_PREFIX = "在线，下一次检测间隔 "
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +61,12 @@ def _make_daemon_state():
         "was_online": False,
         "last_switch_ts": 0,
     }
+
+
+def _should_log_daemon_tick(message, state=None):
+    del state
+    text = str(message or "")
+    return not text.startswith(ROUTINE_ONLINE_TICK_PREFIX)
 
 
 def load_pending_runtime_action():
@@ -502,7 +509,8 @@ def run_daemon(runtime=None):
         hook_result = _run_runtime_daemon_hook(app_ctx, state, interval)
         if hook_result is not None:
             ok, message = hook_result
-            log("INFO" if ok else "WARN", "daemon_tick", message)
+            if (not ok) or _should_log_daemon_tick(message, state):
+                log("INFO" if ok else "WARN", "daemon_tick", message)
             save_runtime_status(
                 message,
                 state,
@@ -519,7 +527,8 @@ def run_daemon(runtime=None):
         else:
             message, sleep = _daemon_tick_active(cfg, state, interval)
 
-        log("INFO", "daemon_tick", message)
+        if _should_log_daemon_tick(message, state):
+            log("INFO", "daemon_tick", message)
         save_runtime_status(
             message,
             state,

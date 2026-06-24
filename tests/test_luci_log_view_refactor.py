@@ -177,6 +177,32 @@ class LuciLogViewRefactorTests(unittest.TestCase):
         self.assertIn('onPageVisible(refreshOverview)', self.js_text)
         self.assertIn('onPageVisible(function() {', self.js_text)
 
+    def test_update_endpoints_and_frontend_flow_are_wired(self):
+        for endpoint in [
+            "update_check",
+            "update_start",
+            "update_status",
+        ]:
+            self.assertIn(endpoint, self.controller_text)
+            self.assertIn(endpoint, self.js_text)
+        self.assertIn('run_srunnet_json("update check")', self.controller_text)
+        self.assertIn('run_srunnet_json("update run --background")', self.controller_text)
+        self.assertIn('run_srunnet_json("update status")', self.controller_text)
+        self.assertIn("确认自动更新到", self.js_text)
+        self.assertIn("pollUpdateStatus", self.js_text)
+
+    def test_school_preset_apply_button_is_explicit(self):
+        self.assertIn("smart-school-preset-data", self.cbi_text)
+        self.assertIn('run_client("presets list", false)', self.cbi_text)
+        self.assertIn("schoolPresetList", self.js_text)
+        self.assertIn("jm-school_preset", self.js_text)
+        self.assertIn("jm-apply-school-defaults", self.js_text)
+        self.assertIn("jm-reset-school-defaults", self.js_text)
+        self.assertIn("applySchoolDefaultsToForm", self.js_text)
+        self.assertIn("resetSchoolDefaultsForm", self.js_text)
+        self.assertIn("initialValues.base_url", self.js_text)
+        self.assertNotIn("[已验证]", self.js_text)
+
 
 if __name__ == "__main__":
     unittest.main()

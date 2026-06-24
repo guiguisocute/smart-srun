@@ -229,6 +229,8 @@ class SchoolRuntimeCliTests(unittest.TestCase):
             "disable",
             "help",
             "man",
+            "update",
+            "presets",
         ]
 
         for name in reserved:
@@ -517,6 +519,52 @@ class SchoolRuntimeCliTests(unittest.TestCase):
 
         self.assertEqual(json.loads(stdout.getvalue()), payload)
 
+    def test_update_status_command_prints_json_status(self):
+        import updater
+
+        payload = {"ok": True, "phase": "idle", "message": "未开始更新"}
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "update", "status"]),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            mock.patch.object(updater, "get_status", return_value=payload),
+            redirect_stdout(stdout),
+        ):
+            daemon.main()
+
+        self.assertEqual(json.loads(stdout.getvalue()), payload)
+
+    def test_presets_refresh_command_prints_json_result(self):
+        import school_presets
+
+        payload = {"ok": True, "schools": [{"short_name": "qdu"}]}
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "presets", "refresh"]),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            mock.patch.object(school_presets, "refresh_remote_presets", return_value=payload),
+            redirect_stdout(stdout),
+        ):
+            daemon.main()
+
+        self.assertEqual(json.loads(stdout.getvalue()), payload)
+
+    def test_presets_list_command_prints_active_presets(self):
+        import school_presets
+
+        payload = [{"short_name": "jxnu"}, {"short_name": "qdu"}]
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "presets", "list"]),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            mock.patch.object(school_presets, "list_presets", return_value=payload) as list_presets,
+            redirect_stdout(stdout),
+        ):
+            daemon.main()
+
+        list_presets.assert_called_once_with(include_draft=False)
+        self.assertEqual(json.loads(stdout.getvalue()), payload)
+
     def test_config_show_works_when_runtime_resolution_is_broken(self):
         with (
             mock.patch.object(
@@ -757,6 +805,12 @@ class HotUpdateScriptTests(unittest.TestCase):
 
 
 class DaemonStartupStateTests(unittest.TestCase):
+    def test_routine_online_tick_updates_state_without_info_log(self):
+        self.assertFalse(
+            daemon._should_log_daemon_tick("在线，下一次检测间隔 30 秒", {})
+        )
+        self.assertTrue(daemon._should_log_daemon_tick("校园网配置未就绪", {}))
+
     def test_run_daemon_preserves_pending_action_context_on_startup(self):
         cfg = {"enabled": "1", "interval": "30", "school": "custom"}
         startup_state = {
@@ -1027,7 +1081,10 @@ class LuciSourceHardeningTests(unittest.TestCase):
             "root/usr/lib/smart_srun/snapshot.py",
             "root/usr/lib/smart_srun/school_runtime.py",
             "root/usr/lib/smart_srun/version_info.py",
+            "root/usr/lib/smart_srun/school_presets.py",
+            "root/usr/lib/smart_srun/updater.py",
             "root/usr/lib/smart_srun/defaults.json",
+            "root/usr/lib/smart_srun/school_presets_fallback.json",
             "root/usr/lib/smart_srun/schools/__init__.py",
             "root/usr/lib/smart_srun/schools/_base.py",
             "root/usr/lib/smart_srun/schools/jxnu.py",
@@ -1100,13 +1157,16 @@ class LuciSourceHardeningTests(unittest.TestCase):
             any(
                 "import school_runtime" in command
                 and "import schools" in command
+                and "import updater" in command
                 and "import cli" in command
                 for command in sanity_commands
             ),
             "hot update sanity checks must smoke-test runtime loader imports",
         )
         self.assertIn("srunnet schools", sanity_commands)
+        self.assertIn("srunnet presets list", sanity_commands)
         self.assertIn("srunnet schools inspect --selected", sanity_commands)
+        self.assertIn("srunnet update status", sanity_commands)
         self.assertIn("/etc/init.d/smart_srun restart", restart_commands)
         self.assertIn("/etc/init.d/uwsgi restart", restart_commands)
 

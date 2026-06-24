@@ -80,7 +80,7 @@ class SchoolRuntimeLoaderTests(unittest.TestCase):
                 "name": "Runtime Metadata",
                 "description": "metadata only",
                 "contributors": ["@loader"],
-                "operators": [{"id": "xn", "label": "Campus", "verified": True}],
+                "operators": [{"id": "xn", "label": "Campus"}],
                 "no_suffix_operators": ["xn"],
                 "capabilities": ["healthcheck"],
             }
@@ -196,7 +196,7 @@ class SchoolRuntimeLoaderTests(unittest.TestCase):
                 "name": "Runtime Bridge",
                 "description": "metadata bridge",
                 "contributors": ["@bridge"],
-                "operators": [{"id": "cucc", "label": "CUCC", "verified": True}],
+                "operators": [{"id": "cucc", "label": "CUCC"}],
                 "no_suffix_operators": ["xn"],
             }
 
@@ -213,7 +213,7 @@ class SchoolRuntimeLoaderTests(unittest.TestCase):
         self.assertEqual(runtime.NAME, "Runtime Bridge")
         self.assertEqual(runtime.DESCRIPTION, "metadata bridge")
         self.assertEqual(
-            runtime.OPERATORS, ({"id": "cucc", "label": "CUCC", "verified": True},)
+            runtime.OPERATORS, ({"id": "cucc", "label": "CUCC"},)
         )
         self.assertEqual(runtime.NO_SUFFIX_OPERATORS, ("xn",))
 
@@ -255,7 +255,7 @@ class SchoolRuntimeLoaderTests(unittest.TestCase):
                 "name": "Inspectable School",
                 "description": "inspect me",
                 "contributors": ["@inspect"],
-                "operators": [{"id": "cucc", "label": "CUCC", "verified": True}],
+                "operators": [{"id": "cucc", "label": "CUCC"}],
                 "no_suffix_operators": ["xn"],
                 "capabilities": ["inspect", "status"],
             }

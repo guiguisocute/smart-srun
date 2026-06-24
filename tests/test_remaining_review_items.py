@@ -53,14 +53,53 @@ class NetworkBindIpTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "unexpected"):
                 network.get_ipv4_from_network_interface("wan")
 
-    def test_http_get_skips_urllib_when_bind_ip_is_explicit(self):
+    def test_http_get_binds_source_ip_via_stdlib_when_bind_ip_is_explicit(self):
+        fake_resp = mock.Mock()
+        fake_resp.read.return_value = b"bound-response"
+        fake_resp.status = 200
+        fake_conn = mock.Mock()
+        fake_conn.getresponse.return_value = fake_resp
+
         with (
+            mock.patch.object(network, "HAVE_URLLIB", True),
+            mock.patch.object(
+                network.http_client, "HTTPConnection", return_value=fake_conn
+            ) as http_conn,
             mock.patch.object(
                 network.urllib_request,
                 "urlopen",
-                side_effect=AssertionError("urllib path should be skipped"),
+                side_effect=AssertionError("urlopen path should be skipped"),
             ) as urlopen,
+            mock.patch.object(
+                network.subprocess,
+                "check_output",
+                side_effect=AssertionError("wget path should be skipped"),
+            ) as check_output,
+        ):
+            body = network.http_get(
+                "http://portal.example.edu/ping", timeout=7, bind_ip="192.0.2.9"
+            )
+
+        self.assertEqual(body, "bound-response")
+        urlopen.assert_not_called()
+        check_output.assert_not_called()
+        self.assertEqual(http_conn.call_args.args[0], "portal.example.edu")
+        self.assertEqual(http_conn.call_args.kwargs.get("timeout"), 7)
+        self.assertEqual(
+            http_conn.call_args.kwargs.get("source_address"), ("192.0.2.9", 0)
+        )
+        fake_conn.request.assert_called_once_with(
+            "GET", "/ping", headers=network.HEADER
+        )
+
+    def test_http_get_falls_back_to_wget_when_stdlib_bind_fails(self):
+        with (
             mock.patch.object(network, "HAVE_URLLIB", True),
+            mock.patch.object(
+                network.http_client,
+                "HTTPConnection",
+                side_effect=OSError("Cannot assign requested address"),
+            ),
             mock.patch.object(
                 network.os,
                 "path",
@@ -69,7 +108,7 @@ class NetworkBindIpTests(unittest.TestCase):
             mock.patch.object(
                 network.subprocess,
                 "check_output",
-                return_value=b"bound-response",
+                return_value=b"wget-response",
             ) as check_output,
         ):
             mock_path.exists.side_effect = lambda path: path == "/usr/bin/wget"
@@ -78,8 +117,7 @@ class NetworkBindIpTests(unittest.TestCase):
                 "http://portal.example.edu/ping", timeout=7, bind_ip="192.0.2.9"
             )
 
-        self.assertEqual(body, "bound-response")
-        urlopen.assert_not_called()
+        self.assertEqual(body, "wget-response")
         self.assertEqual(
             check_output.call_args[0][0],
             [

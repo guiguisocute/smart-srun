@@ -15,12 +15,16 @@ import time
 from config import campus_uses_wired, log, timed
 
 try:
+    import http.client as http_client
     import urllib.error as urllib_error
+    import urllib.parse as urllib_parse
     import urllib.request as urllib_request
 
     HAVE_URLLIB = True
 except ModuleNotFoundError:
+    http_client = None
     urllib_error = None
+    urllib_parse = None
     urllib_request = None
     HAVE_URLLIB = False
 
@@ -257,6 +261,38 @@ def resolve_bind_ip(url, cfg):
     return bind_ip
 
 
+def _http_get_via_stdlib(url, timeout, bind_ip):
+    """用 stdlib http.client 发起 GET，可选绑定本机源 IP。
+
+    避免依赖 wget --bind-address（BusyBox wget / uclient-fetch 都不支持），
+    在 python3-light 上即可完成源地址绑定。返回 (body, status_code)。
+    """
+    parts = urllib_parse.urlsplit(url)
+    scheme = (parts.scheme or "http").lower()
+    host = parts.hostname or ""
+    port = parts.port or (443 if scheme == "https" else 80)
+    path = parts.path or "/"
+    if parts.query:
+        path = path + "?" + parts.query
+
+    source = (bind_ip, 0) if bind_ip else None
+    if scheme == "https":
+        conn = http_client.HTTPSConnection(
+            host, port, timeout=timeout, source_address=source
+        )
+    else:
+        conn = http_client.HTTPConnection(
+            host, port, timeout=timeout, source_address=source
+        )
+    try:
+        conn.request("GET", path, headers=HEADER)
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", errors="replace")
+        return body, resp.status
+    finally:
+        conn.close()
+
+
 def http_get(url, params=None, timeout=5, bind_ip=None):
     if params:
         query = _urlencode(params)
@@ -278,26 +314,31 @@ def http_get(url, params=None, timeout=5, bind_ip=None):
     dns_failure_host = ""
 
     with timed() as t:
-        if HAVE_URLLIB and not bind_ip:
+        if HAVE_URLLIB:
             try:
-                req = urllib_request.Request(url, headers=HEADER, method="GET")
-                with urllib_request.urlopen(req, timeout=timeout) as resp:
-                    body = resp.read().decode("utf-8", errors="replace")
-                    status_code = getattr(resp, "status", None) or resp.getcode()
-                    log(
-                        "DEBUG",
-                        "http_fetch_result",
-                        url=log_url,
-                        host=host,
-                        client="urllib",
-                        status_code=status_code,
-                        bytes_received=len(body),
-                        duration_ms=t.ms,
-                    )
-                    return body
+                if bind_ip:
+                    body, status_code = _http_get_via_stdlib(url, timeout, bind_ip)
+                    client_name = "http.client(bound)"
+                else:
+                    req = urllib_request.Request(url, headers=HEADER, method="GET")
+                    with urllib_request.urlopen(req, timeout=timeout) as resp:
+                        body = resp.read().decode("utf-8", errors="replace")
+                        status_code = getattr(resp, "status", None) or resp.getcode()
+                    client_name = "urllib"
+                log(
+                    "DEBUG",
+                    "http_fetch_result",
+                    url=log_url,
+                    host=host,
+                    client=client_name,
+                    status_code=status_code,
+                    bytes_received=len(body),
+                    duration_ms=t.ms,
+                )
+                return body
             except Exception as exc:
                 msg = str(exc)
-                errors.append("urllib: %s" % msg)
+                errors.append("%s: %s" % ("http.client" if bind_ip else "urllib", msg))
                 lower = msg.lower()
                 if ("name or service not known" in lower
                         or "nodename nor servname" in lower
@@ -373,7 +414,7 @@ def http_get(url, params=None, timeout=5, bind_ip=None):
     if not available:
         raise RuntimeError("未找到可用 HTTP 客户端（uclient-fetch/wget）")
 
-    if bind_ip and not bind_capable:
+    if bind_ip and not bind_capable and not HAVE_URLLIB:
         raise RuntimeError("bind_ip requires wget --bind-address support")
 
     raise RuntimeError(humanize_http_errors(log_url, [e for e in errors if e]))

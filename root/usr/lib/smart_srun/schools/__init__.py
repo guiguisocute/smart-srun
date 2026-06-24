@@ -19,6 +19,18 @@ def _copy_list(value):
     return list(value)
 
 
+def _copy_operators(value):
+    operators = []
+    for operator in _copy_list(value):
+        if isinstance(operator, dict):
+            item = dict(operator)
+            item.pop("verified", None)
+            operators.append(item)
+        else:
+            operators.append(operator)
+    return operators
+
+
 def _normalize_school_metadata(metadata):
     item = dict(metadata or {})
     short_name = str(item.get("short_name", "")).strip()
@@ -28,7 +40,7 @@ def _normalize_school_metadata(metadata):
     item["name"] = str(item.get("name") or short_name)
     item["description"] = str(item.get("description") or "")
     item["contributors"] = _copy_list(item.get("contributors"))
-    item["operators"] = _copy_list(item.get("operators"))
+    item["operators"] = _copy_operators(item.get("operators"))
     item["no_suffix_operators"] = _copy_list(item.get("no_suffix_operators"))
     if "capabilities" in item:
         item["capabilities"] = _copy_list(item.get("capabilities"))

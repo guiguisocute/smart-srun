@@ -27,6 +27,8 @@ CORE_RESERVED_COMMANDS = (
     "disable",
     "help",
     "man",
+    "update",
+    "presets",
 )
 
 

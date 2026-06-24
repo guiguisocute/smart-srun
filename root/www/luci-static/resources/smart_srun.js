@@ -9,6 +9,9 @@
   var modalSaveHandler = null;
   var RELEASES_API_URL = 'https://api.github.com/repos/matthewlu070111/smart-srun/releases/latest';
   var RELEASES_PAGE_URL = 'https://github.com/matthewlu070111/smart-srun/releases';
+  var UPDATE_CHECK_URL = '/cgi-bin/luci/admin/services/smart_srun/update_check';
+  var UPDATE_START_URL = '/cgi-bin/luci/admin/services/smart_srun/update_start';
+  var UPDATE_STATUS_URL = '/cgi-bin/luci/admin/services/smart_srun/update_status';
 
   function readText(id) {
     var node = document.getElementById(id);
@@ -132,6 +135,75 @@
     return (localInfo.release || 0) < (remoteInfo.release || 0);
   }
 
+  function formatUpdateStatus(data) {
+    data = data || {};
+    var lines = [];
+    lines.push('状态：' + (data.message || data.phase || '未知'));
+    if (data.current_version) lines.push('当前版本：' + data.current_version);
+    if (data.latest_tag || data.latest_version) lines.push('目标版本：' + (data.latest_tag || data.latest_version));
+    if (data.install_mode) lines.push('包型：' + data.install_mode + ' / ' + (data.package_format || ''));
+    if (data.package_name) lines.push('当前包：' + data.package_name);
+    if (data.asset_name) lines.push('下载项：' + data.asset_name);
+    return lines.join('\n');
+  }
+
+  function pollUpdateStatus(outputNode) {
+    fetchJson(UPDATE_STATUS_URL, function(err, data) {
+      if (err || !data) {
+        outputNode.textContent = '读取更新状态失败';
+        return;
+      }
+      outputNode.textContent = formatUpdateStatus(data);
+      if (data.running) {
+        setTimeout(function() { pollUpdateStatus(outputNode); }, 2000);
+      }
+    });
+  }
+
+  function openUpdateModal(plan) {
+    plan = plan || {};
+    var output = E('pre', {
+      'style': 'max-height:18rem;overflow:auto;margin:0;padding:.75rem;border:1px solid rgba(127,127,127,.28);background:rgba(127,127,127,.08);white-space:pre-wrap;word-break:break-word;'
+    }, formatUpdateStatus(plan));
+    var buttonRow = E('div', { 'class': 'right' });
+    var cancelBtn = E('button', {
+      'type': 'button',
+      'class': 'btn cbi-button',
+      'click': function() { L.hideModal(); }
+    }, '取消');
+    var releaseBtn = E('a', {
+      'class': 'btn cbi-button',
+      'href': plan.release_page || RELEASES_PAGE_URL,
+      'target': '_blank',
+      'rel': 'noopener noreferrer'
+    }, '发布页');
+    var updateBtn = E('button', {
+      'type': 'button',
+      'class': 'btn cbi-button cbi-button-apply important',
+      'click': function() {
+        var target = plan.latest_tag || plan.latest_version || '最新版本';
+        if (!confirm('确认自动更新到 ' + target + '？更新过程中请不要刷新或断电。')) return;
+        updateBtn.disabled = true;
+        output.textContent = '正在提交后台更新任务...';
+        fetchJson(UPDATE_START_URL, function(err, data) {
+          if (err || !data) {
+            output.textContent = '提交更新失败';
+            updateBtn.disabled = false;
+            return;
+          }
+          output.textContent = formatUpdateStatus(data);
+          pollUpdateStatus(output);
+        });
+      }
+    }, '自动更新');
+    buttonRow.appendChild(cancelBtn);
+    buttonRow.appendChild(document.createTextNode(' '));
+    buttonRow.appendChild(releaseBtn);
+    buttonRow.appendChild(document.createTextNode(' '));
+    buttonRow.appendChild(updateBtn);
+    L.showModal('SMART SRun 更新', [output, buttonRow], 'cbi-modal');
+  }
+
   function initVersionNotice() {
     var container = document.getElementById('smart-srun-version-info');
     var link = document.getElementById('smart-srun-version-link');
@@ -139,17 +211,19 @@
     if (!container || !link || !dot || window.__smartSrunVersionInit) return;
     window.__smartSrunVersionInit = true;
 
-    var text = container.textContent || '';
-    var match = text.match(/v\d[^\s]*/);
-    var localVersion = match ? match[0] : '';
     link.href = RELEASES_PAGE_URL;
-    if (!localVersion) return;
+    var updatePlan = null;
+    link.addEventListener('click', function(ev) {
+      if (!updatePlan || !updatePlan.update_available) return;
+      ev.preventDefault();
+      openUpdateModal(updatePlan);
+    });
 
-    fetchJson(RELEASES_API_URL, function(err, data) {
-      if (err || !data || typeof data.tag_name !== 'string') return;
-      if (!isRemoteNewer(localVersion, data.tag_name)) return;
+    fetchJson(UPDATE_CHECK_URL, function(err, data) {
+      if (err || !data || !data.ok || !data.update_available) return;
+      updatePlan = data;
       dot.style.display = 'inline-block';
-      link.title = '发现新版本：' + data.tag_name;
+      link.title = '发现新版本：' + (data.latest_tag || data.latest_version || '');
     });
   }
 
@@ -347,16 +421,30 @@
     return null;
   }
 
-  function currentSchoolMetadata() {
-    var allSchools = readJson('smart-school-data', []);
-    var curSchoolSel = document.getElementById('widget.cbid.smart_srun.main.school')
-      || document.getElementById('cbid.smart_srun.main.school')
-      || document.querySelector('select[name="cbid.smart_srun.main.school"]');
-    var curSchool = curSchoolSel ? curSchoolSel.value : 'jxnu';
-    for (var i = 0; i < allSchools.length; i++) {
-      if (allSchools[i].short_name === curSchool) return allSchools[i];
+  function schoolPresetList() {
+    var items = readJson('smart-school-preset-data', []);
+    return items && items.length ? items : [{
+      short_name: 'jxnu',
+      name: '江西师范大学',
+      defaults: { base_url: 'http://172.17.1.2', ac_id: '1', ssid: 'jxnu_stu' },
+      operators: [
+        {id:'cmcc', label:'中国移动'}, {id:'ctcc', label:'中国电信'},
+        {id:'cucc', label:'中国联通'}, {id:'xn', label:'校内网'}
+      ],
+      no_suffix_operators: ['xn']
+    }];
+  }
+
+  function findSchoolPreset(id) {
+    var items = schoolPresetList();
+    var wanted = String(id || 'jxnu');
+    for (var i = 0; i < items.length; i++) {
+      if (String(items[i].short_name || '') === wanted) return items[i];
     }
-    return null;
+    for (var j = 0; j < items.length; j++) {
+      if (String(items[j].short_name || '') === 'jxnu') return items[j];
+    }
+    return items[0] || null;
   }
 
   function radioOptionsMarkup() {
@@ -399,35 +487,72 @@
     modalType = 'campus';
     modalEditId = id;
     var item = id ? findById(campusData, id) : {};
-    var schoolObj = currentSchoolMetadata();
-    var ops = (schoolObj && schoolObj.operators && schoolObj.operators.length) ? schoolObj.operators : [
+    var presets = schoolPresetList();
+    var selectedPresetId = 'jxnu';
+    var selectedPreset = findSchoolPreset(selectedPresetId);
+    var defaultOperators = [
       {id:'cmcc', label:'中国移动'}, {id:'ctcc', label:'中国电信'},
       {id:'cucc', label:'中国联通'}, {id:'xn', label:'校内网'}
     ];
-    var noSuffixOps = (schoolObj && schoolObj.no_suffix_operators) ? schoolObj.no_suffix_operators : ['xn'];
-    var opOptions = '';
-    for (var oi = 0; oi < ops.length; oi++) {
-      var selected = (ops[oi].id === (item.operator || ops[0].id)) ? ' selected' : '';
-      var badge = ops[oi].verified ? ' [已验证]' : '';
-      opOptions += '<option value="' + escapeHtml(ops[oi].id) + '"' + selected + '>' + escapeHtml(ops[oi].label + badge) + '</option>';
+    var initialValues = {
+      label: item.label || '',
+      user_id: item.user_id || '',
+      operator: item.operator || defaultOperators[0].id,
+      operator_suffix: item.operator_suffix || '',
+      access_mode: item.access_mode || 'wifi',
+      base_url: item.base_url || 'http://172.17.1.2',
+      ac_id: item.ac_id || '1',
+      ssid: item.ssid || 'jxnu_stu',
+      bssid: item.bssid || '',
+      radio: item.radio || ''
+    };
+
+    function operatorsForPreset(preset) {
+      return preset && preset.operators && preset.operators.length ? preset.operators : defaultOperators;
+    }
+
+    function noSuffixForPreset(preset) {
+      return preset && preset.no_suffix_operators ? preset.no_suffix_operators : ['xn'];
+    }
+
+    function operatorOptionsMarkup(ops, selectedOperator) {
+      var out = '';
+      for (var oi = 0; oi < ops.length; oi++) {
+        var selected = (ops[oi].id === selectedOperator) ? ' selected' : '';
+        out += '<option value="' + escapeHtml(ops[oi].id) + '"' + selected + '>' + escapeHtml(ops[oi].label) + '</option>';
+      }
+      return out;
+    }
+
+    function presetOptionsMarkup() {
+      var out = '';
+      for (var pi = 0; pi < presets.length; pi++) {
+        var presetId = String(presets[pi].short_name || '');
+        if (!presetId) continue;
+        out += '<option value="' + escapeHtml(presetId) + '"' + (presetId === selectedPresetId ? ' selected' : '') + '>' + escapeHtml(presets[pi].name || presetId) + '</option>';
+      }
+      return out;
     }
 
     var bodyHtml =
-      '<div class="smart-native-row"><label>标签（选填）</label><input id="jm-label" value="' + escapeHtml(item.label || '') + '"></div>' +
-      '<div class="smart-native-row"><label>学工号</label><input id="jm-user_id" value="' + escapeHtml(item.user_id || '') + '"></div>' +
-      '<div class="smart-native-row"><label>运营商</label><select id="jm-operator">' + opOptions + '</select></div>' +
-      '<div class="smart-native-row"><label>运营商后缀（留空则为默认）</label><input id="jm-operator_suffix" value="' + escapeHtml(item.operator_suffix || '') + '" placeholder=""></div>' +
-      '<div class="smart-native-row"><label>接入方式</label><select id="jm-access_mode"><option value="wifi"' + (((item.access_mode || 'wifi') === 'wifi') ? ' selected' : '') + '>无线</option><option value="wired"' + ((item.access_mode === 'wired') ? ' selected' : '') + '>有线（WAN）</option></select></div>' +
+      '<div class="smart-native-row"><label>学校预设</label><span><select id="jm-school_preset">' + presetOptionsMarkup() + '</select> <button type="button" id="jm-apply-school-defaults" class="btn cbi-button cbi-button-action">应用默认值</button> <button type="button" id="jm-reset-school-defaults" class="btn cbi-button">复位</button></span></div>' +
+      '<div class="smart-native-row"><label>标签（选填）</label><input id="jm-label" value="' + escapeHtml(initialValues.label) + '"></div>' +
+      '<div class="smart-native-row"><label>学工号</label><input id="jm-user_id" value="' + escapeHtml(initialValues.user_id) + '"></div>' +
+      '<div class="smart-native-row"><label>运营商</label><select id="jm-operator">' + operatorOptionsMarkup(operatorsForPreset(selectedPreset), initialValues.operator) + '</select></div>' +
+      '<div class="smart-native-row"><label>运营商后缀（留空则为默认）</label><input id="jm-operator_suffix" value="' + escapeHtml(initialValues.operator_suffix) + '" placeholder=""></div>' +
+      '<div class="smart-native-row"><label>接入方式</label><select id="jm-access_mode"><option value="wifi"' + (initialValues.access_mode === 'wifi' ? ' selected' : '') + '>无线</option><option value="wired"' + (initialValues.access_mode === 'wired' ? ' selected' : '') + '>有线（WAN）</option></select></div>' +
       '<div class="smart-native-row"><label>密码</label><div id="jm-password-field"></div></div>' +
-      '<div class="smart-native-row"><label>认证地址</label><input id="jm-base_url" value="' + escapeHtml(item.base_url || 'http://172.17.1.2') + '"></div>' +
-      '<div class="smart-native-row"><label>AC_ID</label><input id="jm-ac_id" value="' + escapeHtml(item.ac_id || '1') + '"></div>' +
-      '<div class="smart-native-row" id="jm-ssid-row"><label>校园网 SSID</label><input id="jm-ssid" value="' + escapeHtml(item.ssid || 'jxnu_stu') + '"></div>' +
-      '<div class="smart-native-row" id="jm-bssid-row"><label>BSSID（留空则不锁定）</label><input id="jm-bssid" value="' + escapeHtml(item.bssid || '') + '"></div>' +
+      '<div class="smart-native-row"><label>认证地址</label><input id="jm-base_url" value="' + escapeHtml(initialValues.base_url) + '"></div>' +
+      '<div class="smart-native-row"><label>AC_ID</label><input id="jm-ac_id" value="' + escapeHtml(initialValues.ac_id) + '"></div>' +
+      '<div class="smart-native-row" id="jm-ssid-row"><label>校园网 SSID</label><input id="jm-ssid" value="' + escapeHtml(initialValues.ssid) + '"></div>' +
+      '<div class="smart-native-row" id="jm-bssid-row"><label>BSSID（留空则不锁定）</label><input id="jm-bssid" value="' + escapeHtml(initialValues.bssid) + '"></div>' +
       '<div class="smart-native-row" id="jm-radio-row"><label>频段</label><select id="jm-radio">' + radioOptionsMarkup() + '</select></div>';
 
     function updateSuffixPlaceholder() {
       var opSel = document.getElementById('jm-operator');
       var sfx = document.getElementById('jm-operator_suffix');
+      var preset = findSchoolPreset(selectedPresetId);
+      var noSuffixOps = noSuffixForPreset(preset);
       if (!opSel || !sfx) return;
       var opId = opSel.value;
       var isNoSuffix = false;
@@ -440,11 +565,79 @@
       sfx.placeholder = isNoSuffix ? '(无后缀)' : ('留空则使用 "' + opId + '"');
     }
 
+    function applySchoolDefaultsToForm() {
+      var preset = findSchoolPreset(selectedPresetId);
+      var schoolDefaults = (preset && preset.defaults) ? preset.defaults : {};
+      var fieldMap = {
+        base_url: 'jm-base_url',
+        ac_id: 'jm-ac_id',
+        ssid: 'jm-ssid',
+        operator_suffix: 'jm-operator_suffix'
+      };
+      for (var key in fieldMap) {
+        if (schoolDefaults[key] !== undefined && schoolDefaults[key] !== null && schoolDefaults[key] !== '') {
+          var target = document.getElementById(fieldMap[key]);
+          if (target) target.value = String(schoolDefaults[key]);
+        }
+      }
+      var opSel = document.getElementById('jm-operator');
+      if (opSel) {
+        var nextOperator = schoolDefaults.operator ? String(schoolDefaults.operator) : opSel.value;
+        var nextOperators = operatorsForPreset(preset);
+        opSel.innerHTML = operatorOptionsMarkup(nextOperators, nextOperator);
+        opSel.value = nextOperator;
+        if (opSel.value !== nextOperator && nextOperators.length) {
+          opSel.value = nextOperators[0].id;
+        }
+      }
+      if (schoolDefaults.access_mode) {
+        var modeSel = document.getElementById('jm-access_mode');
+        if (modeSel) modeSel.value = String(schoolDefaults.access_mode);
+      }
+      updateCampusAccessModeUI();
+      updateSuffixPlaceholder();
+    }
+
+    function resetSchoolDefaultsForm() {
+      selectedPresetId = 'jxnu';
+      selectedPreset = findSchoolPreset(selectedPresetId);
+      var presetSel = document.getElementById('jm-school_preset');
+      if (presetSel) presetSel.value = selectedPresetId;
+      var opSel = document.getElementById('jm-operator');
+      if (opSel) {
+        opSel.innerHTML = operatorOptionsMarkup(operatorsForPreset(selectedPreset), initialValues.operator);
+        opSel.value = initialValues.operator;
+      }
+      var values = {
+        'jm-label': initialValues.label,
+        'jm-user_id': initialValues.user_id,
+        'jm-operator_suffix': initialValues.operator_suffix,
+        'jm-access_mode': initialValues.access_mode,
+        'jm-base_url': initialValues.base_url,
+        'jm-ac_id': initialValues.ac_id,
+        'jm-ssid': initialValues.ssid,
+        'jm-bssid': initialValues.bssid,
+        'jm-radio': initialValues.radio
+      };
+      for (var idKey in values) {
+        var node = document.getElementById(idKey);
+        if (node) node.value = values[idKey];
+      }
+      updateCampusAccessModeUI();
+      updateSuffixPlaceholder();
+    }
+
     showNativeModal(
       id ? '编辑校园网账号' : '新增校园网账号',
       bodyHtml,
       function() {
-        document.getElementById('jm-radio').value = item.radio || '';
+        document.getElementById('jm-radio').value = initialValues.radio;
+        document.getElementById('jm-school_preset').addEventListener('change', function() {
+          selectedPresetId = this.value || 'jxnu';
+          selectedPreset = findSchoolPreset(selectedPresetId);
+        });
+        document.getElementById('jm-apply-school-defaults').addEventListener('click', applySchoolDefaultsToForm);
+        document.getElementById('jm-reset-school-defaults').addEventListener('click', resetSchoolDefaultsForm);
         document.getElementById('jm-access_mode').addEventListener('change', updateCampusAccessModeUI);
         document.getElementById('jm-operator').addEventListener('change', updateSuffixPlaceholder);
         updateCampusAccessModeUI();

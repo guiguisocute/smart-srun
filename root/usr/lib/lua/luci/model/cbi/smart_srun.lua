@@ -290,7 +290,7 @@ end
 
 local RADIO_CHOICES = load_radio_choices()
 
-local function render_school_info_html(schools, current_school)
+local function render_school_info_html(schools, current_school, school_presets)
     local helper_prefix = "如果该配置无法在您的学校使用，请直接前往"
     local helper_suffix = "提交 Issue 或 PR"
     local helper_link = "https://github.com/matthewlu070111/luci-app-smart-srun"
@@ -298,23 +298,26 @@ local function render_school_info_html(schools, current_school)
     local short = tostring(current_school or "")
     local doc_url = doc_base .. util.pcdata(short) .. ".md"
     local js_data = jsonc.stringify(schools or {}) or "[]"
+    local presets_js_data = jsonc.stringify(school_presets or {}) or "[]"
 
     return string.format([[
 <div id="smart-school-info" class="cbi-value-description" style="color:#14532d;opacity:0.9;display:block;line-height:1.6;">
   <div id="smart-school-doclink" style="display:block;">
-    <a id="smart-school-doc-link" href="%s" target="_blank" rel="noopener noreferrer">点击查看该配置已验证学校列表</a>
+    <a id="smart-school-doc-link" href="%s" target="_blank" rel="noopener noreferrer">点击查看学校预设列表</a>
   </div>
   <div id="smart-school-helper" style="display:block;margin-top:4px;color:#6b7280;font-size:0.92em;">
     %s<a id="smart-school-repo-link" href="%s" target="_blank" rel="noopener noreferrer">插件仓库</a>%s
   </div>
   <textarea id="smart-school-data" style="display:none;">%s</textarea>
+  <textarea id="smart-school-preset-data" style="display:none;">%s</textarea>
 </div>
 ]],
         doc_url,
         helper_prefix,
         helper_link,
         helper_suffix,
-        util.pcdata(js_data))
+        util.pcdata(js_data),
+        util.pcdata(presets_js_data))
 end
 
 local function ensure_school_extra_table()
@@ -455,6 +458,10 @@ local schools_json = select(1, run_client("schools", false)) or ""
 local schools = jsonc.parse(schools_json)
 if type(schools) ~= "table" then schools = {} end
 
+local school_presets_json = select(1, run_client("presets list", false)) or ""
+local school_presets = jsonc.parse(school_presets_json)
+if type(school_presets) ~= "table" then school_presets = {} end
+
 local school_runtime_json = select(1, run_client("schools inspect --selected", false)) or ""
 local school_runtime_contract = parse_school_runtime_contract(school_runtime_json)
 if type(school_runtime_contract.school_extra) == "table" then
@@ -582,7 +589,7 @@ function school.write(self, section, value)
     end
     set_value("school", next_school)
 end
-school.description = render_school_info_html(schools, cfg.school or "jxnu")
+school.description = render_school_info_html(schools, cfg.school or "jxnu", school_presets)
 
 if school_runtime_renderable then
     for idx, descriptor in ipairs(school_runtime_descriptors) do

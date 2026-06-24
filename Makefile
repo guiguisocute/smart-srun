@@ -37,6 +37,8 @@ define Package/smart-srun/install
 		$(1)/usr/lib/smart_srun/
 	$(CP) $(CURDIR)/root/usr/lib/smart_srun/defaults.json \
 		$(1)/usr/lib/smart_srun/
+	$(CP) $(CURDIR)/root/usr/lib/smart_srun/school_presets_fallback.json \
+		$(1)/usr/lib/smart_srun/
 	$(CP) $(CURDIR)/root/usr/lib/smart_srun/schools/*.py \
 		$(1)/usr/lib/smart_srun/schools/
 	$(INSTALL_BIN) $(CURDIR)/root/etc/init.d/smart_srun \
@@ -106,6 +108,8 @@ define Package/luci-app-smart-srun-bundle/install
 	$(CP) $(CURDIR)/root/usr/lib/smart_srun/*.py \
 		$(1)/usr/lib/smart_srun/
 	$(CP) $(CURDIR)/root/usr/lib/smart_srun/defaults.json \
+		$(1)/usr/lib/smart_srun/
+	$(CP) $(CURDIR)/root/usr/lib/smart_srun/school_presets_fallback.json \
 		$(1)/usr/lib/smart_srun/
 	$(CP) $(CURDIR)/root/usr/lib/smart_srun/schools/*.py \
 		$(1)/usr/lib/smart_srun/schools/

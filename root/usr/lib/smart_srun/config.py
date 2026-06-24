@@ -13,6 +13,12 @@ from datetime import datetime
 
 import logger as _logger
 
+try:
+    from school_presets import normalize_base_url
+except ImportError:  # pragma: no cover - defensive for partial installs
+    def normalize_base_url(value):
+        return str(value or "").strip().rstrip("/")
+
 BEIJING_TZ = _logger.BEIJING_TZ
 LOG_FILE = _logger.LOG_FILE
 LOG_MAX_BYTES = _logger.LOG_MAX_BYTES
@@ -819,7 +825,7 @@ def _migrate_legacy_config(raw):
         "id": "campus-1",
         "label": "",
         "access_mode": "wifi",
-        "base_url": str(raw.get("base_url", "http://172.17.1.2")).strip(),
+        "base_url": normalize_base_url(raw.get("base_url", "http://172.17.1.2")),
         "ac_id": str(raw.get("ac_id", "1")).strip(),
         "user_id": user_id,
         "password": str(raw.get("password", "")).strip(),
@@ -917,9 +923,7 @@ def resolve_active_items(cfg):
     if cfg["operator"] not in OPERATORS:
         cfg["operator"] = "cucc"
     cfg["password"] = str(campus.get("password", "")).strip()
-    cfg["base_url"] = (
-        str(campus.get("base_url", "http://172.17.1.2")).strip().rstrip("/")
-    )
+    cfg["base_url"] = normalize_base_url(campus.get("base_url", "http://172.17.1.2"))
     cfg["campus_access_mode"] = normalize_campus_access_mode(
         campus.get("access_mode", "wifi")
     )

@@ -136,9 +136,9 @@ class Profile(SchoolProfile):
     DEFAULT_AC_ID = "1"
 
     OPERATORS = (
-        {"id": "cmcc", "label": "中国移动", "verified": False},
-        {"id": "ctcc", "label": "中国电信", "verified": False},
-        {"id": "cucc", "label": "中国联通", "verified": False},
+        {"id": "cmcc", "label": "中国移动"},
+        {"id": "ctcc", "label": "中国电信"},
+        {"id": "cucc", "label": "中国联通"},
     )
     NO_SUFFIX_OPERATORS = ()
 ```
@@ -176,8 +176,8 @@ SCHOOL_METADATA = {
     "description": "需要额外运行时逻辑",
     "contributors": ["@your_github"],
     "operators": [
-        {"id": "xn", "label": "校园网", "verified": True},
-        {"id": "cmcc", "label": "中国移动", "verified": False},
+        {"id": "xn", "label": "校园网"},
+        {"id": "cmcc", "label": "中国移动"},
     ],
     "no_suffix_operators": ["xn"],
     "capabilities": ["status", "daemon"],

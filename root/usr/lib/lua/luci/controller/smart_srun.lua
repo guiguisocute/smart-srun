@@ -78,6 +78,38 @@ function index()
     entry({"admin", "services", "smart_srun", "status"}, call("action_status")).leaf = true
     entry({"admin", "services", "smart_srun", "enqueue"}, call("action_enqueue")).leaf = true
     entry({"admin", "services", "smart_srun", "log_tail"}, call("action_log_tail")).leaf = true
+    entry({"admin", "services", "smart_srun", "update_check"}, call("action_update_check")).leaf = true
+    entry({"admin", "services", "smart_srun", "update_start"}, call("action_update_start")).leaf = true
+    entry({"admin", "services", "smart_srun", "update_status"}, call("action_update_status")).leaf = true
+end
+
+local function write_json_response(payload)
+    http.prepare_content("application/json")
+    http.write(jsonc.stringify(payload or {}) or "{}")
+end
+
+local function run_srunnet_json(args)
+    local output = sys.exec("/usr/bin/srunnet " .. args .. " 2>&1") or ""
+    local parsed = jsonc.parse(output)
+    if type(parsed) == "table" then
+        return parsed
+    end
+    return {
+        ok = false,
+        message = util.trim(output) ~= "" and util.trim(output) or "命令返回非 JSON 输出",
+    }
+end
+
+function action_update_check()
+    write_json_response(run_srunnet_json("update check"))
+end
+
+function action_update_start()
+    write_json_response(run_srunnet_json("update run --background"))
+end
+
+function action_update_status()
+    write_json_response(run_srunnet_json("update status"))
 end
 
 local function read_json_file(path)
@@ -310,6 +342,20 @@ local function fv(name)
     return tostring(http.formvalue(name) or ""):match("^%s*(.-)%s*$")
 end
 
+local function normalize_base_url(value)
+    local text = tostring(value or ""):match("^%s*(.-)%s*$")
+    if text == "" then return "" end
+    local origin = text:match("^(https?://[^/%?#]+)")
+    if origin then return origin end
+    if not text:match("^%a[%w+.-]*://") then
+        local host = text:match("^([^/%?#]+)")
+        if host and host ~= "" then
+            return "http://" .. host
+        end
+    end
+    return (text:gsub("/+$", ""))
+end
+
 function action_enqueue()
     local action = fv("action")
 
@@ -384,7 +430,7 @@ function action_enqueue()
                 operator = fv("operator"), operator_suffix = fv("operator_suffix"),
                 password = fv("password"),
                 access_mode = fv("access_mode"),
-                base_url = fv("base_url"), ac_id = fv("ac_id"),
+                base_url = normalize_base_url(fv("base_url")), ac_id = fv("ac_id"),
                 ssid = fv("ssid"), bssid = fv("bssid"), radio = fv("radio"),
             }
             if item.access_mode ~= "wired" then
@@ -571,6 +617,7 @@ local event_zh = {
     config_action_consumed = "操作已出队",
     config_loaded       = "配置已加载",
     status_query        = "状态查询",
+    update_status       = "更新状态",
     -- 重试与生命周期
     retry_cycle_start   = "进入重试循环",
     retry_cycle_end     = "重试循环结束",

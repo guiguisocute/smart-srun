@@ -47,6 +47,14 @@ RUNTIME_TARGETS = [
         "remote": "/usr/lib/smart_srun/version_info.py",
     },
     {
+        "local": "root/usr/lib/smart_srun/school_presets.py",
+        "remote": "/usr/lib/smart_srun/school_presets.py",
+    },
+    {
+        "local": "root/usr/lib/smart_srun/updater.py",
+        "remote": "/usr/lib/smart_srun/updater.py",
+    },
+    {
         "local": "root/usr/lib/smart_srun/crypto.py",
         "remote": "/usr/lib/smart_srun/crypto.py",
     },
@@ -85,6 +93,10 @@ RUNTIME_TARGETS = [
     {
         "local": "root/usr/lib/smart_srun/defaults.json",
         "remote": "/usr/lib/smart_srun/defaults.json",
+    },
+    {
+        "local": "root/usr/lib/smart_srun/school_presets_fallback.json",
+        "remote": "/usr/lib/smart_srun/school_presets_fallback.json",
     },
     {
         "local": "root/usr/lib/smart_srun/schools/__init__.py",
@@ -196,10 +208,12 @@ def build_remote_commands():
             "/etc/init.d/uwsgi restart",
         ],
         "sanity_checks": [
-            "python3 -c \"import sys; sys.path.insert(0, '/usr/lib/smart_srun'); import cli; import school_runtime; import schools; import srun_auth; import orchestrator; import snapshot; import daemon; print('runtime-loader-import-ok')\"",
+            "python3 -c \"import sys; sys.path.insert(0, '/usr/lib/smart_srun'); import cli; import school_runtime; import schools; import school_presets; import updater; import srun_auth; import orchestrator; import snapshot; import daemon; print('runtime-loader-import-ok')\"",
             "srunnet status",
             "srunnet schools",
+            "srunnet presets list",
             "srunnet schools inspect --selected",
+            "srunnet update status",
         ],
     }
 
@@ -245,6 +259,7 @@ def build_probe_commands(probe_root):
                 shlex.quote(
                     "import sys; sys.path.insert(0, 'usr/lib/smart_srun'); "
                     "import cli; import school_runtime; import schools; "
+                    "import school_presets; import updater; "
                     "import srun_auth; import orchestrator; import snapshot; "
                     "import daemon; print('runtime-loader-import-ok')"
                 ),

@@ -37,6 +37,8 @@ TOP_EPILOG = (
     "            config account [add|edit|rm|default] [ID]\n"
     "            config hotspot [add|edit|rm|default] [ID]\n"
     "  学校      schools / schools inspect --selected\n"
+    "  预设      presets list / presets refresh\n"
+    "  更新      update check / update run / update status\n"
     "  帮助      help [COMMAND] / man / --version\n"
     "\n"
     "示例：\n"
@@ -134,6 +136,62 @@ def _build_parser():
         "--selected",
         action="store_true",
         help="打印当前生效学校的 runtime 元数据（JSON）",
+    )
+
+    p_presets = _make_subparser(
+        sub,
+        "presets",
+        help_text="管理远端学校预设",
+        description="列出或刷新 GitHub 远端学校预设缓存。",
+    )
+    presets_sub = p_presets.add_subparsers(dest="presets_command", metavar="SUBCOMMAND")
+    _make_subparser(
+        presets_sub,
+        "list",
+        help_text="列出学校预设",
+        description="输出可用学校预设列表（JSON），供 LuCI 账号管理页面使用。",
+    )
+    _make_subparser(
+        presets_sub,
+        "refresh",
+        help_text="刷新远端学校预设缓存",
+        description="从 raw GitHub 拉取 doc/school-presets.json 并写入本地缓存。",
+    )
+
+    p_update = _make_subparser(
+        sub,
+        "update",
+        help_text="检查或安装 SMART SRun 更新",
+        description="检查 latest release，或下载并安装匹配当前包型的更新包。",
+    )
+    update_sub = p_update.add_subparsers(dest="update_command", metavar="SUBCOMMAND")
+    _make_subparser(
+        update_sub,
+        "check",
+        help_text="检查 latest release",
+        description="输出当前版本、latest release、包型和可更新状态（JSON）。",
+    )
+    p_update_run = _make_subparser(
+        update_sub,
+        "run",
+        help_text="下载并安装更新",
+        description="前台执行完整更新；LuCI 可使用 --background 后台执行。",
+    )
+    p_update_run.add_argument(
+        "--background",
+        action="store_true",
+        help="后台执行更新并立即返回状态",
+    )
+    p_update_run.add_argument(
+        "--foreground",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    _make_subparser(
+        update_sub,
+        "status",
+        help_text="查看更新任务状态",
+        description="读取 /var/run/smart_srun/update_status.json（JSON）。",
     )
 
     p_log = _make_subparser(
@@ -542,6 +600,45 @@ def main():
             print(json.dumps(inspect_payload, ensure_ascii=False, indent=2))
             return
         print(json.dumps(schools.list_schools(), ensure_ascii=False, indent=2))
+        return
+
+    if args.command == "presets":
+        import school_presets
+
+        if getattr(args, "presets_command", "") == "list":
+            print(
+                json.dumps(
+                    school_presets.list_presets(include_draft=False),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return
+        if getattr(args, "presets_command", "") == "refresh":
+            payload = school_presets.refresh_remote_presets()
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return
+        parser.parse_args(["presets", "--help"])
+        return
+
+    if args.command == "update":
+        import updater
+
+        update_command = getattr(args, "update_command", "") or "status"
+        if update_command == "check":
+            print(json.dumps(updater.check_update(), ensure_ascii=False, indent=2))
+            return
+        if update_command == "status":
+            print(json.dumps(updater.get_status(), ensure_ascii=False, indent=2))
+            return
+        if update_command == "run":
+            if getattr(args, "background", False):
+                payload = updater.start_background_update()
+            else:
+                payload = updater.run_update()
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return
+        parser.parse_args(["update", "--help"])
         return
 
     if args.command == "switch":
