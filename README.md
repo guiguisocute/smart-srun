@@ -23,10 +23,9 @@
 - 支持多学校配置文件，可扩展适配其他深澜校园网环境
 
 ### 未来功能
-- 完善 HTTPS 认证环境下的依赖提示和排障指引
 - 适配 UA3F应对多设备检查的环境
 - 支持多号多拨负载均衡网络叠加
-- 适配更多高校的深澜校园网环境
+- 适配更多高校的深澜校园网环境(进行中)
 - 更多账号功能，如账号分组、规则管理
 - ……
 
@@ -119,19 +118,16 @@ apk add --allow-untrusted ./luci-app-smart-srun-bundle-*.apk
 
 保存并应用后守护进程自动启动。
 
-## 获取学校预设与运营商后缀
+## 获取学校预设与环境真实字段值
 
-如果浏览器网页登录可用，但插件不确定认证地址、`AC_ID`、运营商后缀或高级登录参数，可以用专门的油猴脚本采集一次真实网页登录请求。脚本独立维护在这个仓库：
+### 学校预设
+正常情况下，软件包会自动通过 `https://srun.edu-publish.site/school-presets.json` 拉取远端最新学校预设，无需手动填写
 
+### 环境真实字段值
 **👉 [smart_srun_school_preset_capture.user](https://github.com/guiguisocute/smart_srun_school_preset_capture.user)**（含一键安装链接和详细说明）
 
-简要使用：装好 Tampermonkey（油猴）后，从上面仓库点一键安装，打开学校的深澜认证页正常登录，脚本会自动抓取并生成预设 JSON，按提示填好接入方式 / SSID / 贡献者后，点「提交 Issue」把 JSON 贴过来即可。
+简要使用：装好 Tampermonkey（油猴）后，从上面仓库一键安装，打开学校的深澜认证页，按照油猴脚本的GUI提示操作，即可采集到当前认证环境的运营商后缀与其他关键信息
 
-脚本只记录真实请求里出现的字段，不会猜默认值；明文账号、密码、challenge 和加密 `info` 原文不会导出。空运营商后缀就保持空字符串，不再使用 `xn` 或额外的 `no_suffix_operators` 字段表示。学校预设 JSON 中，运营商后缀统一维护在 `operators[].suffix`（维护者手工标注“已知存在但后缀未验证”时用 `"??"` 占位），`defaults` 不再写 `operator` 或 `operator_suffix`。用不同运营商账号多登录几次（失败也能抓），脚本会按“抓一个补一个”把抓到的运营商后缀逐个补进 `operators`。
-
-插件会优先从 `https://srun.edu-publish.site/school-presets.json` 拉取远端学校预设，失败时再回退 GitHub raw、路由器本地缓存和随包兜底预设。
-
-如果只是不确定 `AC_ID`，也可以在 LuCI 校园网账号弹窗里点击 `AC_ID` 旁的“嗅探”，或通过 SSH 执行：
 
 ```sh
 srunnet detect acid
