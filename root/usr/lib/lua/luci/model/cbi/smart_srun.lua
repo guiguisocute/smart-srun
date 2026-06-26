@@ -90,16 +90,17 @@ local function migrate_legacy_config(parsed)
     end
     local uid = tostring(parsed.user_id or ""):match("^%s*(.-)%s*$")
     local op = tostring(parsed.operator or "cucc"):match("^%s*(.-)%s*$"):lower()
+    local suffix = op ~= "xn" and op or ""
     local ca = {
         id = "campus-1", label = "",
         base_url = tostring(parsed.base_url or "http://172.17.1.2"):match("^%s*(.-)%s*$"),
         ac_id = tostring(parsed.ac_id or "1"):match("^%s*(.-)%s*$"),
         user_id = uid, password = tostring(parsed.password or ""):match("^%s*(.-)%s*$"),
-        operator = op, operator_suffix = "",
+        operator = op, operator_suffix = suffix,
         ssid = tostring(parsed.campus_ssid or "jxnu_stu"):match("^%s*(.-)%s*$"),
         bssid = tostring(parsed.campus_bssid or ""):match("^%s*(.-)%s*$"),
     }
-    ca.label = (uid ~= "" and op ~= "" and op ~= "xn") and (uid .. "@" .. op) or (uid ~= "" and uid or "未命名账号")
+    ca.label = (uid ~= "" and suffix ~= "") and (uid .. "@" .. suffix) or (uid ~= "" and uid or "未命名账号")
     migrated.campus_accounts = uid ~= "" and { ca } or {}
     migrated.active_campus_id = uid ~= "" and "campus-1" or ""
     migrated.default_campus_id = migrated.active_campus_id
@@ -290,7 +291,7 @@ end
 
 local RADIO_CHOICES = load_radio_choices()
 
-local function render_school_info_html(schools, current_school)
+local function render_school_info_html(schools, current_school, school_presets)
     local helper_prefix = "如果该配置无法在您的学校使用，请直接前往"
     local helper_suffix = "提交 Issue 或 PR"
     local helper_link = "https://github.com/matthewlu070111/luci-app-smart-srun"
@@ -298,23 +299,26 @@ local function render_school_info_html(schools, current_school)
     local short = tostring(current_school or "")
     local doc_url = doc_base .. util.pcdata(short) .. ".md"
     local js_data = jsonc.stringify(schools or {}) or "[]"
+    local presets_js_data = jsonc.stringify(school_presets or {}) or "[]"
 
     return string.format([[
 <div id="smart-school-info" class="cbi-value-description" style="color:#14532d;opacity:0.9;display:block;line-height:1.6;">
   <div id="smart-school-doclink" style="display:block;">
-    <a id="smart-school-doc-link" href="%s" target="_blank" rel="noopener noreferrer">点击查看该配置已验证学校列表</a>
+    <a id="smart-school-doc-link" href="%s" target="_blank" rel="noopener noreferrer">点击查看学校预设列表</a>
   </div>
   <div id="smart-school-helper" style="display:block;margin-top:4px;color:#6b7280;font-size:0.92em;">
     %s<a id="smart-school-repo-link" href="%s" target="_blank" rel="noopener noreferrer">插件仓库</a>%s
   </div>
   <textarea id="smart-school-data" style="display:none;">%s</textarea>
+  <textarea id="smart-school-preset-data" style="display:none;">%s</textarea>
 </div>
 ]],
         doc_url,
         helper_prefix,
         helper_link,
         helper_suffix,
-        util.pcdata(js_data))
+        util.pcdata(js_data),
+        util.pcdata(presets_js_data))
 end
 
 local function ensure_school_extra_table()
@@ -455,6 +459,10 @@ local schools_json = select(1, run_client("schools", false)) or ""
 local schools = jsonc.parse(schools_json)
 if type(schools) ~= "table" then schools = {} end
 
+local school_presets_json = select(1, run_client("presets list", false)) or ""
+local school_presets = jsonc.parse(school_presets_json)
+if type(school_presets) ~= "table" then school_presets = {} end
+
 local school_runtime_json = select(1, run_client("schools inspect --selected", false)) or ""
 local school_runtime_contract = parse_school_runtime_contract(school_runtime_json)
 if type(school_runtime_contract.school_extra) == "table" then
@@ -582,7 +590,7 @@ function school.write(self, section, value)
     end
     set_value("school", next_school)
 end
-school.description = render_school_info_html(schools, cfg.school or "jxnu")
+school.description = render_school_info_html(schools, cfg.school or "jxnu", school_presets)
 
 if school_runtime_renderable then
     for idx, descriptor in ipairs(school_runtime_descriptors) do
@@ -717,7 +725,6 @@ function tables_html.cfgvalue()
     local current_iface = tostring(state.current_iface or "")
     local current_campus_access_mode = tostring(state.current_campus_access_mode or "")
 
-    local operator_labels = { cmcc = "移动", ctcc = "电信", cucc = "联通", xn = "校内网" }
     local radio_labels = { [""] = "自动" }
     local radio_options = '<option value="">自动</option>'
     for radio, meta in pairs(RADIO_CHOICES) do
@@ -774,7 +781,6 @@ function tables_html.cfgvalue()
                 .. '<td class="td">' .. util.pcdata(tostring(a.base_url or "http://172.17.1.2")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.ac_id or "1")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.user_id or "")) .. '</td>'
-                .. '<td class="td">' .. (operator_labels[tostring(a.operator or "")] or tostring(a.operator or "")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.operator_suffix or "")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(ssid_display) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.bssid or "")) .. '</td>'
@@ -786,7 +792,7 @@ function tables_html.cfgvalue()
         end
     end
     if campus_rows == "" then
-        campus_rows = '<tr class="tr"><td class="td" colspan="11" style="text-align:center;color:#999;">暂无账号，请点击"新增"添加</td></tr>'
+        campus_rows = '<tr class="tr"><td class="td" colspan="10" style="text-align:center;color:#999;">暂无账号，请点击"新增"添加</td></tr>'
     end
 
     -- 构建热点配置表格行
@@ -847,12 +853,14 @@ function tables_html.cfgvalue()
 .smart-native-row{margin-bottom:.75rem;}
 .smart-native-row label{display:block;margin-bottom:.25rem;font-weight:600;}
 .smart-native-row input,.smart-native-row select{width:100%;box-sizing:border-box;}
+.smart-native-advanced{margin:.75rem 0;padding:.75rem;border:1px solid rgba(127,127,127,.25);border-radius:4px;}
+.smart-native-advanced summary{cursor:pointer;font-weight:600;margin:-.25rem 0 .5rem 0;}
 </style>
 
 <div class="cbi-section cbi-tblsection smart-native-box">
   <h3>校园网账号</h3>
   <table class="table cbi-section-table">
-    <tr class="tr table-titles"><th class="th" style="width:80px;">状态</th><th class="th">标签</th><th class="th">认证地址</th><th class="th">ACID</th><th class="th">学工号</th><th class="th">运营商</th><th class="th">后缀</th><th class="th">SSID</th><th class="th">BSSID</th><th class="th">频段</th><th class="th cbi-section-actions" style="width:120px;">操作</th></tr>
+    <tr class="tr table-titles"><th class="th" style="width:80px;">状态</th><th class="th">标签</th><th class="th">认证地址</th><th class="th">ACID</th><th class="th">学工号</th><th class="th">运营商后缀</th><th class="th">SSID</th><th class="th">BSSID</th><th class="th">频段</th><th class="th cbi-section-actions" style="width:120px;">操作</th></tr>
     <tbody>]] .. campus_rows .. [[</tbody>
   </table>
   <div class="smart-box-actions">

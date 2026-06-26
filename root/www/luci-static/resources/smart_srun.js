@@ -9,6 +9,9 @@
   var modalSaveHandler = null;
   var RELEASES_API_URL = 'https://api.github.com/repos/matthewlu070111/smart-srun/releases/latest';
   var RELEASES_PAGE_URL = 'https://github.com/matthewlu070111/smart-srun/releases';
+  var UPDATE_CHECK_URL = '/cgi-bin/luci/admin/services/smart_srun/update_check';
+  var UPDATE_START_URL = '/cgi-bin/luci/admin/services/smart_srun/update_start';
+  var UPDATE_STATUS_URL = '/cgi-bin/luci/admin/services/smart_srun/update_status';
 
   function readText(id) {
     var node = document.getElementById(id);
@@ -132,6 +135,83 @@
     return (localInfo.release || 0) < (remoteInfo.release || 0);
   }
 
+  function formatUpdateStatus(data) {
+    data = data || {};
+    var lines = [];
+    lines.push('状态：' + (data.message || data.phase || '未知'));
+    if (data.current_version) lines.push('当前版本：' + data.current_version);
+    if (data.latest_tag || data.latest_version) lines.push('目标版本：' + (data.latest_tag || data.latest_version));
+    if (data.install_mode) lines.push('包型：' + data.install_mode + ' / ' + (data.package_format || ''));
+    if (data.package_name) lines.push('当前包：' + data.package_name);
+    if (data.asset_name) lines.push('下载项：' + data.asset_name);
+    return lines.join('\n');
+  }
+
+  function pollUpdateStatus(outputNode, errorStreak) {
+    errorStreak = errorStreak || 0;
+    fetchJson(UPDATE_STATUS_URL, function(err, data) {
+      if (err || !data) {
+        // 更新末尾会重启 uwsgi，期间状态接口短暂不可用属正常现象，
+        // 容忍几次失败后再放弃，避免误报“读取更新状态失败”。
+        if (errorStreak >= 5) {
+          outputNode.textContent = '读取更新状态失败';
+          return;
+        }
+        outputNode.textContent = '更新进行中，正在等待服务恢复…';
+        setTimeout(function() { pollUpdateStatus(outputNode, errorStreak + 1); }, 2000);
+        return;
+      }
+      outputNode.textContent = formatUpdateStatus(data);
+      if (data.running) {
+        setTimeout(function() { pollUpdateStatus(outputNode, 0); }, 2000);
+      }
+    });
+  }
+
+  function openUpdateModal(plan) {
+    plan = plan || {};
+    var output = E('pre', {
+      'style': 'max-height:18rem;overflow:auto;margin:0;padding:.75rem;border:1px solid rgba(127,127,127,.28);background:rgba(127,127,127,.08);white-space:pre-wrap;word-break:break-word;'
+    }, formatUpdateStatus(plan));
+    var buttonRow = E('div', { 'class': 'right' });
+    var cancelBtn = E('button', {
+      'type': 'button',
+      'class': 'btn cbi-button',
+      'click': function() { L.hideModal(); }
+    }, '取消');
+    var releaseBtn = E('a', {
+      'class': 'btn cbi-button',
+      'href': plan.release_page || RELEASES_PAGE_URL,
+      'target': '_blank',
+      'rel': 'noopener noreferrer'
+    }, '发布页');
+    var updateBtn = E('button', {
+      'type': 'button',
+      'class': 'btn cbi-button cbi-button-apply important',
+      'click': function() {
+        var target = plan.latest_tag || plan.latest_version || '最新版本';
+        if (!confirm('确认自动更新到 ' + target + '？更新过程中请不要刷新或断电。')) return;
+        updateBtn.disabled = true;
+        output.textContent = '正在提交后台更新任务...';
+        fetchJson(UPDATE_START_URL, function(err, data) {
+          if (err || !data) {
+            output.textContent = '提交更新失败';
+            updateBtn.disabled = false;
+            return;
+          }
+          output.textContent = formatUpdateStatus(data);
+          pollUpdateStatus(output);
+        });
+      }
+    }, '自动更新');
+    buttonRow.appendChild(cancelBtn);
+    buttonRow.appendChild(document.createTextNode(' '));
+    buttonRow.appendChild(releaseBtn);
+    buttonRow.appendChild(document.createTextNode(' '));
+    buttonRow.appendChild(updateBtn);
+    L.showModal('SMART SRun 更新', [output, buttonRow], 'cbi-modal');
+  }
+
   function initVersionNotice() {
     var container = document.getElementById('smart-srun-version-info');
     var link = document.getElementById('smart-srun-version-link');
@@ -139,17 +219,19 @@
     if (!container || !link || !dot || window.__smartSrunVersionInit) return;
     window.__smartSrunVersionInit = true;
 
-    var text = container.textContent || '';
-    var match = text.match(/v\d[^\s]*/);
-    var localVersion = match ? match[0] : '';
     link.href = RELEASES_PAGE_URL;
-    if (!localVersion) return;
+    var updatePlan = null;
+    link.addEventListener('click', function(ev) {
+      if (!updatePlan || !updatePlan.update_available) return;
+      ev.preventDefault();
+      openUpdateModal(updatePlan);
+    });
 
-    fetchJson(RELEASES_API_URL, function(err, data) {
-      if (err || !data || typeof data.tag_name !== 'string') return;
-      if (!isRemoteNewer(localVersion, data.tag_name)) return;
+    fetchJson(UPDATE_CHECK_URL, function(err, data) {
+      if (err || !data || !data.ok || !data.update_available) return;
+      updatePlan = data;
       dot.style.display = 'inline-block';
-      link.title = '发现新版本：' + data.tag_name;
+      link.title = '发现新版本：' + (data.latest_tag || data.latest_version || '');
     });
   }
 
@@ -347,16 +429,43 @@
     return null;
   }
 
-  function currentSchoolMetadata() {
-    var allSchools = readJson('smart-school-data', []);
-    var curSchoolSel = document.getElementById('widget.cbid.smart_srun.main.school')
-      || document.getElementById('cbid.smart_srun.main.school')
-      || document.querySelector('select[name="cbid.smart_srun.main.school"]');
-    var curSchool = curSchoolSel ? curSchoolSel.value : 'jxnu';
-    for (var i = 0; i < allSchools.length; i++) {
-      if (allSchools[i].short_name === curSchool) return allSchools[i];
+  function schoolPresetList() {
+    var items = readJson('smart-school-preset-data', []);
+    return items && items.length ? items : [{
+      short_name: 'jxnu',
+      name: '江西师范大学',
+      defaults: { base_url: 'http://172.17.1.2', ac_id: '1', ssid: 'jxnu_stu' },
+      observed_login_shape: { n: '200', type: '1', enc: 'srun_bx1', info_prefix: 'SRBX1', double_stack: '0', os: 'Windows 10', name: 'Windows' },
+      operators: [
+        {suffix:'cmcc', label:'中国移动'},
+        {suffix:'ctcc', label:'中国电信'},
+        {suffix:'cucc', label:'中国联通'},
+        {suffix:'', label:'校园网'}
+      ]
+    }];
+  }
+
+  var DEFAULT_LOGIN_SHAPE = {
+    n: '200',
+    type: '1',
+    enc: 'srun_bx1',
+    info_prefix: 'SRBX1',
+    double_stack: '0',
+    os: 'Windows 10',
+    name: 'Windows'
+  };
+
+  function findSchoolPreset(id) {
+    var items = schoolPresetList();
+    var wanted = String(id || 'jxnu');
+    if (wanted === '__none__') return null;
+    for (var i = 0; i < items.length; i++) {
+      if (String(items[i].short_name || '') === wanted) return items[i];
     }
-    return null;
+    for (var j = 0; j < items.length; j++) {
+      if (String(items[j].short_name || '') === 'jxnu') return items[j];
+    }
+    return items[0] || null;
   }
 
   function radioOptionsMarkup() {
@@ -399,56 +508,285 @@
     modalType = 'campus';
     modalEditId = id;
     var item = id ? findById(campusData, id) : {};
-    var schoolObj = currentSchoolMetadata();
-    var ops = (schoolObj && schoolObj.operators && schoolObj.operators.length) ? schoolObj.operators : [
-      {id:'cmcc', label:'中国移动'}, {id:'ctcc', label:'中国电信'},
-      {id:'cucc', label:'中国联通'}, {id:'xn', label:'校内网'}
+    var presets = schoolPresetList();
+    var NO_PRESET_ID = '__none__';
+    var selectedPresetId = 'jxnu';
+    var selectedPreset = findSchoolPreset(selectedPresetId);
+    var presetApplied = false;
+    var defaultOperators = [
+      {suffix:'cmcc', label:'中国移动'},
+      {suffix:'ctcc', label:'中国电信'},
+      {suffix:'cucc', label:'中国联通'},
+      {suffix:'', label:'校园网'}
     ];
-    var noSuffixOps = (schoolObj && schoolObj.no_suffix_operators) ? schoolObj.no_suffix_operators : ['xn'];
-    var opOptions = '';
-    for (var oi = 0; oi < ops.length; oi++) {
-      var selected = (ops[oi].id === (item.operator || ops[0].id)) ? ' selected' : '';
-      var badge = ops[oi].verified ? ' [已验证]' : '';
-      opOptions += '<option value="' + escapeHtml(ops[oi].id) + '"' + selected + '>' + escapeHtml(ops[oi].label + badge) + '</option>';
+    var initialValues = {
+      label: item.label || '',
+      user_id: item.user_id || '',
+      operator_suffix: item.operator_suffix || '',
+      access_mode: item.access_mode || 'wifi',
+      base_url: item.base_url || 'http://172.17.1.2',
+      ac_id: item.ac_id || '1',
+      n: item.n || '',
+      type: item.type || '',
+      enc: item.enc || '',
+      info_prefix: item.info_prefix || '',
+      double_stack: item.double_stack || '',
+      login_os: item.login_os || '',
+      login_name: item.login_name || '',
+      ssid: item.ssid || 'jxnu_stu',
+      bssid: item.bssid || '',
+      radio: item.radio || ''
+    };
+
+    // 运营商后缀的快捷下拉只在学校预设提供了 operators 时展示；没有则只保留可编辑的后缀输入框。
+    function presetOperators(preset) {
+      return (preset && preset.operators && preset.operators.length) ? preset.operators : [];
     }
 
-    var bodyHtml =
-      '<div class="smart-native-row"><label>标签（选填）</label><input id="jm-label" value="' + escapeHtml(item.label || '') + '"></div>' +
-      '<div class="smart-native-row"><label>学工号</label><input id="jm-user_id" value="' + escapeHtml(item.user_id || '') + '"></div>' +
-      '<div class="smart-native-row"><label>运营商</label><select id="jm-operator">' + opOptions + '</select></div>' +
-      '<div class="smart-native-row"><label>运营商后缀（留空则为默认）</label><input id="jm-operator_suffix" value="' + escapeHtml(item.operator_suffix || '') + '" placeholder=""></div>' +
-      '<div class="smart-native-row"><label>接入方式</label><select id="jm-access_mode"><option value="wifi"' + (((item.access_mode || 'wifi') === 'wifi') ? ' selected' : '') + '>无线</option><option value="wired"' + ((item.access_mode === 'wired') ? ' selected' : '') + '>有线（WAN）</option></select></div>' +
-      '<div class="smart-native-row"><label>密码</label><div id="jm-password-field"></div></div>' +
-      '<div class="smart-native-row"><label>认证地址</label><input id="jm-base_url" value="' + escapeHtml(item.base_url || 'http://172.17.1.2') + '"></div>' +
-      '<div class="smart-native-row"><label>AC_ID</label><input id="jm-ac_id" value="' + escapeHtml(item.ac_id || '1') + '"></div>' +
-      '<div class="smart-native-row" id="jm-ssid-row"><label>校园网 SSID</label><input id="jm-ssid" value="' + escapeHtml(item.ssid || 'jxnu_stu') + '"></div>' +
-      '<div class="smart-native-row" id="jm-bssid-row"><label>BSSID（留空则不锁定）</label><input id="jm-bssid" value="' + escapeHtml(item.bssid || '') + '"></div>' +
-      '<div class="smart-native-row" id="jm-radio-row"><label>频段</label><select id="jm-radio">' + radioOptionsMarkup() + '</select></div>';
+    // 字段已从 id 改名为 suffix；仍兼容旧的 id 键。
+    function operatorSuffixOf(op) {
+      if (!op) return '';
+      var v = (op.suffix !== undefined && op.suffix !== null) ? op.suffix : op.id;
+      return String(v || '');
+    }
 
-    function updateSuffixPlaceholder() {
+    function operatorOptionsMarkup(ops, selectedSuffix) {
+      var out = '';
+      var selectedText = String(selectedSuffix || '');
+      for (var oi = 0; oi < ops.length; oi++) {
+        var sfx = operatorSuffixOf(ops[oi]);
+        var label = String(ops[oi].label || sfx || '校园网');
+        // suffix 为 "??" 表示该运营商后缀尚未被提供者验证，下拉里标注“未验证”。
+        var text = (sfx === '??') ? (label + '（未验证）') : label;
+        var selected = (sfx === selectedText) ? ' selected' : '';
+        out += '<option value="' + escapeHtml(sfx) + '"' + selected + '>' + escapeHtml(text) + '</option>';
+      }
+      return out;
+    }
+
+    // 根据当前预设刷新快捷下拉的可见性与选项。
+    function refreshOperatorQuickpick(preset, selectedSuffix) {
+      var wrap = document.getElementById('jm-operator-quickpick-wrap');
       var opSel = document.getElementById('jm-operator');
+      if (!wrap || !opSel) return;
+      var ops = presetOperators(preset);
+      if (ops.length) {
+        opSel.innerHTML = operatorOptionsMarkup(ops, selectedSuffix);
+        wrap.style.display = '';
+      } else {
+        opSel.innerHTML = '';
+        wrap.style.display = 'none';
+      }
+    }
+
+    // 下拉选择运营商 -> 填充后缀输入框。"??"（未验证）不直接写入，而是清空并提示用户手填。
+    function applyOperatorPick() {
       var sfx = document.getElementById('jm-operator_suffix');
-      if (!opSel || !sfx) return;
-      var opId = opSel.value;
-      var isNoSuffix = false;
-      for (var i = 0; i < noSuffixOps.length; i++) {
-        if (noSuffixOps[i] === opId) {
-          isNoSuffix = true;
-          break;
+      var opSel = document.getElementById('jm-operator');
+      var hint = document.getElementById('jm-operator-suffix-hint');
+      if (!sfx || !opSel) return;
+      var val = String(opSel.value || '');
+      if (val === '??') {
+        sfx.value = '';
+        if (hint) {
+          hint.textContent = '该运营商后缀尚未被验证，请自行确认后手动填写。';
+          hint.style.display = '';
+        }
+      } else {
+        sfx.value = val;
+        if (hint) {
+          hint.textContent = '';
+          hint.style.display = 'none';
         }
       }
-      sfx.placeholder = isNoSuffix ? '(无后缀)' : ('留空则使用 "' + opId + '"');
+    }
+
+    function presetOptionsMarkup() {
+      var out = '<option value="' + NO_PRESET_ID + '"' + (selectedPresetId === NO_PRESET_ID ? ' selected' : '') + '>无预设</option>';
+      for (var pi = 0; pi < presets.length; pi++) {
+        var presetId = String(presets[pi].short_name || '');
+        if (!presetId) continue;
+        out += '<option value="' + escapeHtml(presetId) + '"' + (presetId === selectedPresetId ? ' selected' : '') + '>' + escapeHtml(presets[pi].name || presetId) + '</option>';
+      }
+      return out;
+    }
+
+    var initialOperators = presetOperators(selectedPreset);
+    var quickpickDisplay = initialOperators.length ? '' : 'none';
+
+    var bodyHtml =
+      '<div class="smart-native-row"><label>学校预设</label><span><select id="jm-school_preset">' + presetOptionsMarkup() + '</select> <button type="button" id="jm-apply-school-defaults" class="btn cbi-button cbi-button-action">应用预设</button> <button type="button" id="jm-reset-school-defaults" class="btn cbi-button">复位</button></span></div>' +
+      '<div class="smart-native-row"><label>标签（选填）</label><input id="jm-label" value="' + escapeHtml(initialValues.label) + '"></div>' +
+      '<div class="smart-native-row"><label>学工号</label><input id="jm-user_id" value="' + escapeHtml(initialValues.user_id) + '"></div>' +
+      '<div class="smart-native-row"><label>运营商后缀 <a href="https://github.com/matthewlu070111/smart-srun#%E8%8E%B7%E5%8F%96%E5%AD%A6%E9%A2%84%E8%AE%BE%E4%B8%8E%E8%BF%90%E8%90%A5%E5%95%86%E5%90%8E%E7%BC%80" target="_blank" rel="noopener noreferrer">如何获取？</a></label>' +
+        '<span id="jm-operator-quickpick-wrap" style="display:' + quickpickDisplay + ';margin-bottom:.35rem;"><select id="jm-operator">' + operatorOptionsMarkup(initialOperators, initialValues.operator_suffix) + '</select></span>' +
+        '<input id="jm-operator_suffix" value="' + escapeHtml(initialValues.operator_suffix) + '" placeholder="">' +
+        '<div id="jm-operator-suffix-hint" style="display:none;color:#d97706;font-size:12px;margin-top:.25rem;"></div></div>' +
+      '<div class="smart-native-row"><label>接入方式</label><select id="jm-access_mode"><option value="wifi"' + (initialValues.access_mode === 'wifi' ? ' selected' : '') + '>无线</option><option value="wired"' + (initialValues.access_mode === 'wired' ? ' selected' : '') + '>有线（WAN）</option></select></div>' +
+      '<div class="smart-native-row"><label>密码</label><div id="jm-password-field"></div></div>' +
+      '<div class="smart-native-row"><label>认证地址</label><input id="jm-base_url" value="' + escapeHtml(initialValues.base_url) + '"></div>' +
+      '<div class="smart-native-row"><label>AC_ID</label><span><input id="jm-ac_id" value="' + escapeHtml(initialValues.ac_id) + '"> <button type="button" id="jm-detect-acid" class="btn cbi-button">嗅探</button> <span id="jm-detect-acid-status" style="margin-left:6px;color:#6b7280;"></span></span></div>' +
+      '<details class="smart-native-advanced"><summary>高级登录参数</summary>' +
+      '<div class="smart-native-row"><label>n</label><input id="jm-login-n" value="' + escapeHtml(initialValues.n) + '" placeholder="200"></div>' +
+      '<div class="smart-native-row"><label>type</label><input id="jm-login-type" value="' + escapeHtml(initialValues.type) + '" placeholder="1"></div>' +
+      '<div class="smart-native-row"><label>enc</label><input id="jm-login-enc" value="' + escapeHtml(initialValues.enc) + '" placeholder="srun_bx1"></div>' +
+      '<div class="smart-native-row"><label>info 前缀</label><input id="jm-info-prefix" value="' + escapeHtml(initialValues.info_prefix) + '" placeholder="SRBX1"></div>' +
+      '<div class="smart-native-row"><label>double_stack</label><input id="jm-double-stack" value="' + escapeHtml(initialValues.double_stack) + '" placeholder="0"></div>' +
+      '<div class="smart-native-row"><label>os</label><input id="jm-login-os" value="' + escapeHtml(initialValues.login_os) + '" placeholder="Windows 10"></div>' +
+      '<div class="smart-native-row"><label>name</label><input id="jm-login-name" value="' + escapeHtml(initialValues.login_name) + '" placeholder="Windows"></div>' +
+      '</details>' +
+      '<div class="smart-native-row" id="jm-ssid-row"><label>校园网 SSID</label><input id="jm-ssid" value="' + escapeHtml(initialValues.ssid) + '"></div>' +
+      '<div class="smart-native-row" id="jm-bssid-row"><label>BSSID（留空则不锁定）</label><input id="jm-bssid" value="' + escapeHtml(initialValues.bssid) + '"></div>' +
+      '<div class="smart-native-row" id="jm-radio-row"><label>频段</label><select id="jm-radio">' + radioOptionsMarkup() + '</select></div>';
+
+    function applySchoolDefaultsToForm() {
+      var preset = findSchoolPreset(selectedPresetId);
+      if (!preset) {
+        resetSchoolDefaultsForm();
+        return;
+      }
+      var schoolDefaults = (preset && preset.defaults) ? preset.defaults : {};
+      var loginShape = (preset && preset.observed_login_shape) ? preset.observed_login_shape : {};
+      var fieldMap = {
+        base_url: 'jm-base_url',
+        ac_id: 'jm-ac_id',
+        ssid: 'jm-ssid'
+      };
+      for (var key in fieldMap) {
+        var target = document.getElementById(fieldMap[key]);
+        if (!target) continue;
+        target.value = (schoolDefaults[key] !== undefined && schoolDefaults[key] !== null) ? String(schoolDefaults[key]) : '';
+      }
+      var nextOperators = presetOperators(preset);
+      var nextSuffix = nextOperators.length ? operatorSuffixOf(nextOperators[0]) : '';
+      refreshOperatorQuickpick(preset, nextSuffix);
+      applyLoginShapeToForm(loginShape);
+      presetApplied = true;
+      // 应用预设时，若该预设提供了运营商，则用第一个运营商联动填充后缀；否则保持手填。
+      if (nextOperators.length) {
+        var opSelApply = document.getElementById('jm-operator');
+        if (opSelApply) opSelApply.value = nextSuffix;
+        applyOperatorPick();
+      }
+      if (schoolDefaults.access_mode) {
+        var modeSel = document.getElementById('jm-access_mode');
+        if (modeSel) modeSel.value = String(schoolDefaults.access_mode);
+      } else {
+        var fallbackModeSel = document.getElementById('jm-access_mode');
+        if (fallbackModeSel && selectedPresetId === NO_PRESET_ID) fallbackModeSel.value = 'wifi';
+      }
+      updateCampusAccessModeUI();
+    }
+
+    function applyLoginShapeToForm(shape) {
+      shape = shape || {};
+      var map = {
+        n: 'jm-login-n',
+        type: 'jm-login-type',
+        enc: 'jm-login-enc',
+        info_prefix: 'jm-info-prefix',
+        double_stack: 'jm-double-stack'
+      };
+      for (var key in map) {
+        var target = document.getElementById(map[key]);
+        if (!target) continue;
+        target.value = (shape[key] !== undefined && shape[key] !== null) ? String(shape[key]) : '';
+      }
+      var osNode = document.getElementById('jm-login-os');
+      if (osNode) osNode.value = (shape.os !== undefined && shape.os !== null) ? String(shape.os) : '';
+      var nameNode = document.getElementById('jm-login-name');
+      if (nameNode) nameNode.value = (shape.name !== undefined && shape.name !== null) ? String(shape.name) : '';
+    }
+
+    function resetSchoolDefaultsForm() {
+      presetApplied = false;
+      selectedPresetId = NO_PRESET_ID;
+      selectedPreset = findSchoolPreset(selectedPresetId);
+      var presetSel = document.getElementById('jm-school_preset');
+      if (presetSel) presetSel.value = selectedPresetId;
+      // 无预设：隐藏运营商快捷下拉，仅保留手填后缀输入框。
+      refreshOperatorQuickpick(null, '');
+      var resetHint = document.getElementById('jm-operator-suffix-hint');
+      if (resetHint) { resetHint.textContent = ''; resetHint.style.display = 'none'; }
+      var values = {
+        'jm-label': initialValues.label,
+        'jm-user_id': initialValues.user_id,
+        'jm-operator_suffix': '',
+        'jm-access_mode': 'wifi',
+        'jm-base_url': '',
+        'jm-ac_id': '',
+        'jm-login-n': DEFAULT_LOGIN_SHAPE.n,
+        'jm-login-type': DEFAULT_LOGIN_SHAPE.type,
+        'jm-login-enc': DEFAULT_LOGIN_SHAPE.enc,
+        'jm-info-prefix': DEFAULT_LOGIN_SHAPE.info_prefix,
+        'jm-double-stack': DEFAULT_LOGIN_SHAPE.double_stack,
+        'jm-login-os': DEFAULT_LOGIN_SHAPE.os,
+        'jm-login-name': DEFAULT_LOGIN_SHAPE.name,
+        'jm-ssid': '',
+        'jm-bssid': initialValues.bssid,
+        'jm-radio': initialValues.radio
+      };
+      for (var idKey in values) {
+        var node = document.getElementById(idKey);
+        if (node) node.value = values[idKey];
+      }
+      updateCampusAccessModeUI();
+    }
+
+    function detectAcidForForm() {
+      var baseInput = document.getElementById('jm-base_url');
+      var acidInput = document.getElementById('jm-ac_id');
+      var statusNode = document.getElementById('jm-detect-acid-status');
+      var button = document.getElementById('jm-detect-acid');
+      var baseUrl = baseInput ? baseInput.value : '';
+      if (!baseUrl) {
+        alert('请先填写认证地址');
+        return;
+      }
+      if (button) button.disabled = true;
+      if (statusNode) statusNode.textContent = '嗅探中...';
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', '/cgi-bin/luci/admin/services/smart_srun/detect_acid', true);
+      xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
+      xhr.onload = function() {
+        var data = {};
+        try {
+          data = JSON.parse(xhr.responseText || '{}');
+        } catch (e) {}
+        if (data.ok && data.acid) {
+          if (acidInput) acidInput.value = data.acid;
+          if (baseInput && data.base_url) baseInput.value = data.base_url;
+          if (statusNode) statusNode.textContent = '已填入 ' + data.acid;
+        } else {
+          if (statusNode) statusNode.textContent = data.message || '未发现 AC_ID';
+          else alert(data.message || '未发现 AC_ID');
+        }
+        if (button) button.disabled = false;
+      };
+      xhr.onerror = function() {
+        if (statusNode) statusNode.textContent = '嗅探请求失败';
+        if (button) button.disabled = false;
+      };
+      xhr.send('base_url=' + encodeURIComponent(baseUrl));
     }
 
     showNativeModal(
       id ? '编辑校园网账号' : '新增校园网账号',
       bodyHtml,
       function() {
-        document.getElementById('jm-radio').value = item.radio || '';
+        document.getElementById('jm-radio').value = initialValues.radio;
+        document.getElementById('jm-school_preset').addEventListener('change', function() {
+          presetApplied = false;
+          selectedPresetId = this.value || NO_PRESET_ID;
+          selectedPreset = findSchoolPreset(selectedPresetId);
+        });
+        document.getElementById('jm-apply-school-defaults').addEventListener('click', applySchoolDefaultsToForm);
+        document.getElementById('jm-reset-school-defaults').addEventListener('click', resetSchoolDefaultsForm);
+        document.getElementById('jm-detect-acid').addEventListener('click', detectAcidForForm);
         document.getElementById('jm-access_mode').addEventListener('change', updateCampusAccessModeUI);
-        document.getElementById('jm-operator').addEventListener('change', updateSuffixPlaceholder);
+        document.getElementById('jm-operator').addEventListener('change', applyOperatorPick);
+        if (!id) applySchoolDefaultsToForm();
         updateCampusAccessModeUI();
-        updateSuffixPlaceholder();
         renderPasswordField('jm-password-field', 'jm-password', item.password || '');
       },
       function() { window.smartModalSave(); }
@@ -485,12 +823,18 @@
     if (modalType === 'campus') {
       fd.append('label', document.getElementById('jm-label').value);
       fd.append('user_id', document.getElementById('jm-user_id').value);
-      fd.append('operator', document.getElementById('jm-operator').value);
       fd.append('operator_suffix', document.getElementById('jm-operator_suffix').value);
       fd.append('access_mode', document.getElementById('jm-access_mode').value);
       fd.append('password', getFieldValue('jm-password'));
       fd.append('base_url', document.getElementById('jm-base_url').value);
       fd.append('ac_id', document.getElementById('jm-ac_id').value);
+      fd.append('n', document.getElementById('jm-login-n').value);
+      fd.append('type', document.getElementById('jm-login-type').value);
+      fd.append('enc', document.getElementById('jm-login-enc').value);
+      fd.append('info_prefix', document.getElementById('jm-info-prefix').value);
+      fd.append('double_stack', document.getElementById('jm-double-stack').value);
+      fd.append('login_os', document.getElementById('jm-login-os').value);
+      fd.append('login_name', document.getElementById('jm-login-name').value);
       fd.append('ssid', document.getElementById('jm-ssid').value);
       fd.append('bssid', document.getElementById('jm-bssid').value);
       fd.append('radio', document.getElementById('jm-radio').value);

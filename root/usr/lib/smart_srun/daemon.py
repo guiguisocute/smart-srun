@@ -9,6 +9,10 @@ import time
 
 from config import (
     ACTION_FILE,
+    DEFAULT_INFO_PREFIX,
+    DEFAULT_LOGIN_ENC,
+    DEFAULT_LOGIN_N,
+    DEFAULT_LOGIN_TYPE,
     LOG_FILE,
     build_school_runtime_luci_contract,
     log,
@@ -45,6 +49,7 @@ from snapshot import build_runtime_snapshot
 
 
 DAEMON_LOCK_FILE = "/var/run/smart_srun/daemon.lock"
+ROUTINE_ONLINE_TICK_PREFIX = "在线，下一次检测间隔 "
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +65,12 @@ def _make_daemon_state():
         "was_online": False,
         "last_switch_ts": 0,
     }
+
+
+def _should_log_daemon_tick(message, state=None):
+    del state
+    text = str(message or "")
+    return not text.startswith(ROUTINE_ONLINE_TICK_PREFIX)
 
 
 def load_pending_runtime_action():
@@ -502,7 +513,8 @@ def run_daemon(runtime=None):
         hook_result = _run_runtime_daemon_hook(app_ctx, state, interval)
         if hook_result is not None:
             ok, message = hook_result
-            log("INFO" if ok else "WARN", "daemon_tick", message)
+            if (not ok) or _should_log_daemon_tick(message, state):
+                log("INFO" if ok else "WARN", "daemon_tick", message)
             save_runtime_status(
                 message,
                 state,
@@ -519,7 +531,8 @@ def run_daemon(runtime=None):
         else:
             message, sleep = _daemon_tick_active(cfg, state, interval)
 
-        log("INFO", "daemon_tick", message)
+        if _should_log_daemon_tick(message, state):
+            log("INFO", "daemon_tick", message)
         save_runtime_status(
             message,
             state,
@@ -806,26 +819,40 @@ def _print_account_table(raw):
         return
     # Header
     print(
-        "  %-12s %-20s %-16s %-10s %-6s %-14s"
-        % ("ID", "Label", "User", "Op", "Mode", "SSID")
+        "  %-12s %-20s %-16s %-12s %-6s %-14s %-18s"
+        % ("ID", "Label", "User", "Suffix", "Mode", "SSID", "Login")
     )
-    print("  " + "-" * 80)
+    print("  " + "-" * 100)
     for acc in accounts:
         aid = str(acc.get("id", ""))
         is_default = aid == default_campus
         user_id = acc.get("user_id", "")
-        op = acc.get("operator", "")
         suffix = str(acc.get("operator_suffix", "")).strip()
-        op_display = op
-        if suffix and suffix != op:
-            op_display = "%s(%s)" % (op, suffix)
+        suffix_display = suffix or "-"
         mode = "wired" if acc.get("access_mode") == "wired" else "wifi"
-        label = acc.get("label", "") or ("%s@%s" % (user_id, op) if op else user_id)
+        label = acc.get("label", "") or (
+            "%s@%s" % (user_id, suffix) if suffix else user_id
+        )
         ssid = acc.get("ssid", "") if mode != "wired" else "-"
+        login_shape = "%s/%s/%s/%s" % (
+            str(acc.get("n", "") or DEFAULT_LOGIN_N),
+            str(acc.get("type", "") or DEFAULT_LOGIN_TYPE),
+            str(acc.get("enc", "") or DEFAULT_LOGIN_ENC),
+            str(acc.get("info_prefix", "") or DEFAULT_INFO_PREFIX),
+        )
         marker = " *" if is_default else ""
         print(
-            "  %-12s %-20s %-16s %-10s %-6s %-14s%s"
-            % (aid, label[:20], user_id[:16], op_display[:10], mode, ssid[:14], marker)
+            "  %-12s %-20s %-16s %-12s %-6s %-14s %-18s%s"
+            % (
+                aid,
+                label[:20],
+                user_id[:16],
+                suffix_display[:12],
+                mode,
+                ssid[:14],
+                login_shape[:18],
+                marker,
+            )
         )
     print("  (* = default)")
 
@@ -923,7 +950,7 @@ OPERATOR_LABELS_FALLBACK = {
     "cmcc": "移动",
     "ctcc": "电信",
     "cucc": "联通",
-    "xn": "校内网",
+    "": "校园网",
 }
 
 
@@ -938,16 +965,19 @@ def _get_current_profile():
         return None
 
 
+def _operator_suffix_of(op):
+    # 字段已从 id 改名为 suffix；仍兼容旧的 id 键。
+    return str(op.get("suffix", op.get("id", "")) or "")
+
+
 def _get_operator_choices(profile=None):
     if profile and profile.OPERATORS:
-        ids = [o["id"] for o in profile.OPERATORS]
-        labels = {o["id"]: o["label"] for o in profile.OPERATORS}
-        no_suffix = set(profile.NO_SUFFIX_OPERATORS)
-        return ids, labels, no_suffix
+        suffixes = [_operator_suffix_of(o) for o in profile.OPERATORS]
+        labels = {_operator_suffix_of(o): o.get("label", "") for o in profile.OPERATORS}
+        return suffixes, labels
     return (
-        ["cmcc", "ctcc", "cucc", "xn"],
+        ["cmcc", "ctcc", "cucc", ""],
         OPERATOR_LABELS_FALLBACK,
-        {"xn"},
     )
 
 
@@ -997,22 +1027,33 @@ def _interactive_campus(existing=None):
     item = existing or {}
     fields = {}
     profile = _get_current_profile()
-    op_ids, op_labels, no_suffix_ops = _get_operator_choices(profile)
+    op_suffixes, op_labels = _get_operator_choices(profile)
 
     fields["label"] = _prompt("标签（选填）", item.get("label", ""))
     fields["user_id"] = _prompt("学工号", item.get("user_id", ""))
     if not fields["user_id"]:
         print("学工号不能为空")
         return None
-    fields["operator"] = _prompt(
-        "运营商", item.get("operator", op_ids[0]), choices=op_ids
-    )
 
-    default_suffix_hint = (
-        "(无后缀)" if fields["operator"] in no_suffix_ops else fields["operator"]
-    )
+    # 运营商后缀：展示各运营商对应后缀作为提示。后缀为 "??" 表示该运营商尚未被
+    # 验证，需要用户自行确认填写；空后缀表示纯校园网账号。
+    hint_parts = []
+    has_unverified = False
+    for sfx in op_suffixes:
+        label = op_labels.get(sfx, "") or "校园网"
+        if sfx == "??":
+            has_unverified = True
+            hint_parts.append("%s=待确认" % label)
+        elif sfx == "":
+            hint_parts.append("%s=空" % label)
+        else:
+            hint_parts.append("%s=%s" % (label, sfx))
+    if hint_parts:
+        print("  可选运营商后缀： " + "，".join(hint_parts))
+    if has_unverified:
+        print("  注意：标记为“待确认”的运营商后缀尚未验证，请按实际情况填写。")
     fields["operator_suffix"] = _prompt(
-        "运营商后缀（留空使用默认: %s）" % default_suffix_hint,
+        "运营商后缀（空=纯校园网账号；不知道请看文档“如何获取”）",
         item.get("operator_suffix", ""),
     )
 
@@ -1022,6 +1063,17 @@ def _interactive_campus(existing=None):
     )
     fields["base_url"] = _prompt("认证地址", item.get("base_url", "http://172.17.1.2"))
     fields["ac_id"] = _prompt("AC_ID", item.get("ac_id", "1"))
+    fields["n"] = _prompt("高级登录参数 n", item.get("n", ""))
+    fields["type"] = _prompt("高级登录参数 type", item.get("type", ""))
+    fields["enc"] = _prompt("高级登录参数 enc", item.get("enc", ""))
+    fields["info_prefix"] = _prompt(
+        "高级登录参数 info_prefix", item.get("info_prefix", "")
+    )
+    fields["double_stack"] = _prompt(
+        "高级登录参数 double_stack", item.get("double_stack", "")
+    )
+    fields["login_os"] = _prompt("高级登录参数 os", item.get("login_os", ""))
+    fields["login_name"] = _prompt("高级登录参数 name", item.get("login_name", ""))
     if fields["access_mode"] != "wired":
         fields["ssid"] = _prompt("校园网 SSID", item.get("ssid", "jxnu_stu"))
         fields["bssid"] = _prompt("BSSID（留空不锁定）", item.get("bssid", ""))
@@ -1033,11 +1085,8 @@ def _interactive_campus(existing=None):
 
     if not fields["label"]:
         suffix = fields.get("operator_suffix", "")
-        op = fields["operator"]
         if suffix:
             fields["label"] = "%s@%s" % (fields["user_id"], suffix)
-        elif op and op not in no_suffix_ops:
-            fields["label"] = "%s@%s" % (fields["user_id"], op)
         else:
             fields["label"] = fields["user_id"]
     return fields

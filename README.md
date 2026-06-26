@@ -23,10 +23,9 @@
 - 支持多学校配置文件，可扩展适配其他深澜校园网环境
 
 ### 未来功能
-- 加入TLS支持以应对HTTPS认证页面的环境
 - 适配 UA3F应对多设备检查的环境
 - 支持多号多拨负载均衡网络叠加
-- 适配更多高校的深澜校园网环境
+- 适配更多高校的深澜校园网环境(进行中)
 - 更多账号功能，如账号分组、规则管理
 - ……
 
@@ -119,6 +118,22 @@ apk add --allow-untrusted ./luci-app-smart-srun-bundle-*.apk
 
 保存并应用后守护进程自动启动。
 
+## 获取学校预设与环境真实字段值
+
+### 学校预设
+正常情况下，软件包会自动通过 `https://srun.edu-publish.site/school-presets.json` 拉取远端最新学校预设，无需手动填写
+
+### 环境真实字段值
+**👉 [smart_srun_school_preset_capture.user](https://github.com/guiguisocute/smart_srun_school_preset_capture.user)**（含一键安装链接和详细说明）
+
+简要使用：装好 Tampermonkey（油猴）后，从上面仓库一键安装，打开学校的深澜认证页，按照油猴脚本的GUI提示操作，即可采集到当前认证环境的运营商后缀与其他关键信息
+
+
+```sh
+srunnet detect acid
+srunnet detect acid 'http://<portal-host>/srun_portal_pc?ac_id=<id>'
+```
+
 ### CLI 使用
 
 安装后可直接使用 `srunnet` 命令（无参数等同 `srunnet status`）：
@@ -204,4 +219,4 @@ WTFPL
 
 ****
 ## 参与贡献
-如果你愿意参与开发：请参阅 [贡献指南](/doc/CONTRIBUTING.md)
+如果你愿意参与开发：请参阅 [贡献指南](CONTRIBUTING.md)

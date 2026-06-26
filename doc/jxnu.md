@@ -1,11 +1,16 @@
 # 默认配置
 
-## 已验证学校
+机器可读学校预设请维护 `doc/school-presets.json`。插件运行时优先读取 `https://srun.edu-publish.site/school-presets.json`，再回退 raw GitHub 和随包 fallback；本文只保留人工说明。
+
+## 学校预设
 
 - 江西师范大学
 - 南昌大学
 - 烟台大学
-- 青岛大学（acid = 4）
+- 青岛大学
+- 临沂大学
+- 辽宁工程技术大学（葫芦岛校区）
+- 黄山学院
 
 ## 贡献者
 

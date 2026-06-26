@@ -27,6 +27,9 @@ CORE_RESERVED_COMMANDS = (
     "disable",
     "help",
     "man",
+    "update",
+    "presets",
+    "detect",
 )
 
 
@@ -57,7 +60,6 @@ def _apply_legacy_profile_metadata(runtime, metadata):
     runtime.DESCRIPTION = metadata.get("description", "")
     runtime.CONTRIBUTORS = tuple(metadata.get("contributors", ()))
     runtime.OPERATORS = tuple(metadata.get("operators", ()))
-    runtime.NO_SUFFIX_OPERATORS = tuple(metadata.get("no_suffix_operators", ()))
     return runtime
 
 
