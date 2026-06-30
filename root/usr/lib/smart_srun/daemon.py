@@ -1211,7 +1211,9 @@ def _config_account(args):
             print("未找到账号: %s" % args.id)
             return
         update_json_raw_config(
-            lambda current: current.__setitem__("default_campus_id", args.id)
+            lambda current: current.update(
+                {"default_campus_id": args.id, "active_campus_id": args.id}
+            )
         )
         print("已设为默认: %s (%s)" % (args.id, found.get("label", "")))
         return
@@ -1311,7 +1313,9 @@ def _config_hotspot(args):
             print("未找到热点配置: %s" % args.id)
             return
         update_json_raw_config(
-            lambda current: current.__setitem__("default_hotspot_id", args.id)
+            lambda current: current.update(
+                {"default_hotspot_id": args.id, "active_hotspot_id": args.id}
+            )
         )
         print("已设为默认: %s (%s)" % (args.id, found.get("label", "")))
         return

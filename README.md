@@ -46,7 +46,7 @@
 ## 安装
 **以下操作请在路由器连上互联网的情况进行！**
 
-1. 下载最新安装包：[Releases](https://github.com/matthewlu070111/luci-app-smart-srun/releases)
+1. 下载最新安装包：[Releases](https://github.com/matthewlu070111/smart-srun/releases)
    - OpenWrt 23.05 及更早（opkg 系统）→ 下载 `*.ipk`
    - OpenWrt 24.10+ / 25.12+（apk 系统）→ 下载 `*.apk`
 2. 安装：
@@ -214,9 +214,8 @@ srunnet config hotspot rm hotspot-2
 srunnet config hotspot default hotspot-1
 ```
 
-## License
-WTFPL
-
 ****
+## License
+[WTFPL](LICENSE)
 ## 参与贡献
 如果你愿意参与开发：请参阅 [贡献指南](CONTRIBUTING.md)

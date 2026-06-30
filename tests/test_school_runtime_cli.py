@@ -613,7 +613,7 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         ):
             daemon.main()
 
-        list_presets.assert_called_once_with(include_draft=False)
+        list_presets.assert_called_once_with(include_draft=False, refresh=True)
         self.assertEqual(json.loads(stdout.getvalue()), payload)
 
     def test_presets_list_command_keeps_operator_suffixes_in_operators(self):
@@ -626,6 +626,7 @@ class SchoolRuntimeCliTests(unittest.TestCase):
                 mock.patch.object(sys, "argv", ["srunnet", "presets", "list"]),
                 mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
                 mock.patch.object(school_presets, "CACHE_PRESETS_FILE", cache_path),
+                mock.patch.object(school_presets, "_fetch_remote_payload_with_source", side_effect=RuntimeError("offline")),
                 redirect_stdout(stdout),
             ):
                 daemon.main()
@@ -1194,6 +1195,21 @@ class LuciSourceHardeningTests(unittest.TestCase):
             'out[key] = type(latest[key]) == "table" and latest[key] or {}',
             model_source,
         )
+        self.assertIn("function opt.remove(self, section)", model_source)
+        self.assertIn('set_value(key, "")', model_source)
+
+    def test_default_selection_updates_runtime_active_pointer(self):
+        controller_source = read_repo_text(
+            "root", "usr", "lib", "lua", "luci", "controller", "smart_srun.lua"
+        )
+        daemon_source = read_repo_text("root", "usr", "lib", "smart_srun", "daemon.py")
+
+        self.assertIn("cfg.default_campus_id = id", controller_source)
+        self.assertIn("cfg.active_campus_id = id", controller_source)
+        self.assertIn("cfg.default_hotspot_id = id", controller_source)
+        self.assertIn("cfg.active_hotspot_id = id", controller_source)
+        self.assertIn('"active_campus_id": args.id', daemon_source)
+        self.assertIn('"active_hotspot_id": args.id', daemon_source)
 
     def test_luci_config_writes_use_temp_file_replace_flow(self):
         controller_source = read_repo_text(

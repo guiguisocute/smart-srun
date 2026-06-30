@@ -637,7 +637,7 @@ def main():
         if getattr(args, "presets_command", "") == "list":
             print(
                 json.dumps(
-                    school_presets.list_presets(include_draft=False),
+                    school_presets.list_presets(include_draft=False, refresh=True),
                     ensure_ascii=False,
                     indent=2,
                 )

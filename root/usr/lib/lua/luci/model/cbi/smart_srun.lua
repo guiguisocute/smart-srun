@@ -526,6 +526,9 @@ local function bind_text(opt, key, normalize_fn)
         end
         set_value(key, raw)
     end
+    function opt.remove(self, section)
+        set_value(key, "")
+    end
 end
 
 local quiet_desc = string.format("当前下线/上线时间：%s / %s", cfg.quiet_start or "00:00", cfg.quiet_end or "06:00")
