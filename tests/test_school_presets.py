@@ -156,7 +156,8 @@ class SchoolPresetTests(unittest.TestCase):
                 ),
             ):
                 result = school_presets.refresh_remote_presets()
-                cached = json.load(open(cache_path, "r", encoding="utf-8"))
+                with open(cache_path, "r", encoding="utf-8") as handle:
+                    cached = json.load(handle)
 
         self.assertEqual(
             calls,
@@ -168,6 +169,43 @@ class SchoolPresetTests(unittest.TestCase):
         self.assertEqual(result["source_url"], school_presets.GITHUB_PRESETS_URL)
         self.assertEqual(cached["_source_url"], school_presets.GITHUB_PRESETS_URL)
         self.assertEqual(result["schools"][0]["short_name"], "mirror-fallback")
+
+    def test_refresh_remote_presets_keeps_newer_cached_payload(self):
+        cached_payload = {
+            "schema_version": 1,
+            "updated_at": "2026-06-30",
+            "_cached_at": 123,
+            "_source_url": "cached",
+            "schools": [
+                {"id": "cached-campus", "name": "缓存学校", "status": "active"}
+            ],
+        }
+        remote_payload = {
+            "schema_version": 1,
+            "updated_at": "2026-06-01",
+            "schools": [
+                {"id": "old-campus", "name": "旧远端学校", "status": "active"}
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = os.path.join(tmp, "school_presets_cache.json")
+            with open(cache_path, "w", encoding="utf-8") as handle:
+                json.dump(cached_payload, handle)
+            with (
+                mock.patch.object(school_presets, "CACHE_PRESETS_FILE", cache_path),
+                mock.patch.object(
+                    school_presets,
+                    "_fetch_remote_payload_with_source",
+                    return_value=(remote_payload, "remote"),
+                ),
+            ):
+                result = school_presets.refresh_remote_presets()
+                with open(cache_path, "r", encoding="utf-8") as handle:
+                    persisted = json.load(handle)
+
+        self.assertEqual(result["schools"][0]["short_name"], "cached-campus")
+        self.assertEqual(persisted["updated_at"], "2026-06-30")
 
     def test_legacy_verified_preset_cache_is_accepted_but_not_exported(self):
         payload = {

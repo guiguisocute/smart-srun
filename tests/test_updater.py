@@ -116,7 +116,8 @@ class SplitZipDigestTests(unittest.TestCase):
     def test_verify_split_zip_accepts_matching_sidecar(self):
         with tempfile.TemporaryDirectory() as tmp:
             zip_path = self._write_zip(tmp)
-            digest = hashlib.sha256(open(zip_path, "rb").read()).hexdigest()
+            with open(zip_path, "rb") as handle:
+                digest = hashlib.sha256(handle.read()).hexdigest()
             sidecar = "%s  split.zip\n" % digest
             with mock.patch.object(updater, "_fetch_text", return_value=sidecar):
                 # 不抛异常即视为通过校验。

@@ -51,7 +51,7 @@ def normalize_version_string(raw_version):
     if not value:
         return DEFAULT_VERSION
 
-    match = re.match(r"^v?([^-]+)-r?(\d+)$", value)
+    match = re.match(r"^v?(.+)-r?(\d+)$", value)
     if match:
         return "v%s-r%s" % (match.group(1), match.group(2))
     return DEFAULT_VERSION

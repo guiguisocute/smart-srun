@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from pathlib import Path
 
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -37,6 +38,10 @@ class VersionInfoTests(unittest.TestCase):
         self.assertEqual("v1.3.0-r1", version_info.normalize_version_string("1.3.0-1"))
         self.assertEqual(
             "v1.3.0-r2", version_info.normalize_version_string("v1.3.0-r2")
+        )
+        self.assertEqual(
+            "v1.3.0-beta.1-r1",
+            version_info.normalize_version_string("1.3.0-beta.1-1"),
         )
         self.assertEqual("v0.0.0-r1", version_info.normalize_version_string(""))
 
@@ -78,6 +83,18 @@ class VersionInfoTests(unittest.TestCase):
         self.assertEqual(
             "v1.3.0-r5", version_info.normalize_version_string("1.3.0-r5")
         )
+
+    def test_luci_sources_accept_prerelease_versions(self):
+        root = Path(WORKTREE_ROOT)
+        schema = (root / "root/usr/lib/lua/luci/smart_srun/schema.lua").read_text(
+            encoding="utf-8"
+        )
+        js = (root / "root/www/luci-static/resources/smart_srun.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("^v?(.+)%-r?(%d+)$", schema)
+        self.assertIn("^v?(.+)-r?(\\d+)$", js)
 
 
 if __name__ == "__main__":

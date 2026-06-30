@@ -35,7 +35,8 @@ class TemporarySchoolModule:
         self.path = SCHOOLS_DIR / (name + ".py")
 
     def __enter__(self):
-        self.path.write_text(self.source, encoding="utf-8", newline="\n")
+        with open(self.path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(self.source)
         return self.path
 
     def __exit__(self, exc_type, exc, tb):

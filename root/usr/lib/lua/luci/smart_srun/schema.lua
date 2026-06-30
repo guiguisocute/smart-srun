@@ -83,7 +83,7 @@ end
 
 local function normalize_version_string(raw)
     local value = tostring(raw or "")
-    local version, release = value:match("^v?([^-]+)-r?(%d+)$")
+    local version, release = value:match("^v?(.+)%-r?(%d+)$")
     if version and release then
         return string.format("v%s-r%s", version, release)
     end

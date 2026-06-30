@@ -105,7 +105,7 @@
 
   function normalizeVersionText(value) {
     var text = String(value == null ? '' : value).trim();
-    var match = text.match(/^v?([^-]+)-r?(\d+)$/);
+    var match = text.match(/^v?(.+)-r?(\d+)$/);
     if (!match) {
       match = text.match(/^v?(\d+(?:\.\d+)+)$/);
       if (!match) return '';
@@ -753,10 +753,11 @@
         try {
           data = JSON.parse(xhr.responseText || '{}');
         } catch (e) {}
-        if (data.ok && data.acid) {
-          if (acidInput) acidInput.value = data.acid;
+        var acid = data.acid || data.ac_id || data.value || '';
+        if (data.ok && acid) {
+          if (acidInput) acidInput.value = acid;
           if (baseInput && data.base_url) baseInput.value = data.base_url;
-          if (statusNode) statusNode.textContent = '已填入 ' + data.acid;
+          if (statusNode) statusNode.textContent = '已填入 ' + acid;
         } else {
           if (statusNode) statusNode.textContent = data.message || '未发现 AC_ID';
           else alert(data.message || '未发现 AC_ID');
@@ -1112,6 +1113,7 @@
     var stopButton = document.getElementById('smart-srun-log-stop');
     var clearButton = document.getElementById('smart-srun-log-clear');
     var downloadButton = document.getElementById('smart-srun-log-download');
+    var levelFilter = document.getElementById('smart-srun-log-level-filter');
     if (!box || !pre || !channels || !startButton || !stopButton || !clearButton || !downloadButton || window.__smartSrunLogInit) return;
     window.__smartSrunLogInit = true;
     var channelButtons = channels.getElementsByTagName('button');
@@ -1200,8 +1202,25 @@
     }
 
     function clearDisplay() {
-      pre.innerHTML = '';
-      logState.rawText = '';
+      clearButton.disabled = true;
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', '/cgi-bin/luci/admin/services/smart_srun/log_clear', true);
+      xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState !== 4) return;
+        clearButton.disabled = false;
+        var data = {};
+        try {
+          data = JSON.parse(xhr.responseText || '{}');
+        } catch (e) {}
+        if (xhr.status === 200 && data.ok) {
+          logState.rawText = '';
+          pre.innerHTML = '';
+        } else {
+          alert(data.message || '清空失败');
+        }
+      };
+      xhr.send('channel=' + encodeURIComponent(logState.channel));
     }
 
     function triggerBlobDownload(text) {
@@ -1290,6 +1309,12 @@
     if (levelSelect) {
       levelSelect.addEventListener('change', function() {
         applyDisplayLevel(levelSelect.value);
+      });
+    }
+    if (levelFilter) {
+      levelFilter.value = logState.displayLevel;
+      levelFilter.addEventListener('change', function() {
+        applyDisplayLevel(levelFilter.value);
       });
     }
 

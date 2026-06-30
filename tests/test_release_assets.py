@@ -701,6 +701,19 @@ class ReleaseAssetsUnifiedTests(unittest.TestCase):
                 "smart-srun-split-packages-v1.2.3.zip",
             )
 
+    def test_prerelease_workflow_requires_version_and_publishes_prerelease(self):
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github"
+            / "workflows"
+            / "build-prerelease.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('description: "Version of this pre-release build."', workflow)
+        self.assertIn("required: true", workflow)
+        self.assertIn('description: "Publish to GitHub pre-release"', workflow)
+        self.assertIn("prerelease: true", workflow)
+
     def test_unified_prepare_zip_contains_all_four_split_packages(self):
         release_assets = load_release_assets_module(self)
 

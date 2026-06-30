@@ -547,12 +547,15 @@ def _dispatch_help(parser, sub, targets):
 
 
 def main():
+    argv = sys.argv[1:]
+    parser, sub = _build_parser()
+    if argv and argv[0] == "--version":
+        parser.parse_args(argv)
+        return
+
     cfg = daemon.load_config()
     runtime = None
     app_ctx = None
-    argv = sys.argv[1:]
-
-    parser, sub = _build_parser()
 
     needs_runtime_for_parse = bool(argv) and not argv[0].startswith("-")
     if needs_runtime_for_parse and argv[0] not in school_runtime.CORE_RESERVED_COMMANDS:

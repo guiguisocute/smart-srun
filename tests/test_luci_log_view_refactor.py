@@ -103,6 +103,7 @@ class LuciLogViewRefactorTests(unittest.TestCase):
             'smart-srun-log-stop',
             'smart-srun-log-clear',
             'smart-srun-log-download',
+            'smart-srun-log-level-filter',
         ]:
             self.assertIn(element_id, self.cbi_text)
         self.assertIn('max-height:560px', self.cbi_text)
@@ -133,6 +134,15 @@ class LuciLogViewRefactorTests(unittest.TestCase):
         self.assertIn('downloadCurrentLog', self.js_text)
         self.assertIn("'smart_srun_' + logState.channel + '_'", self.js_text)
         self.assertIn('[信息]', self.js_text)
+        self.assertIn('/cgi-bin/luci/admin/services/smart_srun/log_clear', self.js_text)
+        self.assertIn('levelFilter.addEventListener', self.js_text)
+        self.assertIn('data.ok', self.js_text)
+
+    def test_controller_exposes_plugin_log_clear_endpoint(self):
+        self.assertIn('log_clear', self.controller_text)
+        self.assertIn('function action_log_clear()', self.controller_text)
+        self.assertIn('fs.writefile(LOG_FILE, "")', self.controller_text)
+        self.assertIn('系统网络日志不能由插件清空', self.controller_text)
 
     def test_js_uses_short_live_window_and_full_download_window(self):
         # Live refresh hits the server with a small line count (perf), while download

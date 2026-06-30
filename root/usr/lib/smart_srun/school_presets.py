@@ -322,8 +322,25 @@ def fetch_remote_payload(url=None, timeout=REMOTE_TIMEOUT_SECONDS):
     return data
 
 
+def _payload_updated_at(payload):
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("updated_at") or "").strip()
+
+
 def refresh_remote_presets(url=None, timeout=REMOTE_TIMEOUT_SECONDS):
     payload, source_url = _fetch_remote_payload_with_source(url=url, timeout=timeout)
+    cached = _read_json(CACHE_PRESETS_FILE)
+    remote_version = _payload_updated_at(payload)
+    cached_version = _payload_updated_at(cached)
+    if cached_version and remote_version and remote_version <= cached_version:
+        cached["_source_url"] = cached.get("_source_url") or source_url
+        return {
+            "ok": True,
+            "source_url": cached["_source_url"],
+            "cached_at": int(cached.get("_cached_at") or 0),
+            "schools": normalize_payload(cached, include_draft=True),
+        }
     payload["_cached_at"] = int(time.time())
     payload["_source_url"] = source_url
     _write_json(CACHE_PRESETS_FILE, payload)

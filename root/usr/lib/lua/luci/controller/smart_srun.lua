@@ -78,6 +78,7 @@ function index()
     entry({"admin", "services", "smart_srun", "status"}, call("action_status")).leaf = true
     entry({"admin", "services", "smart_srun", "enqueue"}, call("action_enqueue")).leaf = true
     entry({"admin", "services", "smart_srun", "log_tail"}, call("action_log_tail")).leaf = true
+    entry({"admin", "services", "smart_srun", "log_clear"}, call("action_log_clear")).leaf = true
     entry({"admin", "services", "smart_srun", "update_check"}, call("action_update_check")).leaf = true
     entry({"admin", "services", "smart_srun", "update_start"}, call("action_update_start")).leaf = true
     entry({"admin", "services", "smart_srun", "update_status"}, call("action_update_status")).leaf = true
@@ -345,7 +346,12 @@ end
 
 function action_detect_acid()
     local base_url = fv("base_url")
-    write_json_response(run_srunnet_json("detect acid " .. util.shellquote(base_url)))
+    local payload = run_srunnet_json("detect acid " .. util.shellquote(base_url))
+    if type(payload) == "table" and payload.acid ~= nil then
+        payload.value = tostring(payload.acid or "")
+        payload.ac_id = tostring(payload.acid or "")
+    end
+    write_json_response(payload)
 end
 
 local function normalize_base_url(value)
@@ -1383,4 +1389,19 @@ function action_log_tail()
         channel = channel,
         ts = os.time(),
     }))
+end
+
+function action_log_clear()
+    local channel = http.formvalue("channel") or "plugin"
+    if channel ~= "plugin" then
+        write_json_response({ ok = false, message = "系统网络日志不能由插件清空", channel = channel })
+        return
+    end
+    local ok = fs.writefile(LOG_FILE, "")
+    write_json_response({
+        ok = ok and true or false,
+        message = ok and "日志已清空" or "清空日志失败",
+        channel = "plugin",
+        ts = os.time(),
+    })
 end

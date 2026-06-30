@@ -43,6 +43,7 @@ from wireless import (
     switch_to_campus,
 )
 import orchestrator
+import school_presets
 import school_runtime
 import srun_auth
 from snapshot import build_runtime_snapshot
@@ -50,6 +51,7 @@ from snapshot import build_runtime_snapshot
 
 DAEMON_LOCK_FILE = "/var/run/smart_srun/daemon.lock"
 ROUTINE_ONLINE_TICK_PREFIX = "在线，下一次检测间隔 "
+PRESETS_REFRESH_INTERVAL_SECONDS = 24 * 60 * 60
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +128,26 @@ def _safe_call(fn, *args, **kwargs):
         return False, "响应解析错误: " + localize_error(exc)
     except Exception as exc:
         return False, "错误: " + localize_error(exc)
+
+
+def _refresh_school_presets_after_online(state):
+    now = int(time.time())
+    if str(state.get("connectivity_level", "")).strip() != "online":
+        return
+    if now - int(state.get("presets_refresh_checked_at", 0) or 0) < PRESETS_REFRESH_INTERVAL_SECONDS:
+        return
+    state["presets_refresh_checked_at"] = now
+    try:
+        cache_mtime = int(os.path.getmtime(school_presets.CACHE_PRESETS_FILE))
+    except OSError:
+        cache_mtime = 0
+    if cache_mtime and now - cache_mtime < PRESETS_REFRESH_INTERVAL_SECONDS:
+        return
+    try:
+        result = school_presets.refresh_remote_presets(timeout=5)
+        log("INFO", "presets_refresh", "school presets refreshed", source=result.get("source_url", ""))
+    except Exception as exc:
+        log("WARN", "presets_refresh", "school presets refresh failed", reason=localize_error(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +499,9 @@ def run_daemon(runtime=None):
     tick_counter = 0
     while True:
         cfg = load_config()
+        runtime_state = load_runtime_state()
+        _refresh_school_presets_after_online(runtime_state)
+        state["presets_refresh_checked_at"] = runtime_state.get("presets_refresh_checked_at", 0)
         interval = max(int(cfg["interval"]), 5)
         runtime = school_runtime.resolve_runtime(cfg)
         app_ctx = school_runtime.build_app_context(cfg, runtime=runtime)
@@ -638,10 +663,10 @@ def _show_runtime_log(cfg):
 
 def _show_status(cfg):
     """Print full runtime status matching LuCI status endpoint."""
-    from config import load_runtime_state, load_json_raw_config
+    from config import load_runtime_state
 
     state = load_runtime_state()
-    raw = load_json_raw_config()
+    raw = dict(cfg or {})
 
     ok, message = orchestrator.run_status(cfg)
 

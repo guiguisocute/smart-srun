@@ -23,11 +23,11 @@ on:
         required: false
         default: "25.12.2"
       version:
-        description: "Version of this build."
-        required: false
+        description: "Version of this pre-release build."
+        required: true
         default: ""
       publish_release:
-        description: "Publish to GitHub Release"
+        description: "Publish to GitHub pre-release"
         required: false
         default: "false"
 
@@ -84,7 +84,6 @@ jobs:
           echo "openwrt_version=${VER}" >> "$GITHUB_OUTPUT"
 
       - name: Apply version to Makefile
-        if: github.event.inputs.version != ''
         run: |
           VERSION='${{ github.event.inputs.version }}'
           awk -v ver="$VERSION" '

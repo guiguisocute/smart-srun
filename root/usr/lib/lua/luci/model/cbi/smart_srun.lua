@@ -299,7 +299,7 @@ end
 
 local RADIO_CHOICES = load_radio_choices()
 
-local function render_school_info_html(schools, current_school, school_presets)
+local function render_school_info_html(schools, current_school)
     local helper_prefix = "如果该配置无法在您的学校使用，请直接前往"
     local helper_suffix = "提交 Issue 或 PR"
     local helper_link = "https://github.com/matthewlu070111/luci-app-smart-srun"
@@ -307,26 +307,23 @@ local function render_school_info_html(schools, current_school, school_presets)
     local short = tostring(current_school or "")
     local doc_url = doc_base .. util.pcdata(short) .. ".md"
     local js_data = jsonc.stringify(schools or {}) or "[]"
-    local presets_js_data = jsonc.stringify(school_presets or {}) or "[]"
 
     return string.format([[
 <div id="smart-school-info" class="cbi-value-description" style="color:#14532d;opacity:0.9;display:block;line-height:1.6;">
   <div id="smart-school-doclink" style="display:block;">
-    <a id="smart-school-doc-link" href="%s" target="_blank" rel="noopener noreferrer">点击查看学校预设列表</a>
+    <a id="smart-school-doc-link" href="%s" target="_blank" rel="noopener noreferrer">点击查看登录配置文档</a>
   </div>
   <div id="smart-school-helper" style="display:block;margin-top:4px;color:#6b7280;font-size:0.92em;">
     %s<a id="smart-school-repo-link" href="%s" target="_blank" rel="noopener noreferrer">插件仓库</a>%s
   </div>
   <textarea id="smart-school-data" style="display:none;">%s</textarea>
-  <textarea id="smart-school-preset-data" style="display:none;">%s</textarea>
 </div>
 ]],
         doc_url,
         helper_prefix,
         helper_link,
         helper_suffix,
-        util.pcdata(js_data),
-        util.pcdata(presets_js_data))
+        util.pcdata(js_data))
 end
 
 local function ensure_school_extra_table()
@@ -602,7 +599,7 @@ function school.write(self, section, value)
     end
     set_value("school", next_school)
 end
-school.description = render_school_info_html(schools, cfg.school or "jxnu", school_presets)
+school.description = render_school_info_html(schools, cfg.school or "jxnu")
 
 if school_runtime_renderable then
     for idx, descriptor in ipairs(school_runtime_descriptors) do
@@ -849,6 +846,7 @@ function tables_html.cfgvalue()
     -- 将数据嵌入到前端
     local campus_json = jsonc.stringify(campus) or "[]"
     local hotspot_json = jsonc.stringify(hotspots) or "[]"
+    local school_presets_json = jsonc.stringify(school_presets or {}) or "[]"
 
     return [[
 <style>
@@ -893,6 +891,7 @@ function tables_html.cfgvalue()
 <textarea id="smart-campus-data" style="display:none;">]] .. util.pcdata(campus_json) .. [[</textarea>
 <textarea id="smart-hotspot-data" style="display:none;">]] .. util.pcdata(hotspot_json) .. [[</textarea>
 <textarea id="smart-radio-options" style="display:none;">]] .. util.pcdata(radio_options) .. [[</textarea>
+<textarea id="smart-school-preset-data" style="display:none;">]] .. util.pcdata(school_presets_json) .. [[</textarea>
 ]]
 end
 
@@ -986,6 +985,13 @@ function log_text.cfgvalue(self, section)
     <button id="smart-srun-log-channel-plugin" data-channel="plugin" type="button" class="cbi-button cbi-button-action">插件日志</button>
     <button id="smart-srun-log-channel-network" data-channel="network" type="button" class="cbi-button cbi-button-neutral">网络日志</button>
   </div>
+  <select id="smart-srun-log-level-filter" style="max-width:150px;">
+    <option value="ALL">全部等级</option>
+    <option value="DEBUG">调试以上</option>
+    <option value="INFO">信息以上</option>
+    <option value="WARN">警告以上</option>
+    <option value="ERROR">仅错误</option>
+  </select>
   <div style="flex:1;"></div>
   <button id="smart-srun-log-start" type="button" class="cbi-button cbi-button-apply">开始刷新</button>
   <button id="smart-srun-log-stop" type="button" class="cbi-button">停止刷新</button>

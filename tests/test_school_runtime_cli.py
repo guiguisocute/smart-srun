@@ -1201,11 +1201,27 @@ class LuciSourceHardeningTests(unittest.TestCase):
         model_source = read_repo_text(
             "root", "usr", "lib", "lua", "luci", "model", "cbi", "smart_srun.lua"
         )
+        daemon_source = read_repo_text("root", "usr", "lib", "smart_srun", "daemon.py")
 
         self.assertIn('run_client("presets list", false)', model_source)
         self.assertIn("refresh_presets_cache_once()", model_source)
         self.assertIn("fs.access(PRESETS_CACHE_FILE)", model_source)
         self.assertIn("presets refresh >/dev/null 2>&1", model_source)
+        self.assertIn("_refresh_school_presets_after_online", daemon_source)
+        self.assertIn("school_presets.refresh_remote_presets(timeout=5)", daemon_source)
+        self.assertIn('connectivity_level", "")).strip() != "online"', daemon_source)
+
+    def test_luci_acid_detector_returns_fillable_aliases(self):
+        controller_source = read_repo_text(
+            "root", "usr", "lib", "lua", "luci", "controller", "smart_srun.lua"
+        )
+        js_source = read_repo_text(
+            "root", "www", "luci-static", "resources", "smart_srun.js"
+        )
+
+        self.assertIn("payload.value", controller_source)
+        self.assertIn("payload.ac_id", controller_source)
+        self.assertIn("data.acid || data.ac_id || data.value", js_source)
 
     def test_default_selection_updates_runtime_active_pointer(self):
         controller_source = read_repo_text(
