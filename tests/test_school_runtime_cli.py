@@ -493,7 +493,7 @@ class SchoolRuntimeCliTests(unittest.TestCase):
             mock.patch.object(
                 version_info,
                 "get_cli_version_string",
-                return_value="luci-app-smart-srun-bundle v1.3.0-r1",
+                return_value="luci-app-smart-srun-bundle v1.3.0",
             ),
             redirect_stdout(stdout),
         ):
@@ -501,7 +501,7 @@ class SchoolRuntimeCliTests(unittest.TestCase):
                 daemon.main()
 
         self.assertEqual(0, exc.exception.code)
-        self.assertEqual("luci-app-smart-srun-bundle v1.3.0-r1\n", stdout.getvalue())
+        self.assertEqual("luci-app-smart-srun-bundle v1.3.0\n", stdout.getvalue())
 
     def test_schools_command_works_when_runtime_resolution_is_broken(self):
         payload = [{"short_name": "jxnu"}]

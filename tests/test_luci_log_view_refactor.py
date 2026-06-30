@@ -90,14 +90,14 @@ class LuciLogViewRefactorTests(unittest.TestCase):
         self.assertIn('local function is_hidden_friendly_field(key)', self.controller_text)
         self.assertIn('is_hidden_friendly_field(key)', self.controller_text)
 
-    def test_cbi_log_panel_renders_channel_switcher_and_toolbar(self):
+    def test_cbi_log_panel_renders_simple_toolbar(self):
         self.assertIn('local LOG_FILE = "/var/log/smart_srun.log"', self.cbi_text)
         self.assertIn('local function read_file_tail(path, lines)', self.cbi_text)
         self.assertIn('local t = read_file_tail(LOG_FILE, 100)', self.cbi_text)
         self.assertNotIn('tail -n 100 /var/log/smart_srun.log', self.cbi_text)
         self.assertIn('log_controller.friendly_log_text(t)', self.cbi_text)
-        self.assertIn('data-channel="plugin"', self.cbi_text)
-        self.assertIn('data-channel="network"', self.cbi_text)
+        self.assertNotIn('smart-srun-log-channels', self.cbi_text)
+        self.assertNotIn('data-channel="network"', self.cbi_text)
         for element_id in [
             'smart-srun-log-start',
             'smart-srun-log-stop',
@@ -108,31 +108,14 @@ class LuciLogViewRefactorTests(unittest.TestCase):
             self.assertIn(element_id, self.cbi_text)
         self.assertIn('max-height:560px', self.cbi_text)
 
-    def test_cbi_channel_buttons_use_distinct_cbi_button_variant(self):
-        # Channel tabs use a different cbi-button variant from the right-side action buttons
-        # (which use cbi-button / cbi-button-apply). We pick action / neutral so themes
-        # render them with a clearly different colour family.
-        self.assertIn(
-            'id="smart-srun-log-channel-plugin" data-channel="plugin" type="button" class="cbi-button cbi-button-action"',
-            self.cbi_text,
-        )
-        self.assertIn(
-            'id="smart-srun-log-channel-network" data-channel="network" type="button" class="cbi-button cbi-button-neutral"',
-            self.cbi_text,
-        )
-        # No inline JS-set background should leak into the channel buttons; visual state lives in CSS classes.
-        self.assertNotIn('id="smart-srun-log-channel-plugin" data-channel="plugin" type="button" style=', self.cbi_text)
-        self.assertNotIn('id="smart-srun-log-channel-network" data-channel="network" type="button" style=', self.cbi_text)
-
-    def test_js_log_view_tracks_channel_refresh_and_download_state(self):
+    def test_js_log_view_tracks_refresh_and_download_state(self):
         self.assertIn('var logState = {', self.js_text)
-        self.assertIn("channel: 'plugin'", self.js_text)
         self.assertIn('refreshing: true', self.js_text)
         self.assertIn("rawText: pre.textContent || ''", self.js_text)
-        self.assertIn('log_tail?channel=', self.js_text)
-        self.assertIn('encodeURIComponent(logState.channel)', self.js_text)
+        self.assertIn('log_tail?channel=plugin&lines=', self.js_text)
+        self.assertNotIn('logState.channel', self.js_text)
         self.assertIn('downloadCurrentLog', self.js_text)
-        self.assertIn("'smart_srun_' + logState.channel + '_'", self.js_text)
+        self.assertIn("'smart_srun_plugin_'", self.js_text)
         self.assertIn('[信息]', self.js_text)
         self.assertIn('/cgi-bin/luci/admin/services/smart_srun/log_clear', self.js_text)
         self.assertIn('levelFilter.addEventListener', self.js_text)
@@ -142,7 +125,7 @@ class LuciLogViewRefactorTests(unittest.TestCase):
         self.assertIn('log_clear', self.controller_text)
         self.assertIn('function action_log_clear()', self.controller_text)
         self.assertIn('fs.writefile(LOG_FILE, "")', self.controller_text)
-        self.assertIn('系统网络日志不能由插件清空', self.controller_text)
+        self.assertIn('channel = "plugin"', self.controller_text)
 
     def test_js_uses_short_live_window_and_full_download_window(self):
         # Live refresh hits the server with a small line count (perf), while download
@@ -155,24 +138,18 @@ class LuciLogViewRefactorTests(unittest.TestCase):
         self.assertIn("(download ? '&download=1' : '')", self.js_text)
 
     def test_js_display_level_filter_is_live_and_hooks_log_level_select(self):
-        # Display-side level filter weights and hook on the log_level dropdown.
+        # Display-side level filter weights are owned by the log toolbar itself.
         self.assertIn('LOG_LEVEL_WEIGHTS', self.js_text)
         self.assertIn("ALL: 0", self.js_text)
         self.assertIn("ERROR: 40", self.js_text)
         self.assertIn('logLineWeight', self.js_text)
         self.assertIn('filterByLevel', self.js_text)
-        self.assertIn('findLogLevelSelect', self.js_text)
-        self.assertIn('cbid.smart_srun.main.log_level', self.js_text)
-        self.assertIn("levelSelect.addEventListener('change'", self.js_text)
+        self.assertNotIn('findLogLevelSelect', self.js_text)
         self.assertIn('displayLevel', self.js_text)
 
-    def test_js_listens_via_event_delegation_for_widget_compat(self):
-        # OpenWrt 22+/themes can render ListValue as a cbi-dropdown div, so a direct
-        # listener on a <select> never fires. We must catch native change AND
-        # cbi-dropdown-change at document level.
-        self.assertIn('readLevelFromEvent', self.js_text)
-        self.assertIn("document.addEventListener('change'", self.js_text)
-        self.assertIn("document.addEventListener('cbi-dropdown-change'", self.js_text)
+    def test_js_log_level_filter_is_direct(self):
+        self.assertIn("levelFilter.addEventListener('change'", self.js_text)
+        self.assertNotIn('readLevelFromEvent', self.js_text)
         self.assertIn('applyDisplayLevel', self.js_text)
 
     def test_js_skips_background_polling_when_page_hidden(self):
@@ -204,6 +181,8 @@ class LuciLogViewRefactorTests(unittest.TestCase):
     def test_school_preset_apply_button_is_explicit(self):
         self.assertIn("smart-school-preset-data", self.cbi_text)
         self.assertIn('run_client("presets list", false)', self.cbi_text)
+        self.assertIn("presets_refresh", self.controller_text)
+        self.assertIn("refreshSchoolPresets", self.js_text)
         self.assertIn("schoolPresetList", self.js_text)
         self.assertIn("jm-school_preset", self.js_text)
         self.assertIn("jm-apply-school-defaults", self.js_text)

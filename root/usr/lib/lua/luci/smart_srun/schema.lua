@@ -5,7 +5,7 @@ local nixio = require "nixio"
 local DEFAULTS_FILE = "/usr/lib/smart_srun/defaults.json"
 local OPKG_STATUS_FILE = "/usr/lib/opkg/status"
 local APK_STATUS_FILE = "/lib/apk/db/installed"
-local DEFAULT_VERSION = "v0.0.0-r1"
+local DEFAULT_VERSION = "v0.0.0"
 
 local M = {}
 
@@ -83,9 +83,14 @@ end
 
 local function normalize_version_string(raw)
     local value = tostring(raw or "")
-    local version, release = value:match("^v?(.+)%-r?(%d+)$")
-    if version and release then
-        return string.format("v%s-r%s", version, release)
+    local version = value:match("^v?([0-9][%w%._%-]*)%-r?%d+$") or value:match("^v?([0-9][%w%._%-]*)$")
+    if version and version ~= "" then
+        version = version:gsub("_", "-")
+        local base, beta = version:match("^(.+)%-beta%.?(%d+)$")
+        if base and beta then
+            version = base .. "-b" .. beta
+        end
+        return string.format("v%s", version)
     end
     return DEFAULT_VERSION
 end

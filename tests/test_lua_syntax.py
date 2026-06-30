@@ -125,7 +125,7 @@ class LuaSyntaxSmokeTests(unittest.TestCase):
                         "M.LIST_KEYS = {}",
                         "function M.global_scalar_key_set() return {} end",
                         "function M.with_file_lock(_, callback) return callback() end",
-                        "function M.installed_package_display_text() return 'Bundle 版 v0.0.0-r1' end",
+                        "function M.installed_package_display_text() return 'Bundle 版 v0.0.0' end",
                         "return M",
                     ]
                 ),

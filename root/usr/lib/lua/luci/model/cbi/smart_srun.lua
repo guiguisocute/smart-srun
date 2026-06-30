@@ -311,7 +311,7 @@ local function render_school_info_html(schools, current_school)
     return string.format([[
 <div id="smart-school-info" class="cbi-value-description" style="color:#14532d;opacity:0.9;display:block;line-height:1.6;">
   <div id="smart-school-doclink" style="display:block;">
-    <a id="smart-school-doc-link" href="%s" target="_blank" rel="noopener noreferrer">点击查看登录配置文档</a>
+    <a id="smart-school-doc-link" href="%s" target="_blank" rel="noopener noreferrer">点击查看学校预设文档</a>
   </div>
   <div id="smart-school-helper" style="display:block;margin-top:4px;color:#6b7280;font-size:0.92em;">
     %s<a id="smart-school-repo-link" href="%s" target="_blank" rel="noopener noreferrer">插件仓库</a>%s
@@ -575,7 +575,7 @@ s:tab("advanced", "进阶设置")
 s:tab("log", "日志")
 
 -- 学校配置选择器
-school = s:taboption("basic", ListValue, "school", "登录配置")
+school = s:taboption("basic", ListValue, "school", "学校预设")
 if #schools == 0 then
     school:value("jxnu", "默认配置")
 else
@@ -981,10 +981,6 @@ function log_text.cfgvalue(self, section)
     local escaped = util.pcdata and util.pcdata(t) or t
     return [[
 <div id="smart-srun-log-toolbar" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px;">
-  <div id="smart-srun-log-channels" role="tablist" style="display:inline-flex;gap:4px;">
-    <button id="smart-srun-log-channel-plugin" data-channel="plugin" type="button" class="cbi-button cbi-button-action">插件日志</button>
-    <button id="smart-srun-log-channel-network" data-channel="network" type="button" class="cbi-button cbi-button-neutral">网络日志</button>
-  </div>
   <select id="smart-srun-log-level-filter" style="max-width:150px;">
     <option value="ALL">全部等级</option>
     <option value="DEBUG">调试以上</option>
@@ -995,7 +991,7 @@ function log_text.cfgvalue(self, section)
   <div style="flex:1;"></div>
   <button id="smart-srun-log-start" type="button" class="cbi-button cbi-button-apply">开始刷新</button>
   <button id="smart-srun-log-stop" type="button" class="cbi-button">停止刷新</button>
-  <button id="smart-srun-log-clear" type="button" class="cbi-button">清空显示</button>
+  <button id="smart-srun-log-clear" type="button" class="cbi-button">清空日志</button>
   <button id="smart-srun-log-download" type="button" class="cbi-button cbi-button-apply">下载日志</button>
 </div>
 <div id="smart-srun-log-box" style="max-height:560px;overflow:auto;border:1px solid #2b2b2b;padding:10px;background:#0b0f14;border-radius:4px;">

@@ -105,13 +105,13 @@
 
   function normalizeVersionText(value) {
     var text = String(value == null ? '' : value).trim();
-    var match = text.match(/^v?(.+)-r?(\d+)$/);
+    var match = text.match(/^v?([0-9][A-Za-z0-9._-]*?)(?:-r?\d+)?$/);
     if (!match) {
       match = text.match(/^v?(\d+(?:\.\d+)+)$/);
       if (!match) return '';
       return { base: match[1], release: 0 };
     }
-    return { base: match[1], release: parseInt(match[2], 10) || 0 };
+    return { base: match[1].replace(/_/g, '-'), release: 0 };
   }
 
   function compareVersionParts(left, right) {
@@ -445,6 +445,17 @@
     }];
   }
 
+  function refreshSchoolPresets() {
+    var node = document.getElementById('smart-school-preset-data');
+    if (!node || window.__smartPresetsRefresh) return;
+    window.__smartPresetsRefresh = true;
+    fetchJson('/cgi-bin/luci/admin/services/smart_srun/presets_refresh?_=' + Date.now(), function(err, data) {
+      if (err || !data || !data.ok || !data.schools || !data.schools.length) return;
+      node.value = JSON.stringify(data.schools);
+      node.textContent = node.value;
+    });
+  }
+
   var DEFAULT_LOGIN_SHAPE = {
     n: '200',
     type: '1',
@@ -756,7 +767,9 @@
         var acid = data.acid || data.ac_id || data.value || '';
         if (data.ok && acid) {
           if (acidInput) acidInput.value = acid;
-          if (baseInput && data.base_url) baseInput.value = data.base_url;
+          if (baseInput) baseInput.value = data.detected_url || data.base_url || baseInput.value;
+          if (acidInput) acidInput.dispatchEvent(new Event('change', { bubbles: true }));
+          if (baseInput) baseInput.dispatchEvent(new Event('change', { bubbles: true }));
           if (statusNode) statusNode.textContent = '已填入 ' + acid;
         } else {
           if (statusNode) statusNode.textContent = data.message || '未发现 AC_ID';
@@ -1085,6 +1098,7 @@
     window.__smartTablesInit = true;
     campusData = readJson('smart-campus-data', []);
     hotspotData = readJson('smart-hotspot-data', []);
+    refreshSchoolPresets();
   }
 
   var LOG_LEVEL_WEIGHTS = { ALL: 0, DEBUG: 10, INFO: 20, WARN: 30, ERROR: 40 };
@@ -1099,31 +1113,21 @@
     return 20;
   }
 
-  function findLogLevelSelect() {
-    return document.getElementById('widget.cbid.smart_srun.main.log_level')
-      || document.getElementById('cbid.smart_srun.main.log_level')
-      || document.querySelector('select[name="cbid.smart_srun.main.log_level"]');
-  }
-
   function initLogView() {
     var box = document.getElementById('smart-srun-log-box');
     var pre = document.getElementById('smart-srun-log-pre');
-    var channels = document.getElementById('smart-srun-log-channels');
     var startButton = document.getElementById('smart-srun-log-start');
     var stopButton = document.getElementById('smart-srun-log-stop');
     var clearButton = document.getElementById('smart-srun-log-clear');
     var downloadButton = document.getElementById('smart-srun-log-download');
     var levelFilter = document.getElementById('smart-srun-log-level-filter');
-    if (!box || !pre || !channels || !startButton || !stopButton || !clearButton || !downloadButton || window.__smartSrunLogInit) return;
+    if (!box || !pre || !startButton || !stopButton || !clearButton || !downloadButton || window.__smartSrunLogInit) return;
     window.__smartSrunLogInit = true;
-    var channelButtons = channels.getElementsByTagName('button');
-    var levelSelect = findLogLevelSelect();
     var logState = {
-      channel: 'plugin',
       refreshing: true,
       timer: null,
       rawText: pre.textContent || '',
-      displayLevel: (levelSelect && levelSelect.value) ? String(levelSelect.value).toUpperCase() : 'ALL'
+      displayLevel: levelFilter && levelFilter.value ? String(levelFilter.value).toUpperCase() : 'ALL'
     };
     if (!(logState.displayLevel in LOG_LEVEL_WEIGHTS)) logState.displayLevel = 'ALL';
 
@@ -1161,17 +1165,8 @@
       stopButton.className = logState.refreshing ? 'cbi-button cbi-button-apply' : 'cbi-button';
     }
 
-    function setChannelButtons() {
-      for (var i = 0; i < channelButtons.length; i++) {
-        var button = channelButtons[i];
-        var active = button.getAttribute('data-channel') === logState.channel;
-        button.className = active ? 'cbi-button cbi-button-action' : 'cbi-button cbi-button-neutral';
-      }
-    }
-
     function buildLogUrl(lines, format, download) {
-      return '/cgi-bin/luci/admin/services/smart_srun/log_tail?channel=' +
-        encodeURIComponent(logState.channel) + '&lines=' + lines +
+      return '/cgi-bin/luci/admin/services/smart_srun/log_tail?channel=plugin&lines=' + lines +
         '&format=' + encodeURIComponent(format || 'friendly') +
         (download ? '&download=1' : '') + '&_=' + Date.now();
     }
@@ -1179,7 +1174,7 @@
     function buildDownloadName() {
       var now = new Date();
       function pad(value) { return value < 10 ? '0' + value : String(value); }
-      return 'smart_srun_' + logState.channel + '_' + now.getFullYear() +
+      return 'smart_srun_plugin_' + now.getFullYear() +
         pad(now.getMonth() + 1) + pad(now.getDate()) + '_' +
         pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds()) + '.log';
     }
@@ -1188,7 +1183,6 @@
       if (isPageHidden()) return;
       fetchJson(buildLogUrl(LOG_LIVE_LINES, 'friendly', false), function(err, data) {
         if (err || !data || typeof data.log !== 'string') return;
-        if (data.channel && data.channel !== logState.channel) return;
         logState.rawText = data.log;
         renderFromRaw();
       });
@@ -1220,7 +1214,7 @@
           alert(data.message || '清空失败');
         }
       };
-      xhr.send('channel=' + encodeURIComponent(logState.channel));
+      xhr.send('channel=plugin');
     }
 
     function triggerBlobDownload(text) {
@@ -1249,17 +1243,6 @@
       });
     }
 
-    for (var i = 0; i < channelButtons.length; i++) {
-      channelButtons[i].addEventListener('click', function() {
-        var nextChannel = this.getAttribute('data-channel') || 'plugin';
-        if (nextChannel !== 'plugin' && nextChannel !== 'network') nextChannel = 'plugin';
-        if (logState.channel === nextChannel) return;
-        logState.channel = nextChannel;
-        setChannelButtons();
-        refresh();
-      });
-    }
-
     startButton.addEventListener('click', function() {
       if (logState.refreshing) return;
       logState.refreshing = true;
@@ -1284,33 +1267,6 @@
       renderFromRaw();
     }
 
-    function readLevelFromEvent(ev) {
-      var t = ev && ev.target;
-      if (!t || !t.tagName) return null;
-      var id = t.id || '';
-      var name = (t.getAttribute && t.getAttribute('name')) || '';
-      var dataName = (t.getAttribute && t.getAttribute('data-name')) || '';
-      if (id.indexOf('log_level') === -1 &&
-          name.indexOf('log_level') === -1 &&
-          dataName.indexOf('log_level') === -1) return null;
-      if (t.value != null && t.value !== '') return t.value;
-      var dv = t.getAttribute && t.getAttribute('data-value');
-      return dv != null ? dv : null;
-    }
-
-    document.addEventListener('change', function(ev) {
-      var v = readLevelFromEvent(ev);
-      if (v != null) applyDisplayLevel(v);
-    }, true);
-    document.addEventListener('cbi-dropdown-change', function(ev) {
-      var v = readLevelFromEvent(ev);
-      if (v != null) applyDisplayLevel(v);
-    }, true);
-    if (levelSelect) {
-      levelSelect.addEventListener('change', function() {
-        applyDisplayLevel(levelSelect.value);
-      });
-    }
     if (levelFilter) {
       levelFilter.value = logState.displayLevel;
       levelFilter.addEventListener('change', function() {
@@ -1318,7 +1274,6 @@
       });
     }
 
-    setChannelButtons();
     setRefreshButtons();
     if (logState.rawText) {
       renderFromRaw();

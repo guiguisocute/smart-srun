@@ -82,6 +82,7 @@ function index()
     entry({"admin", "services", "smart_srun", "update_check"}, call("action_update_check")).leaf = true
     entry({"admin", "services", "smart_srun", "update_start"}, call("action_update_start")).leaf = true
     entry({"admin", "services", "smart_srun", "update_status"}, call("action_update_status")).leaf = true
+    entry({"admin", "services", "smart_srun", "presets_refresh"}, call("action_presets_refresh")).leaf = true
     entry({"admin", "services", "smart_srun", "detect_acid"}, call("action_detect_acid")).leaf = true
 end
 
@@ -112,6 +113,10 @@ end
 
 function action_update_status()
     write_json_response(run_srunnet_json("update status"))
+end
+
+function action_presets_refresh()
+    write_json_response(run_srunnet_json("presets refresh"))
 end
 
 local function read_json_file(path)

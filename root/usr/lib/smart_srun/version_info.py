@@ -14,7 +14,7 @@ PACKAGE_PRIORITY = [
     "luci-app-smart-srun",
     "smart-srun",
 ]
-DEFAULT_VERSION = "v0.0.0-r1"
+DEFAULT_VERSION = "v0.0.0"
 
 
 def _read_text(path):
@@ -51,9 +51,13 @@ def normalize_version_string(raw_version):
     if not value:
         return DEFAULT_VERSION
 
-    match = re.match(r"^v?(.+)-r?(\d+)$", value)
+    match = re.match(r"^v?([0-9][A-Za-z0-9._-]*?)(?:-r?\d+)?$", value)
     if match:
-        return "v%s-r%s" % (match.group(1), match.group(2))
+        version = match.group(1).replace("_", "-")
+        beta = re.match(r"^(.+?)-(?:beta\.?|b)(\d+)$", version)
+        if beta:
+            version = "%s-b%s" % (beta.group(1), beta.group(2))
+        return "v%s" % version
     return DEFAULT_VERSION
 
 

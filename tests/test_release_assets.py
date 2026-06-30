@@ -709,10 +709,27 @@ class ReleaseAssetsUnifiedTests(unittest.TestCase):
             / "build-prerelease.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('description: "Version of this pre-release build."', workflow)
+        self.assertIn('description: "Base version of this beta build', workflow)
+        self.assertIn('description: "Beta number (bX)"', workflow)
+        self.assertIn('VERSION="${BASE_VERSION#v}-b${{ github.event.inputs.beta }}"', workflow)
         self.assertIn("required: true", workflow)
         self.assertIn('description: "Publish to GitHub pre-release"', workflow)
+        self.assertIn("tag_name: v${{ github.event.inputs.version }}-b${{ github.event.inputs.beta }}", workflow)
         self.assertIn("prerelease: true", workflow)
+
+    def test_workflows_use_apk_safe_versions_and_node24_actions(self):
+        root = Path(__file__).resolve().parents[1]
+        for name in ("build-release.yml", "build-prerelease.yml"):
+            workflow = (root / ".github" / "workflows" / name).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('if [ "${{ matrix.format }}" = "apk" ]; then', workflow)
+            self.assertIn('VERSION="${VERSION//-/_}"', workflow)
+            self.assertIn("uses: actions/checkout@v7", workflow)
+            self.assertIn("uses: actions/cache@v6", workflow)
+            self.assertIn("uses: actions/upload-artifact@v7", workflow)
+            self.assertIn("uses: actions/download-artifact@v8", workflow)
+            self.assertIn("uses: softprops/action-gh-release@v3", workflow)
 
     def test_unified_prepare_zip_contains_all_four_split_packages(self):
         release_assets = load_release_assets_module(self)
