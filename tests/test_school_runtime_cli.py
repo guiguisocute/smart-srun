@@ -613,7 +613,7 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         ):
             daemon.main()
 
-        list_presets.assert_called_once_with(include_draft=False, refresh=True)
+        list_presets.assert_called_once_with(include_draft=False)
         self.assertEqual(json.loads(stdout.getvalue()), payload)
 
     def test_presets_list_command_keeps_operator_suffixes_in_operators(self):
@@ -626,7 +626,6 @@ class SchoolRuntimeCliTests(unittest.TestCase):
                 mock.patch.object(sys, "argv", ["srunnet", "presets", "list"]),
                 mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
                 mock.patch.object(school_presets, "CACHE_PRESETS_FILE", cache_path),
-                mock.patch.object(school_presets, "_fetch_remote_payload_with_source", side_effect=RuntimeError("offline")),
                 redirect_stdout(stdout),
             ):
                 daemon.main()
@@ -1197,6 +1196,16 @@ class LuciSourceHardeningTests(unittest.TestCase):
         )
         self.assertIn("function opt.remove(self, section)", model_source)
         self.assertIn('set_value(key, "")', model_source)
+
+    def test_luci_presets_refresh_is_background_only(self):
+        model_source = read_repo_text(
+            "root", "usr", "lib", "lua", "luci", "model", "cbi", "smart_srun.lua"
+        )
+
+        self.assertIn('run_client("presets list", false)', model_source)
+        self.assertIn("refresh_presets_cache_once()", model_source)
+        self.assertIn("fs.access(PRESETS_CACHE_FILE)", model_source)
+        self.assertIn("presets refresh >/dev/null 2>&1", model_source)
 
     def test_default_selection_updates_runtime_active_pointer(self):
         controller_source = read_repo_text(

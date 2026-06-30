@@ -8,6 +8,7 @@ local schema = require "luci.smart_srun.schema"
 local CONFIG_FILE = "/usr/lib/smart_srun/config.json"
 local STATE_FILE = "/var/run/smart_srun/state.json"
 local LOG_FILE = "/var/log/smart_srun.log"
+local PRESETS_CACHE_FILE = "/usr/lib/smart_srun/school_presets_cache.json"
 local JS_ASSET_PATH = "/luci-static/resources/smart_srun.js"
 local GLOBAL_SCALAR_KEYS = schema.GLOBAL_SCALAR_KEYS
 local POINTER_KEYS = schema.POINTER_KEYS
@@ -225,6 +226,13 @@ local function run_client(args, stderr_to_stdout)
     end
 
     return util.trim(sys.exec(cmd) or ""), nil
+end
+
+local function refresh_presets_cache_once()
+    if fs.access(PRESETS_CACHE_FILE) then
+        return
+    end
+    sys.call("(/usr/bin/srunnet presets refresh >/dev/null 2>&1) >/dev/null 2>&1 &")
 end
 
 local function validate_hhmm(v)
@@ -462,6 +470,7 @@ if type(schools) ~= "table" then schools = {} end
 local school_presets_json = select(1, run_client("presets list", false)) or ""
 local school_presets = jsonc.parse(school_presets_json)
 if type(school_presets) ~= "table" then school_presets = {} end
+refresh_presets_cache_once()
 
 local school_runtime_json = select(1, run_client("schools inspect --selected", false)) or ""
 local school_runtime_contract = parse_school_runtime_contract(school_runtime_json)
