@@ -8,6 +8,7 @@ local schema = require "luci.smart_srun.schema"
 local CONFIG_FILE = "/usr/lib/smart_srun/config.json"
 local STATE_FILE = "/var/run/smart_srun/state.json"
 local LOG_FILE = "/var/log/smart_srun.log"
+local PRESETS_CACHE_FILE = "/usr/lib/smart_srun/school_presets_cache.json"
 local JS_ASSET_PATH = "/luci-static/resources/smart_srun.js"
 local GLOBAL_SCALAR_KEYS = schema.GLOBAL_SCALAR_KEYS
 local POINTER_KEYS = schema.POINTER_KEYS
@@ -90,16 +91,17 @@ local function migrate_legacy_config(parsed)
     end
     local uid = tostring(parsed.user_id or ""):match("^%s*(.-)%s*$")
     local op = tostring(parsed.operator or "cucc"):match("^%s*(.-)%s*$"):lower()
+    local suffix = op ~= "xn" and op or ""
     local ca = {
         id = "campus-1", label = "",
         base_url = tostring(parsed.base_url or "http://172.17.1.2"):match("^%s*(.-)%s*$"),
         ac_id = tostring(parsed.ac_id or "1"):match("^%s*(.-)%s*$"),
         user_id = uid, password = tostring(parsed.password or ""):match("^%s*(.-)%s*$"),
-        operator = op, operator_suffix = "",
+        operator = op, operator_suffix = suffix,
         ssid = tostring(parsed.campus_ssid or "jxnu_stu"):match("^%s*(.-)%s*$"),
         bssid = tostring(parsed.campus_bssid or ""):match("^%s*(.-)%s*$"),
     }
-    ca.label = (uid ~= "" and op ~= "" and op ~= "xn") and (uid .. "@" .. op) or (uid ~= "" and uid or "未命名账号")
+    ca.label = (uid ~= "" and suffix ~= "") and (uid .. "@" .. suffix) or (uid ~= "" and uid or "未命名账号")
     migrated.campus_accounts = uid ~= "" and { ca } or {}
     migrated.active_campus_id = uid ~= "" and "campus-1" or ""
     migrated.default_campus_id = migrated.active_campus_id
@@ -226,6 +228,13 @@ local function run_client(args, stderr_to_stdout)
     return util.trim(sys.exec(cmd) or ""), nil
 end
 
+local function refresh_presets_cache_once()
+    if fs.access(PRESETS_CACHE_FILE) then
+        return
+    end
+    sys.call("(/usr/bin/srunnet presets refresh >/dev/null 2>&1) >/dev/null 2>&1 &")
+end
+
 local function validate_hhmm(v)
     local value = util.trim(v or "")
     local h, m = value:match("^(%d%d?):(%d%d)$")
@@ -293,16 +302,15 @@ local RADIO_CHOICES = load_radio_choices()
 local function render_school_info_html(schools, current_school)
     local helper_prefix = "如果该配置无法在您的学校使用，请直接前往"
     local helper_suffix = "提交 Issue 或 PR"
-    local helper_link = "https://github.com/matthewlu070111/luci-app-smart-srun"
-    local doc_base = "https://github.com/matthewlu070111/smart-srun/blob/main/doc/"
-    local short = tostring(current_school or "")
-    local doc_url = doc_base .. util.pcdata(short) .. ".md"
+    local helper_link = "https://github.com/matthewlu070111/smart-srun"
+    -- 初始渲染统一指向 doc 目录（永不 404）；前端 JS 会按预设的 doc_url 覆写为具体文档。
+    local doc_url = "https://github.com/matthewlu070111/smart-srun/tree/main/doc"
     local js_data = jsonc.stringify(schools or {}) or "[]"
 
     return string.format([[
 <div id="smart-school-info" class="cbi-value-description" style="color:#14532d;opacity:0.9;display:block;line-height:1.6;">
   <div id="smart-school-doclink" style="display:block;">
-    <a id="smart-school-doc-link" href="%s" target="_blank" rel="noopener noreferrer">点击查看该配置已验证学校列表</a>
+    <a id="smart-school-doc-link" href="%s" target="_blank" rel="noopener noreferrer">点击查看学校预设文档</a>
   </div>
   <div id="smart-school-helper" style="display:block;margin-top:4px;color:#6b7280;font-size:0.92em;">
     %s<a id="smart-school-repo-link" href="%s" target="_blank" rel="noopener noreferrer">插件仓库</a>%s
@@ -455,6 +463,11 @@ local schools_json = select(1, run_client("schools", false)) or ""
 local schools = jsonc.parse(schools_json)
 if type(schools) ~= "table" then schools = {} end
 
+local school_presets_json = select(1, run_client("presets list", false)) or ""
+local school_presets = jsonc.parse(school_presets_json)
+if type(school_presets) ~= "table" then school_presets = {} end
+refresh_presets_cache_once()
+
 local school_runtime_json = select(1, run_client("schools inspect --selected", false)) or ""
 local school_runtime_contract = parse_school_runtime_contract(school_runtime_json)
 if type(school_runtime_contract.school_extra) == "table" then
@@ -518,6 +531,9 @@ local function bind_text(opt, key, normalize_fn)
         end
         set_value(key, raw)
     end
+    function opt.remove(self, section)
+        set_value(key, "")
+    end
 end
 
 local quiet_desc = string.format("当前下线/上线时间：%s / %s", cfg.quiet_start or "00:00", cfg.quiet_end or "06:00")
@@ -558,7 +574,7 @@ s:tab("advanced", "进阶设置")
 s:tab("log", "日志")
 
 -- 学校配置选择器
-school = s:taboption("basic", ListValue, "school", "登录配置")
+school = s:taboption("basic", ListValue, "school", "学校预设")
 if #schools == 0 then
     school:value("jxnu", "默认配置")
 else
@@ -717,7 +733,6 @@ function tables_html.cfgvalue()
     local current_iface = tostring(state.current_iface or "")
     local current_campus_access_mode = tostring(state.current_campus_access_mode or "")
 
-    local operator_labels = { cmcc = "移动", ctcc = "电信", cucc = "联通", xn = "校内网" }
     local radio_labels = { [""] = "自动" }
     local radio_options = '<option value="">自动</option>'
     for radio, meta in pairs(RADIO_CHOICES) do
@@ -774,7 +789,6 @@ function tables_html.cfgvalue()
                 .. '<td class="td">' .. util.pcdata(tostring(a.base_url or "http://172.17.1.2")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.ac_id or "1")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.user_id or "")) .. '</td>'
-                .. '<td class="td">' .. (operator_labels[tostring(a.operator or "")] or tostring(a.operator or "")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.operator_suffix or "")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(ssid_display) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.bssid or "")) .. '</td>'
@@ -786,7 +800,7 @@ function tables_html.cfgvalue()
         end
     end
     if campus_rows == "" then
-        campus_rows = '<tr class="tr"><td class="td" colspan="11" style="text-align:center;color:#999;">暂无账号，请点击"新增"添加</td></tr>'
+        campus_rows = '<tr class="tr"><td class="td" colspan="10" style="text-align:center;color:#999;">暂无账号，请点击"新增"添加</td></tr>'
     end
 
     -- 构建热点配置表格行
@@ -831,6 +845,7 @@ function tables_html.cfgvalue()
     -- 将数据嵌入到前端
     local campus_json = jsonc.stringify(campus) or "[]"
     local hotspot_json = jsonc.stringify(hotspots) or "[]"
+    local school_presets_json = jsonc.stringify(school_presets or {}) or "[]"
 
     return [[
 <style>
@@ -847,12 +862,14 @@ function tables_html.cfgvalue()
 .smart-native-row{margin-bottom:.75rem;}
 .smart-native-row label{display:block;margin-bottom:.25rem;font-weight:600;}
 .smart-native-row input,.smart-native-row select{width:100%;box-sizing:border-box;}
+.smart-native-advanced{margin:.75rem 0;padding:.75rem;border:1px solid rgba(127,127,127,.25);border-radius:4px;}
+.smart-native-advanced summary{cursor:pointer;font-weight:600;margin:-.25rem 0 .5rem 0;}
 </style>
 
 <div class="cbi-section cbi-tblsection smart-native-box">
   <h3>校园网账号</h3>
   <table class="table cbi-section-table">
-    <tr class="tr table-titles"><th class="th" style="width:80px;">状态</th><th class="th">标签</th><th class="th">认证地址</th><th class="th">ACID</th><th class="th">学工号</th><th class="th">运营商</th><th class="th">后缀</th><th class="th">SSID</th><th class="th">BSSID</th><th class="th">频段</th><th class="th cbi-section-actions" style="width:120px;">操作</th></tr>
+    <tr class="tr table-titles"><th class="th" style="width:80px;">状态</th><th class="th">标签</th><th class="th">认证地址</th><th class="th">ACID</th><th class="th">学工号</th><th class="th">运营商后缀</th><th class="th">SSID</th><th class="th">BSSID</th><th class="th">频段</th><th class="th cbi-section-actions" style="width:120px;">操作</th></tr>
     <tbody>]] .. campus_rows .. [[</tbody>
   </table>
   <div class="smart-box-actions">
@@ -873,6 +890,7 @@ function tables_html.cfgvalue()
 <textarea id="smart-campus-data" style="display:none;">]] .. util.pcdata(campus_json) .. [[</textarea>
 <textarea id="smart-hotspot-data" style="display:none;">]] .. util.pcdata(hotspot_json) .. [[</textarea>
 <textarea id="smart-radio-options" style="display:none;">]] .. util.pcdata(radio_options) .. [[</textarea>
+<textarea id="smart-school-preset-data" style="display:none;">]] .. util.pcdata(school_presets_json) .. [[</textarea>
 ]]
 end
 
@@ -903,9 +921,10 @@ end
 retry_max_cooldown_seconds.placeholder = "600"
 bind_text(retry_max_cooldown_seconds, "retry_max_cooldown_seconds", validate_non_negative_number)
 
-switch_ready_timeout_seconds = s:taboption("advanced", Value, "switch_ready_timeout_seconds", "切网完成等待时间（秒）")
+switch_ready_timeout_seconds = s:taboption("advanced", Value, "switch_ready_timeout_seconds", "切网完成等待时间（秒）",
+    "切换后等待获取 IPv4 的最长时间；部分学校 DHCP 较慢（如出现“未获取到IPv4地址”可调大）")
 switch_ready_timeout_seconds.datatype = "uinteger"
-switch_ready_timeout_seconds.placeholder = "12"
+switch_ready_timeout_seconds.placeholder = "30"
 bind_text(switch_ready_timeout_seconds, "switch_ready_timeout_seconds")
 
 manual_terminal_check_max_attempts = s:taboption("advanced", Value, "manual_terminal_check_max_attempts", "手动登录/登出终态最大检查次数")
@@ -962,14 +981,17 @@ function log_text.cfgvalue(self, section)
     local escaped = util.pcdata and util.pcdata(t) or t
     return [[
 <div id="smart-srun-log-toolbar" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px;">
-  <div id="smart-srun-log-channels" role="tablist" style="display:inline-flex;gap:4px;">
-    <button id="smart-srun-log-channel-plugin" data-channel="plugin" type="button" class="cbi-button cbi-button-action">插件日志</button>
-    <button id="smart-srun-log-channel-network" data-channel="network" type="button" class="cbi-button cbi-button-neutral">网络日志</button>
-  </div>
+  <select id="smart-srun-log-level-filter" style="max-width:150px;">
+    <option value="ALL">全部等级</option>
+    <option value="DEBUG">调试以上</option>
+    <option value="INFO">信息以上</option>
+    <option value="WARN">警告以上</option>
+    <option value="ERROR">仅错误</option>
+  </select>
   <div style="flex:1;"></div>
   <button id="smart-srun-log-start" type="button" class="cbi-button cbi-button-apply">开始刷新</button>
   <button id="smart-srun-log-stop" type="button" class="cbi-button">停止刷新</button>
-  <button id="smart-srun-log-clear" type="button" class="cbi-button">清空显示</button>
+  <button id="smart-srun-log-clear" type="button" class="cbi-button">清空日志</button>
   <button id="smart-srun-log-download" type="button" class="cbi-button cbi-button-apply">下载日志</button>
 </div>
 <div id="smart-srun-log-box" style="max-height:560px;overflow:auto;border:1px solid #2b2b2b;padding:10px;background:#0b0f14;border-radius:4px;">

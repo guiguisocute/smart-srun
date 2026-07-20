@@ -6,7 +6,9 @@ PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
 
-RUNTIME_DEPENDS:=+python3-light
+RUNTIME_DEPENDS:=+python3-light +python3-urllib
+# Keep empty so SDK CI only packs our files (see 1.3.4). Declaring luci-base
+# / luci-compat forces a Lua LuCI stack the release SDK cannot build.
 LUCI_FILE_DEPENDS:=
 LUCI_PACKAGE_DEPENDS:=+smart-srun $(LUCI_FILE_DEPENDS)
 BUNDLE_DEPENDS:=$(RUNTIME_DEPENDS) $(LUCI_FILE_DEPENDS)
@@ -36,6 +38,8 @@ define Package/smart-srun/install
 	$(CP) $(CURDIR)/root/usr/lib/smart_srun/*.py \
 		$(1)/usr/lib/smart_srun/
 	$(CP) $(CURDIR)/root/usr/lib/smart_srun/defaults.json \
+		$(1)/usr/lib/smart_srun/
+	$(CP) $(CURDIR)/root/usr/lib/smart_srun/school_presets_fallback.json \
 		$(1)/usr/lib/smart_srun/
 	$(CP) $(CURDIR)/root/usr/lib/smart_srun/schools/*.py \
 		$(1)/usr/lib/smart_srun/schools/
@@ -106,6 +110,8 @@ define Package/luci-app-smart-srun-bundle/install
 	$(CP) $(CURDIR)/root/usr/lib/smart_srun/*.py \
 		$(1)/usr/lib/smart_srun/
 	$(CP) $(CURDIR)/root/usr/lib/smart_srun/defaults.json \
+		$(1)/usr/lib/smart_srun/
+	$(CP) $(CURDIR)/root/usr/lib/smart_srun/school_presets_fallback.json \
 		$(1)/usr/lib/smart_srun/
 	$(CP) $(CURDIR)/root/usr/lib/smart_srun/schools/*.py \
 		$(1)/usr/lib/smart_srun/schools/

@@ -417,6 +417,27 @@ def ensure_network_interface(name="wwan"):
     return True, iface, "已自动创建网络接口 %s" % iface
 
 
+def bring_up_network_interface(name):
+    """ifup 一个 L3 网络接口，确保此前的 ifdown 不会让它一直停在 down 状态。
+
+    无线切有线时我们会主动 ifdown 承载 STA 的网络接口（见
+    teardown_managed_sta_interfaces），所以反向（有线再切回无线）时必须把它拉回来，
+    否则 wifi reload 可能无法让 wwan 重新获取 IPv4。对已经 up 的接口执行 ifup 是安全的。
+    """
+    iface = str(name or "").strip()
+    if not iface:
+        return False
+    ok, msg = run_cmd(["ifup", iface])
+    log(
+        "DEBUG" if ok else "WARN",
+        "sta_iface_up",
+        "bringing STA network interface up",
+        iface=iface,
+        ok=ok,
+    )
+    return ok
+
+
 # ---------------------------------------------------------------------------
 # STA creation
 # ---------------------------------------------------------------------------
@@ -700,6 +721,36 @@ def disable_managed_sta_sections(cfg, wireless_data=None):
     return ok, "；".join([x for x in msgs if x])
 
 
+def teardown_managed_sta_interfaces(cfg, wireless_data=None):
+    """ifdown 托管 STA 节背后的 L3 网络接口，清掉残留的 DHCP 路由。
+
+    仅把 STA 节设为 disabled 再 wifi reload，并不会拆掉它对应的网络接口（如 wwan）：
+    其 DHCP 租约、地址和路由都会残留。无线切有线时，残留的 wwan 校园网网段路由会和
+    WAN 口指向同一网关（172.17.1.2）的路由冲突，内核仍把出站包发往已经失效的 wwan
+    接口并以 EPERM（“Operation not permitted”）拒绝，且该状态会一直持续到重启路由器。
+    主动 ifdown 接口可以让 netifd 释放租约并清空相关路由。
+
+    返回被拉下来的接口名列表。
+    """
+    data = wireless_data if wireless_data is not None else parse_wireless_iface_data()
+    ifaces = []
+    for sec in get_managed_sta_sections(cfg, data):
+        net = get_network_interface_from_sta_section(sec, data)
+        if net and net not in ifaces:
+            ifaces.append(net)
+
+    for iface in ifaces:
+        ok, _msg = run_cmd(["ifdown", iface])
+        log(
+            "DEBUG" if ok else "WARN",
+            "sta_iface_teardown",
+            "flushing stale STA network interface",
+            iface=iface,
+            ok=ok,
+        )
+    return ifaces
+
+
 # ---------------------------------------------------------------------------
 # Radio selection helpers
 # ---------------------------------------------------------------------------
@@ -790,7 +841,7 @@ def ensure_runtime_wireless_prerequisites(cfg, expect_hotspot, wireless_data=Non
     if wifi_key_required(target.get("encryption", "none")) and not target.get("key"):
         return False, "%s 需要密码，但当前配置为空。" % target["label"], data
 
-    ok, _, message = ensure_network_interface("wwan")
+    ok, iface_name, message = ensure_network_interface("wwan")
     data = parse_wireless_iface_data()
     if not ok:
         return (
@@ -798,6 +849,18 @@ def ensure_runtime_wireless_prerequisites(cfg, expect_hotspot, wireless_data=Non
             "已尝试自动创建网络接口 wwan，但失败：%s" % (message or "未知错误"),
             data,
         )
+
+    # 之前从无线切到有线时可能 ifdown 过这些接口；重建无线前先确保它们重新 up，
+    # 否则 wifi reload 后 wwan 可能停在 down 状态而拿不到 IPv4。
+    brought_up = set()
+    for sec in get_managed_sta_sections(cfg, data):
+        net = get_network_interface_from_sta_section(sec, data)
+        if net and net not in brought_up:
+            bring_up_network_interface(net)
+            brought_up.add(net)
+    if iface_name and iface_name not in brought_up:
+        bring_up_network_interface(iface_name)
+
     return True, message, data
 
 
@@ -848,6 +911,11 @@ def wait_for_sta_ipv4(
     deadline = started_at + max(int(timeout_seconds), 1)
     last_net = get_network_interface_from_sta_section(sec)
     last_progress_log = 0.0
+    # 等到一半（至少 5 秒）仍无 IPv4 时主动 ifup 一次承载接口：部分环境
+    #（如南昌航空 issue #22）关联成功但 DHCP 迟迟不来，被动轮询会一直等到
+    # 超时；ifup 对已 up 的接口安全，可触发 netifd 重新发起 DHCP。
+    kick_at = started_at + min(max(int(timeout_seconds) // 2, 5), int(timeout_seconds))
+    kicked = False
 
     while time.time() < deadline:
         net = get_network_interface_from_sta_section(sec)
@@ -868,6 +936,19 @@ def wait_for_sta_ipv4(
                 )
                 return net, ip
         now = time.time()
+        if (not kicked) and now >= kick_at:
+            kicked = True
+            kick_net = net or last_net
+            if kick_net:
+                log(
+                    "INFO",
+                    "dhcp_kick",
+                    "no IPv4 yet, re-triggering DHCP via ifup",
+                    section=sec,
+                    network=kick_net,
+                    elapsed_ms=int((now - started_at) * 1000),
+                )
+                bring_up_network_interface(kick_net)
         if now - last_progress_log >= 2.0:
             last_progress_log = now
             log(
@@ -1015,10 +1096,14 @@ def switch_sta_profile(cfg, expect_hotspot):
             radio=radio or "?",
             band=bl,
         )
-        return False, "已切换为%s配置但未获取到IPv4地址（%s %s）" % (
-            target["label"],
-            radio or "?",
-            bl,
+        return False, (
+            "已切换为%s配置但未获取到IPv4地址（%s %s）；"
+            "可在全局设置调大“切网就绪等待”，并确认该账号是否已有其他设备在线占用名额"
+            % (
+                target["label"],
+                radio or "?",
+                bl,
+            )
         )
 
     _, ip = wait_for_sta_ipv4(section, timeout_seconds=ip_timeout)
@@ -1087,7 +1172,11 @@ def switch_to_hotspot(cfg):
 
 def switch_to_campus(cfg):
     if campus_uses_wired(cfg):
-        disable_managed_sta_sections(cfg, parse_wireless_iface_data())
+        data = parse_wireless_iface_data()
+        disable_managed_sta_sections(cfg, data)
+        # 拆掉无线 STA 的 L3 接口，避免残留的 wwan 路由与 WAN 指向同一网关的路由冲突，
+        # 否则发往认证网关的包会被路由到已失效的接口并报 EPERM，只能靠重启恢复。
+        teardown_managed_sta_interfaces(cfg, data)
         wan_ip = wait_for_network_interface_ipv4(
             "wan", timeout_seconds=get_switch_ready_timeout_seconds(cfg)
         )

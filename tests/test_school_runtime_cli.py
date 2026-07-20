@@ -2,7 +2,9 @@ import io
 import importlib.util
 import json
 import os
+import re
 import sys
+import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stdout
 from urllib.error import HTTPError
@@ -12,10 +14,19 @@ from unittest import mock
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODULE_ROOT = os.path.join(REPO_ROOT, "root", "usr", "lib", "smart_srun")
 
+# Python 3.14 起 argparse 会给帮助输出着色，断言前需剥离 ANSI 转义序列。
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def strip_ansi(text):
+    return _ANSI_ESCAPE_RE.sub("", text)
+
+
 if MODULE_ROOT not in sys.path:
     sys.path.insert(0, MODULE_ROOT)
 
 
+from _portal_urls import PORTAL_ACID4_THEME_URL, PORTAL_HTTPS_ORIGIN, PORTAL_ORIGIN
 import daemon
 import version_info
 import school_runtime
@@ -146,8 +157,7 @@ class SchoolRuntimeCliTests(unittest.TestCase):
                 "name": "JXNU",
                 "description": "desc",
                 "contributors": ["a"],
-                "operators": [{"id": "xn", "label": "校园网"}],
-                "no_suffix_operators": ["xn"],
+                "operators": [{"id": "", "label": "校园网"}],
             }
         ]
         stdout = io.StringIO()
@@ -229,6 +239,9 @@ class SchoolRuntimeCliTests(unittest.TestCase):
             "disable",
             "help",
             "man",
+            "update",
+            "presets",
+            "detect",
         ]
 
         for name in reserved:
@@ -272,7 +285,7 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         ):
             daemon.main()
 
-        text = stdout.getvalue()
+        text = strip_ansi(stdout.getvalue())
         self.assertIn("usage: srunnet", text)
         self.assertIn("常用命令组", text)
 
@@ -285,7 +298,7 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         ):
             daemon.main()
 
-        text = stdout.getvalue()
+        text = strip_ansi(stdout.getvalue())
         self.assertIn("usage: srunnet config", text)
         self.assertIn("show", text)
 
@@ -298,7 +311,7 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         ):
             daemon.main()
 
-        text = stdout.getvalue()
+        text = strip_ansi(stdout.getvalue())
         self.assertIn("usage: srunnet config account", text)
 
     def test_help_with_unknown_command_returns_nonzero_and_writes_to_stderr(self):
@@ -489,7 +502,7 @@ class SchoolRuntimeCliTests(unittest.TestCase):
             mock.patch.object(
                 version_info,
                 "get_cli_version_string",
-                return_value="luci-app-smart-srun-bundle v1.3.0-r1",
+                return_value="luci-app-smart-srun-bundle v1.3.0",
             ),
             redirect_stdout(stdout),
         ):
@@ -497,7 +510,7 @@ class SchoolRuntimeCliTests(unittest.TestCase):
                 daemon.main()
 
         self.assertEqual(0, exc.exception.code)
-        self.assertEqual("luci-app-smart-srun-bundle v1.3.0-r1\n", stdout.getvalue())
+        self.assertEqual("luci-app-smart-srun-bundle v1.3.0\n", stdout.getvalue())
 
     def test_schools_command_works_when_runtime_resolution_is_broken(self):
         payload = [{"short_name": "jxnu"}]
@@ -516,6 +529,199 @@ class SchoolRuntimeCliTests(unittest.TestCase):
             daemon.main()
 
         self.assertEqual(json.loads(stdout.getvalue()), payload)
+
+    def test_update_status_command_prints_json_status(self):
+        import updater
+
+        payload = {"ok": True, "phase": "idle", "message": "未开始更新"}
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "update", "status"]),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            mock.patch.object(updater, "get_status", return_value=payload),
+            redirect_stdout(stdout),
+        ):
+            daemon.main()
+
+        self.assertEqual(json.loads(stdout.getvalue()), payload)
+
+    def test_presets_refresh_command_prints_json_result(self):
+        import school_presets
+
+        payload = {"ok": True, "schools": [{"short_name": "qdu"}]}
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "presets", "refresh"]),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            mock.patch.object(school_presets, "refresh_remote_presets", return_value=payload),
+            redirect_stdout(stdout),
+        ):
+            daemon.main()
+
+        self.assertEqual(json.loads(stdout.getvalue()), payload)
+
+    def test_detect_acid_command_prints_json_result(self):
+        import portal_detect
+
+        payload = {
+            "ok": True,
+            "acid": "4",
+            "base_url": PORTAL_ORIGIN,
+            "source": "input_url",
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                ["srunnet", "detect", "acid", PORTAL_ACID4_THEME_URL],
+            ),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            mock.patch.object(portal_detect, "detect_acid", return_value=payload) as detect_acid,
+            redirect_stdout(stdout),
+        ):
+            daemon.main()
+
+        detect_acid.assert_called_once_with(
+            PORTAL_ACID4_THEME_URL,
+            reality_url="",
+        )
+        self.assertEqual(json.loads(stdout.getvalue()), payload)
+
+    def test_detect_acid_command_uses_current_base_url_when_omitted(self):
+        import portal_detect
+
+        cfg = dict(self.cfg)
+        cfg["base_url"] = PORTAL_HTTPS_ORIGIN
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "detect", "acid"]),
+            mock.patch.object(daemon, "load_config", return_value=cfg),
+            mock.patch.object(
+                portal_detect, "detect_acid", return_value={"ok": False}
+            ) as detect_acid,
+            redirect_stdout(stdout),
+        ):
+            daemon.main()
+
+        detect_acid.assert_called_once_with(
+            PORTAL_HTTPS_ORIGIN,
+            reality_url="",
+        )
+
+    def test_presets_list_command_prints_active_presets(self):
+        import school_presets
+
+        payload = [{"short_name": "jxnu"}, {"short_name": "qdu"}]
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["srunnet", "presets", "list"]),
+            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+            mock.patch.object(school_presets, "list_presets", return_value=payload) as list_presets,
+            redirect_stdout(stdout),
+        ):
+            daemon.main()
+
+        list_presets.assert_called_once_with(include_draft=False)
+        self.assertEqual(json.loads(stdout.getvalue()), payload)
+
+    def test_presets_list_command_keeps_operator_suffixes_in_operators(self):
+        import school_presets
+
+        stdout = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = os.path.join(tmp, "missing-presets-cache.json")
+            with (
+                mock.patch.object(sys, "argv", ["srunnet", "presets", "list"]),
+                mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
+                mock.patch.object(school_presets, "CACHE_PRESETS_FILE", cache_path),
+                redirect_stdout(stdout),
+            ):
+                daemon.main()
+
+        payload = json.loads(stdout.getvalue())
+        lnut = next(item for item in payload if item["short_name"] == "lnut-hld")
+        jxnu = next(item for item in payload if item["short_name"] == "jxnu")
+        self.assertNotIn("operator", lnut["defaults"])
+        self.assertNotIn("operator_suffix", lnut["defaults"])
+        self.assertNotIn("operator", jxnu["defaults"])
+        self.assertNotIn("operator_suffix", jxnu["defaults"])
+        self.assertEqual(lnut["operators"][0]["suffix"], "hcmcc")
+        for preset in (lnut, jxnu):
+            for operator in preset["operators"]:
+                self.assertNotIn("operator_suffix", operator)
+
+    def test_config_account_table_labels_follow_explicit_suffix_only(self):
+        stdout = io.StringIO()
+        raw = {
+            "default_campus_id": "campus-1",
+            "campus_accounts": [
+                {
+                    "id": "campus-1",
+                    "user_id": "alice",
+                    "operator": "cucc",
+                    "operator_suffix": "",
+                    "access_mode": "wifi",
+                    "ssid": "campus",
+                },
+                {
+                    "id": "campus-2",
+                    "user_id": "bob",
+                    "operator": "hcmcc",
+                    "operator_suffix": "hcmcc",
+                    "access_mode": "wired",
+                    "n": "128",
+                    "type": "3",
+                    "enc": "custom_enc",
+                    "info_prefix": "CUSTOM",
+                },
+            ],
+        }
+
+        with redirect_stdout(stdout):
+            daemon._print_account_table(raw)
+
+        text = stdout.getvalue()
+        self.assertIn("alice", text)
+        self.assertNotIn("alice@cucc", text)
+        self.assertIn("bob@hcmcc", text)
+        self.assertIn("128/3/custom_enc/C", text)
+
+    def test_interactive_account_allows_custom_operator_suffix(self):
+        with (
+            mock.patch.object(daemon, "_get_current_profile", return_value=None),
+            mock.patch(
+                "builtins.input",
+                side_effect=[
+                    "",
+                    "alice",
+                    "hcmcc",
+                    "wired",
+                    PORTAL_ORIGIN,
+                    "4",
+                    "128",
+                    "3",
+                    "custom_enc",
+                    "CUSTOM",
+                    "1",
+                    "windows",
+                    "Windows",
+                ],
+            ),
+            mock.patch("getpass.getpass", return_value="pw"),
+        ):
+            fields = daemon._interactive_campus()
+
+        self.assertNotIn("operator", fields)
+        self.assertEqual(fields["operator_suffix"], "hcmcc")
+        self.assertEqual(fields["n"], "128")
+        self.assertEqual(fields["type"], "3")
+        self.assertEqual(fields["enc"], "custom_enc")
+        self.assertEqual(fields["info_prefix"], "CUSTOM")
+        self.assertEqual(fields["double_stack"], "1")
+        self.assertEqual(fields["login_os"], "windows")
+        self.assertEqual(fields["login_name"], "Windows")
+        self.assertEqual(fields["label"], "alice@hcmcc")
 
     def test_config_show_works_when_runtime_resolution_is_broken(self):
         with (
@@ -553,7 +759,7 @@ class SchoolRuntimeCliTests(unittest.TestCase):
                 daemon.main()
 
         self.assertEqual(exc.exception.code, 0)
-        self.assertIn("usage: srunnet", stdout.getvalue())
+        self.assertIn("usage: srunnet", strip_ansi(stdout.getvalue()))
 
     def test_runtime_action_contract_error_is_isolated(self):
         state = {"current_mode": "campus", "last_switch_ts": 0}
@@ -563,6 +769,8 @@ class SchoolRuntimeCliTests(unittest.TestCase):
             ),
             mock.patch.object(daemon, "save_runtime_status"),
             mock.patch.object(daemon, "build_runtime_snapshot", return_value={}),
+            mock.patch.object(daemon, "mark_inflight_action"),
+            mock.patch.object(daemon, "clear_inflight_action"),
         ):
             self.runtime.handle_runtime_action = mock.Mock(
                 return_value=(True, "bad", "shape")
@@ -585,6 +793,8 @@ class SchoolRuntimeCliTests(unittest.TestCase):
             ),
             mock.patch.object(daemon, "save_runtime_status"),
             mock.patch.object(daemon, "build_runtime_snapshot", return_value={}),
+            mock.patch.object(daemon, "mark_inflight_action"),
+            mock.patch.object(daemon, "clear_inflight_action"),
         ):
             self.runtime.handle_runtime_action = mock.Mock(
                 side_effect=RuntimeError("boom")
@@ -757,6 +967,12 @@ class HotUpdateScriptTests(unittest.TestCase):
 
 
 class DaemonStartupStateTests(unittest.TestCase):
+    def test_routine_online_tick_updates_state_without_info_log(self):
+        self.assertFalse(
+            daemon._should_log_daemon_tick("在线，下一次检测间隔 30 秒", {})
+        )
+        self.assertTrue(daemon._should_log_daemon_tick("校园网配置未就绪", {}))
+
     def test_run_daemon_preserves_pending_action_context_on_startup(self):
         cfg = {"enabled": "1", "interval": "30", "school": "custom"}
         startup_state = {
@@ -991,6 +1207,47 @@ class LuciSourceHardeningTests(unittest.TestCase):
             'out[key] = type(latest[key]) == "table" and latest[key] or {}',
             model_source,
         )
+        self.assertIn("function opt.remove(self, section)", model_source)
+        self.assertIn('set_value(key, "")', model_source)
+
+    def test_luci_presets_refresh_is_background_only(self):
+        model_source = read_repo_text(
+            "root", "usr", "lib", "lua", "luci", "model", "cbi", "smart_srun.lua"
+        )
+        daemon_source = read_repo_text("root", "usr", "lib", "smart_srun", "daemon.py")
+
+        self.assertIn('run_client("presets list", false)', model_source)
+        self.assertIn("refresh_presets_cache_once()", model_source)
+        self.assertIn("fs.access(PRESETS_CACHE_FILE)", model_source)
+        self.assertIn("presets refresh >/dev/null 2>&1", model_source)
+        self.assertIn("_refresh_school_presets_after_online", daemon_source)
+        self.assertIn("school_presets.refresh_remote_presets(timeout=5)", daemon_source)
+        self.assertIn('connectivity_level", "")).strip() != "online"', daemon_source)
+
+    def test_luci_acid_detector_returns_fillable_aliases(self):
+        controller_source = read_repo_text(
+            "root", "usr", "lib", "lua", "luci", "controller", "smart_srun.lua"
+        )
+        js_source = read_repo_text(
+            "root", "www", "luci-static", "resources", "smart_srun.js"
+        )
+
+        self.assertIn("payload.value", controller_source)
+        self.assertIn("payload.ac_id", controller_source)
+        self.assertIn("data.acid || data.ac_id || data.value", js_source)
+
+    def test_default_selection_updates_runtime_active_pointer(self):
+        controller_source = read_repo_text(
+            "root", "usr", "lib", "lua", "luci", "controller", "smart_srun.lua"
+        )
+        daemon_source = read_repo_text("root", "usr", "lib", "smart_srun", "daemon.py")
+
+        self.assertIn("cfg.default_campus_id = id", controller_source)
+        self.assertIn("cfg.active_campus_id = id", controller_source)
+        self.assertIn("cfg.default_hotspot_id = id", controller_source)
+        self.assertIn("cfg.active_hotspot_id = id", controller_source)
+        self.assertIn('"active_campus_id": args.id', daemon_source)
+        self.assertIn('"active_hotspot_id": args.id', daemon_source)
 
     def test_luci_config_writes_use_temp_file_replace_flow(self):
         controller_source = read_repo_text(
@@ -1027,7 +1284,11 @@ class LuciSourceHardeningTests(unittest.TestCase):
             "root/usr/lib/smart_srun/snapshot.py",
             "root/usr/lib/smart_srun/school_runtime.py",
             "root/usr/lib/smart_srun/version_info.py",
+            "root/usr/lib/smart_srun/school_presets.py",
+            "root/usr/lib/smart_srun/portal_detect.py",
+            "root/usr/lib/smart_srun/updater.py",
             "root/usr/lib/smart_srun/defaults.json",
+            "root/usr/lib/smart_srun/school_presets_fallback.json",
             "root/usr/lib/smart_srun/schools/__init__.py",
             "root/usr/lib/smart_srun/schools/_base.py",
             "root/usr/lib/smart_srun/schools/jxnu.py",
@@ -1100,13 +1361,16 @@ class LuciSourceHardeningTests(unittest.TestCase):
             any(
                 "import school_runtime" in command
                 and "import schools" in command
+                and "import updater" in command
                 and "import cli" in command
                 for command in sanity_commands
             ),
             "hot update sanity checks must smoke-test runtime loader imports",
         )
         self.assertIn("srunnet schools", sanity_commands)
+        self.assertIn("srunnet presets list", sanity_commands)
         self.assertIn("srunnet schools inspect --selected", sanity_commands)
+        self.assertIn("srunnet update status", sanity_commands)
         self.assertIn("/etc/init.d/smart_srun restart", restart_commands)
         self.assertIn("/etc/init.d/uwsgi restart", restart_commands)
 

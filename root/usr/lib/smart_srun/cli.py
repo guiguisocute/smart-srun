@@ -37,6 +37,9 @@ TOP_EPILOG = (
     "            config account [add|edit|rm|default] [ID]\n"
     "            config hotspot [add|edit|rm|default] [ID]\n"
     "  学校      schools / schools inspect --selected\n"
+    "  预设      presets list / presets refresh\n"
+    "  探测      detect acid [BASE_URL]\n"
+    "  更新      update check / update run / update status\n"
     "  帮助      help [COMMAND] / man / --version\n"
     "\n"
     "示例：\n"
@@ -134,6 +137,86 @@ def _build_parser():
         "--selected",
         action="store_true",
         help="打印当前生效学校的 runtime 元数据（JSON）",
+    )
+
+    p_presets = _make_subparser(
+        sub,
+        "presets",
+        help_text="管理远端学校预设",
+        description="列出或刷新远端学校预设缓存。",
+    )
+    presets_sub = p_presets.add_subparsers(dest="presets_command", metavar="SUBCOMMAND")
+    _make_subparser(
+        presets_sub,
+        "list",
+        help_text="列出学校预设",
+        description="输出可用学校预设列表（JSON），供 LuCI 账号管理页面使用。",
+    )
+    _make_subparser(
+        presets_sub,
+        "refresh",
+        help_text="刷新远端学校预设缓存",
+        description="优先从 srun.edu-publish.site 拉取学校预设，失败时回退 raw GitHub。",
+    )
+
+    p_detect = _make_subparser(
+        sub,
+        "detect",
+        help_text="探测认证网关参数",
+        description="从认证地址、跳转链或 Portal 页面中探测 AC_ID 等登录参数。",
+    )
+    detect_sub = p_detect.add_subparsers(dest="detect_command", metavar="SUBCOMMAND")
+    p_detect_acid = _make_subparser(
+        detect_sub,
+        "acid",
+        help_text="嗅探 AC_ID",
+        description="非侵入式读取 URL、跳转和 Portal 页面中的 ac_id，不做登录枚举测试。",
+    )
+    p_detect_acid.add_argument(
+        "base_url",
+        nargs="?",
+        help="认证地址；留空则使用当前默认校园网账号的认证地址",
+    )
+    p_detect_acid.add_argument(
+        "--reality-url",
+        default="",
+        help="可选：先访问一个会被校园网劫持的 HTTP 地址并从跳转中提取 ac_id",
+    )
+
+    p_update = _make_subparser(
+        sub,
+        "update",
+        help_text="检查或安装 SMART SRun 更新",
+        description="检查 latest release，或下载并安装匹配当前包型的更新包。",
+    )
+    update_sub = p_update.add_subparsers(dest="update_command", metavar="SUBCOMMAND")
+    _make_subparser(
+        update_sub,
+        "check",
+        help_text="检查 latest release",
+        description="输出当前版本、latest release、包型和可更新状态（JSON）。",
+    )
+    p_update_run = _make_subparser(
+        update_sub,
+        "run",
+        help_text="下载并安装更新",
+        description="前台执行完整更新；LuCI 可使用 --background 后台执行。",
+    )
+    p_update_run.add_argument(
+        "--background",
+        action="store_true",
+        help="后台执行更新并立即返回状态",
+    )
+    p_update_run.add_argument(
+        "--foreground",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    _make_subparser(
+        update_sub,
+        "status",
+        help_text="查看更新任务状态",
+        description="读取 /var/run/smart_srun/update_status.json（JSON）。",
     )
 
     p_log = _make_subparser(
@@ -350,6 +433,9 @@ SMART SRun (srunnet)(1) -- OpenWrt 智慧深澜校园网认证客户端
     schools                          列出可用学校 (JSON)
     schools inspect --selected       打印当前学校 runtime 元数据 (JSON)
 
+  ▸ 探测
+    detect acid [BASE_URL]            从认证地址 / Portal 页面嗅探 AC_ID
+
   ▸ 帮助与版本
     help [COMMAND]       显示子命令帮助（等价 --help）
     man                  显示本手册
@@ -416,13 +502,14 @@ SMART SRun (srunnet)(1) -- OpenWrt 智慧深澜校园网认证客户端
     srunnet config get interval
     srunnet config set interval=30 log_level=DEBUG
     srunnet config account default campus-1
+    srunnet detect acid http://<portal-host>/srun_portal_pc?ac_id=<id>
     srunnet switch hotspot
     srunnet schools inspect --selected
 
 相关链接
     LuCI 页面    服务 -> SMART SRun
     项目主页    https://github.com/matthewlu070111/smart-srun
-    贡献指南    doc/CONTRIBUTING.md
+    贡献指南    CONTRIBUTING.md
     开发者文档  CLAUDE.md / AGENTS.md（仓库根目录）
 
 许可
@@ -460,12 +547,15 @@ def _dispatch_help(parser, sub, targets):
 
 
 def main():
+    argv = sys.argv[1:]
+    parser, sub = _build_parser()
+    if argv and argv[0] == "--version":
+        parser.parse_args(argv)
+        return
+
     cfg = daemon.load_config()
     runtime = None
     app_ctx = None
-    argv = sys.argv[1:]
-
-    parser, sub = _build_parser()
 
     needs_runtime_for_parse = bool(argv) and not argv[0].startswith("-")
     if needs_runtime_for_parse and argv[0] not in school_runtime.CORE_RESERVED_COMMANDS:
@@ -544,10 +634,63 @@ def main():
         print(json.dumps(schools.list_schools(), ensure_ascii=False, indent=2))
         return
 
+    if args.command == "presets":
+        import school_presets
+
+        if getattr(args, "presets_command", "") == "list":
+            print(
+                json.dumps(
+                    school_presets.list_presets(include_draft=False),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return
+        if getattr(args, "presets_command", "") == "refresh":
+            payload = school_presets.refresh_remote_presets()
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return
+        parser.parse_args(["presets", "--help"])
+        return
+
+    if args.command == "detect":
+        import portal_detect
+
+        if getattr(args, "detect_command", "") == "acid":
+            base_url = getattr(args, "base_url", "") or cfg.get("base_url", "")
+            payload = portal_detect.detect_acid(
+                base_url,
+                reality_url=getattr(args, "reality_url", "") or "",
+            )
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return
+        parser.parse_args(["detect", "--help"])
+        return
+
+    if args.command == "update":
+        import updater
+
+        update_command = getattr(args, "update_command", "") or "status"
+        if update_command == "check":
+            print(json.dumps(updater.check_update(), ensure_ascii=False, indent=2))
+            return
+        if update_command == "status":
+            print(json.dumps(updater.get_status(), ensure_ascii=False, indent=2))
+            return
+        if update_command == "run":
+            if getattr(args, "background", False):
+                payload = updater.start_background_update()
+            else:
+                payload = updater.run_update()
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return
+        parser.parse_args(["update", "--help"])
+        return
+
     if args.command == "switch":
         cfg = daemon.load_config()
         expect_hotspot = args.target == "hotspot"
-        _, message = daemon.run_switch(cfg, expect_hotspot=expect_hotspot)
+        ok, message = daemon.run_switch(cfg, expect_hotspot=expect_hotspot)
         daemon.log(
             "INFO",
             "action_result",
@@ -555,6 +698,8 @@ def main():
             action="switch_%s" % args.target,
         )
         print(message)
+        if not ok:
+            raise SystemExit(1)
         return
 
     if args.command == "config":

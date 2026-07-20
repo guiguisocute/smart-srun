@@ -15,12 +15,16 @@ import time
 from config import campus_uses_wired, log, timed
 
 try:
+    import http.client as http_client
     import urllib.error as urllib_error
+    import urllib.parse as urllib_parse
     import urllib.request as urllib_request
 
     HAVE_URLLIB = True
 except ModuleNotFoundError:
+    http_client = None
     urllib_error = None
+    urllib_parse = None
     urllib_request = None
     HAVE_URLLIB = False
 
@@ -41,20 +45,42 @@ CONNECTIVITY_CHECK_URLS = [
 ]
 
 
-def run_cmd(cmd):
+def run_cmd(cmd, timeout=60):
     try:
         res = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
         )
         return res.returncode == 0, (res.stdout or res.stderr or "").strip()
+    except subprocess.TimeoutExpired:
+        return False, "命令超时（%ds）: %s" % (timeout, " ".join(str(c) for c in cmd))
     except OSError as exc:
         return False, str(exc)
+
+
+def _wget_supports_bind(path):
+    """真实的 GNU wget 才支持 --bind-address；uclient-fetch / busybox 不支持。"""
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        real = path
+    base = os.path.basename(real).lower()
+    return "uclient" not in base and "busybox" not in base
 
 
 def parse_uci_value(raw):
     text = str(raw or "").strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
-        return text[1:-1]
+        inner = text[1:-1]
+        if text[0] == "'":
+            # uci 把值内单引号输出为 '\''（关引号+转义引号+开引号），此处还原，
+            # 否则含撇号的 SSID/密码读回值与写入值不符，会触发每 30s 重建循环、
+            # 手动登录校验永远失败。
+            inner = inner.replace("'\\''", "'")
+        return inner
     return text
 
 
@@ -120,6 +146,10 @@ def humanize_http_errors(url, errors):
         reasons.append("网关拒绝连接")
     if not reasons:
         reasons.append("与网关通信失败")
+    if str(url or "").lower().startswith("https://"):
+        reasons.append(
+            "如果该认证网关必须使用 HTTPS，请确认已安装 python3-openssl 后重试"
+        )
 
     details = []
     for e in errors:
@@ -257,6 +287,40 @@ def resolve_bind_ip(url, cfg):
     return bind_ip
 
 
+def _http_get_via_stdlib(url, timeout, bind_ip):
+    """用 stdlib http.client 发起 GET，可选绑定本机源 IP。
+
+    避免依赖 wget --bind-address（BusyBox wget / uclient-fetch 都不支持），
+    在 python3-light 上即可完成源地址绑定。返回 (body, status_code)。
+    """
+    parts = urllib_parse.urlsplit(url)
+    scheme = (parts.scheme or "http").lower()
+    host = parts.hostname or ""
+    port = parts.port or (443 if scheme == "https" else 80)
+    path = parts.path or "/"
+    if parts.query:
+        path = path + "?" + parts.query
+
+    source = (bind_ip, 0) if bind_ip else None
+    if scheme == "https":
+        if not hasattr(http_client, "HTTPSConnection"):
+            raise RuntimeError("当前 Python 缺少 HTTPS 支持，请安装 python3-openssl 后重试")
+        conn = http_client.HTTPSConnection(
+            host, port, timeout=timeout, source_address=source
+        )
+    else:
+        conn = http_client.HTTPConnection(
+            host, port, timeout=timeout, source_address=source
+        )
+    try:
+        conn.request("GET", path, headers=HEADER)
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", errors="replace")
+        return body, resp.status
+    finally:
+        conn.close()
+
+
 def http_get(url, params=None, timeout=5, bind_ip=None):
     if params:
         query = _urlencode(params)
@@ -278,26 +342,31 @@ def http_get(url, params=None, timeout=5, bind_ip=None):
     dns_failure_host = ""
 
     with timed() as t:
-        if HAVE_URLLIB and not bind_ip:
+        if HAVE_URLLIB:
             try:
-                req = urllib_request.Request(url, headers=HEADER, method="GET")
-                with urllib_request.urlopen(req, timeout=timeout) as resp:
-                    body = resp.read().decode("utf-8", errors="replace")
-                    status_code = getattr(resp, "status", None) or resp.getcode()
-                    log(
-                        "DEBUG",
-                        "http_fetch_result",
-                        url=log_url,
-                        host=host,
-                        client="urllib",
-                        status_code=status_code,
-                        bytes_received=len(body),
-                        duration_ms=t.ms,
-                    )
-                    return body
+                if bind_ip:
+                    body, status_code = _http_get_via_stdlib(url, timeout, bind_ip)
+                    client_name = "http.client(bound)"
+                else:
+                    req = urllib_request.Request(url, headers=HEADER, method="GET")
+                    with urllib_request.urlopen(req, timeout=timeout) as resp:
+                        body = resp.read().decode("utf-8", errors="replace")
+                        status_code = getattr(resp, "status", None) or resp.getcode()
+                    client_name = "urllib"
+                log(
+                    "DEBUG",
+                    "http_fetch_result",
+                    url=log_url,
+                    host=host,
+                    client=client_name,
+                    status_code=status_code,
+                    bytes_received=len(body),
+                    duration_ms=t.ms,
+                )
+                return body
             except Exception as exc:
                 msg = str(exc)
-                errors.append("urllib: %s" % msg)
+                errors.append("%s: %s" % ("http.client" if bind_ip else "urllib", msg))
                 lower = msg.lower()
                 if ("name or service not known" in lower
                         or "nodename nor servname" in lower
@@ -321,11 +390,14 @@ def http_get(url, params=None, timeout=5, bind_ip=None):
             if not os.path.exists(path):
                 continue
             available = True
-            if kind == "wget":
+            # 原生 OpenWrt 的 /usr/bin/wget 往往是 uclient-fetch 的符号链接，
+            # 不认识 --bind-address；按真实实现判断，避免给它传该参数直接报错退出。
+            supports_bind = kind == "wget" and _wget_supports_bind(path)
+            if supports_bind:
                 bind_capable = True
 
-            if bind_ip and kind != "wget":
-                errors.append("%s: bind_ip requires wget --bind-address support" % kind)
+            if bind_ip and not supports_bind:
+                errors.append("%s: 不支持 --bind-address（uclient-fetch/busybox）" % kind)
                 continue
 
             if kind == "wget":
@@ -336,8 +408,14 @@ def http_get(url, params=None, timeout=5, bind_ip=None):
             else:
                 cmd = [path, "-q", "-O", "-", "--timeout", str(int(timeout)), url]
 
+            # GNU wget 的 --timeout 只约束单次尝试，默认还会重试 20 次并线性
+            # 退避，实测单个探测可拖到 4 分钟以上，把守护循环整个卡住。
+            # 用子进程级硬超时兜底，对 busybox/GNU 两种实现都成立。
+            hard_cap = max(int(timeout) * 2, int(timeout) + 3)
             try:
-                output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+                output = subprocess.check_output(
+                    cmd, stderr=subprocess.STDOUT, timeout=hard_cap
+                )
                 body = output.decode("utf-8", errors="replace")
                 log(
                     "DEBUG",
@@ -349,6 +427,8 @@ def http_get(url, params=None, timeout=5, bind_ip=None):
                     duration_ms=t.ms,
                 )
                 return body
+            except subprocess.TimeoutExpired:
+                errors.append("%s: timed out after %ds (hard cap)" % (kind, hard_cap))
             except subprocess.CalledProcessError as exc:
                 details = exc.output.decode("utf-8", errors="replace") if exc.output else ""
                 if not details:
@@ -373,7 +453,7 @@ def http_get(url, params=None, timeout=5, bind_ip=None):
     if not available:
         raise RuntimeError("未找到可用 HTTP 客户端（uclient-fetch/wget）")
 
-    if bind_ip and not bind_capable:
+    if bind_ip and not bind_capable and not HAVE_URLLIB:
         raise RuntimeError("bind_ip requires wget --bind-address support")
 
     raise RuntimeError(humanize_http_errors(log_url, [e for e in errors if e]))

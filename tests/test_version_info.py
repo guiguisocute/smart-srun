@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from pathlib import Path
 
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -34,22 +35,30 @@ class VersionInfoTests(unittest.TestCase):
         )
 
     def test_normalize_version_formats_makefile_and_opkg_versions(self):
-        self.assertEqual("v1.3.0-r1", version_info.normalize_version_string("1.3.0-1"))
+        self.assertEqual("v1.3.0", version_info.normalize_version_string("1.3.0-1"))
         self.assertEqual(
-            "v1.3.0-r2", version_info.normalize_version_string("v1.3.0-r2")
+            "v1.3.0", version_info.normalize_version_string("v1.3.0-r2")
         )
-        self.assertEqual("v0.0.0-r1", version_info.normalize_version_string(""))
+        self.assertEqual(
+            "v1.3.0-b1",
+            version_info.normalize_version_string("1.3.0-beta.1-1"),
+        )
+        self.assertEqual(
+            "v1.3.0-b1",
+            version_info.normalize_version_string("1.3.0_beta.1-r1"),
+        )
+        self.assertEqual("v0.0.0", version_info.normalize_version_string(""))
 
     def test_luci_display_text_uses_cn_labels(self):
         bundle_status = "Package: luci-app-smart-srun-bundle\nVersion: 1.3.0-1\n\n"
         split_status = "Package: luci-app-smart-srun\nVersion: 1.3.0-1\n\n"
 
         self.assertEqual(
-            "Bundle 版 v1.3.0-r1",
+            "Bundle 版 v1.3.0",
             version_info.get_luci_display_text(status_text=bundle_status),
         )
         self.assertEqual(
-            "标准版 v1.3.0-r1",
+            "标准版 v1.3.0",
             version_info.get_luci_display_text(status_text=split_status),
         )
 
@@ -70,14 +79,28 @@ class VersionInfoTests(unittest.TestCase):
             version_info.detect_installed_package_name(apk_status),
         )
         self.assertEqual(
-            "Bundle 版 v1.3.0-r1",
+            "Bundle 版 v1.3.0",
             version_info.get_luci_display_text(status_text=apk_status),
         )
 
     def test_parses_apk_version_with_r_release_suffix(self):
         self.assertEqual(
-            "v1.3.0-r5", version_info.normalize_version_string("1.3.0-r5")
+            "v1.3.0", version_info.normalize_version_string("1.3.0-r5")
         )
+
+    def test_luci_sources_accept_prerelease_versions(self):
+        root = Path(WORKTREE_ROOT)
+        schema = (root / "root/usr/lib/lua/luci/smart_srun/schema.lua").read_text(
+            encoding="utf-8"
+        )
+        js = (root / "root/www/luci-static/resources/smart_srun.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("^v?([0-9][%w%._%-]*)%-r?%d+$", schema)
+        self.assertIn('version = version:gsub("_", "-")', schema)
+        self.assertIn("^v?([0-9][A-Za-z0-9._-]*?)(?:-r?\\d+)?$", js)
+        self.assertIn("replace(/_/g, '-')", js)
 
 
 if __name__ == "__main__":

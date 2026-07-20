@@ -23,11 +23,15 @@ on:
         required: false
         default: "25.12.2"
       version:
-        description: "Version of this build."
-        required: false
+        description: "Base version of this beta build (for example: 1.3.0)."
+        required: true
         default: ""
+      beta:
+        description: "Beta number (bX)"
+        required: true
+        default: "1"
       publish_release:
-        description: "Publish to GitHub Release"
+        description: "Publish to GitHub pre-release"
         required: false
         default: "false"
 
@@ -48,7 +52,7 @@ jobs:
 
     steps:
       - name: Checkout plugin repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -84,9 +88,16 @@ jobs:
           echo "openwrt_version=${VER}" >> "$GITHUB_OUTPUT"
 
       - name: Apply version to Makefile
-        if: github.event.inputs.version != ''
         run: |
-          VERSION='${{ github.event.inputs.version }}'
+          BASE_VERSION='${{ github.event.inputs.version }}'
+          BASE_VERSION="${BASE_VERSION#v}"
+          if [ "${{ matrix.format }}" = "apk" ]; then
+            # apk-tools 只接受 _alpha/_beta/_pre/_rc/... 后缀，"_b<N>" 非法会导致
+            # mkpkg 报 "package version is invalid" 而整条预发布流水线无法发布。
+            VERSION="${BASE_VERSION}_beta${{ github.event.inputs.beta }}"
+          else
+            VERSION="${BASE_VERSION}-b${{ github.event.inputs.beta }}"
+          fi
           awk -v ver="$VERSION" '
             BEGIN { replaced=0 }
             /^PKG_VERSION:=/ { print "PKG_VERSION:=" ver; replaced=1; next }
@@ -97,7 +108,7 @@ jobs:
           grep -n '^PKG_VERSION:=' Makefile
 
       - name: Cache SDK archive
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: sdk.tar
           key: ${{ runner.os }}-${{ steps.sdk.outputs.sdk_name }}
@@ -113,7 +124,7 @@ jobs:
           mv "$SDK_DIR" openwrt
 
       - name: Cache OpenWrt downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             openwrt/dl
@@ -122,8 +133,13 @@ jobs:
       - name: Update and install required feeds
         working-directory: openwrt
         run: |
-          ./scripts/feeds update luci
-          ./scripts/feeds install -p luci -a
+          # 只装本插件真正依赖的 luci 包，不用 `-a` 全量安装：luci feed 分支 HEAD
+          # 全量安装时会 "recursive dependency detected" 直接中断 defconfig。
+          # luci-compat 会拉入旧式 lua LuCI 栈（lucihttp-lua、luci-lib-* 等），
+          # 其编译需要 lua.h，由 packages feed 的 lua/liblua 提供。
+          ./scripts/feeds update luci packages
+          ./scripts/feeds install -p luci luci-base luci-compat
+          ./scripts/feeds install lua
 
       - name: Inject package
         run: |
@@ -144,6 +160,11 @@ jobs:
           echo "CONFIG_PACKAGE_smart-srun=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-smart-srun=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-smart-srun-bundle=y" >> .config
+          # luci-compat 拉入的 lucihttp-lua 编译需要 lua.h。它 DEPENDS +liblua，
+          # 但依赖自动解析在 luci HEAD 上被 "recursive dependency" 打断，liblua
+          # 不会被选中编译，lua.h 也就不会 staging。显式选中 liblua 强制它先编译
+          # 并安装开发头文件。
+          echo "CONFIG_PACKAGE_liblua=y" >> .config
           make defconfig
 
       - name: Compile package
@@ -193,7 +214,7 @@ jobs:
           ls -lh artifacts/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smart-srun-${{ matrix.format }}
           path: artifacts/*.${{ matrix.format }}
@@ -204,7 +225,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout plugin repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -215,14 +236,21 @@ jobs:
             echo "version is required when publish_release=true"
             exit 1
           fi
-          VERSION='${{ github.event.inputs.version }}'
+          BASE_VERSION='${{ github.event.inputs.version }}'
+          BETA='${{ github.event.inputs.beta }}'
+          BASE_VERSION="${BASE_VERSION#v}"
+          VERSION="${BASE_VERSION}-b${BETA}"
+          if [[ ! "$BETA" =~ ^[0-9]+$ ]]; then
+            echo "unsafe beta number: $BETA"
+            exit 1
+          fi
           if [[ ! "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "$VERSION" == "." ]] || [[ "$VERSION" == ".." ]] || [[ "$VERSION" == -* ]]; then
             echo "unsafe version: $VERSION"
             exit 1
           fi
 
       - name: Download all built artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: smart-srun-*
@@ -230,14 +258,16 @@ jobs:
 
       - name: Prepare unified release assets
         run: |
-          VERSION='${{ github.event.inputs.version }}'
+          BASE_VERSION='${{ github.event.inputs.version }}'
+          VERSION="${BASE_VERSION#v}-b${{ github.event.inputs.beta }}"
           python scripts/release_assets.py prepare-unified \
             artifacts release-assets split-downloads "$VERSION" \
             > release-assets-metadata.json
 
       - name: Render pre-release notes from template
         run: |
-          VERSION='${{ github.event.inputs.version }}'
+          BASE_VERSION='${{ github.event.inputs.version }}'
+          VERSION="${BASE_VERSION#v}-b${{ github.event.inputs.beta }}"
           OWNER="${GITHUB_REPOSITORY%/*}"
           REPO="${GITHUB_REPOSITORY#*/}"
           OPENWRT_IPK='${{ github.event.inputs.openwrt_ipk_version }}'
@@ -256,7 +286,8 @@ jobs:
 
       - name: Publish split packages to downloads branch
         run: |
-          VERSION='${{ github.event.inputs.version }}'
+          BASE_VERSION='${{ github.event.inputs.version }}'
+          VERSION="${BASE_VERSION#v}-b${{ github.event.inputs.beta }}"
           SPLIT_ZIP_NAME="$(python -c "import json; print(json.load(open('release-assets-metadata.json', 'r', encoding='utf-8'))['split_zip_name'])")"
           WORKTREE_DIR="downloads-branch"
 
@@ -273,6 +304,7 @@ jobs:
 
           mkdir -p "$WORKTREE_DIR/${VERSION}"
           cp -f "split-downloads/${SPLIT_ZIP_NAME}" "$WORKTREE_DIR/${VERSION}/${SPLIT_ZIP_NAME}"
+          cp -f "split-downloads/${SPLIT_ZIP_NAME}.sha256" "$WORKTREE_DIR/${VERSION}/${SPLIT_ZIP_NAME}.sha256"
 
           git -C "$WORKTREE_DIR" add -- "${VERSION}/"
           if git -C "$WORKTREE_DIR" diff --cached --quiet; then
@@ -287,10 +319,10 @@ jobs:
           git worktree remove --force "$WORKTREE_DIR"
 
       - name: Publish pre-release and upload assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.event.inputs.version }}
-          name: ${{ github.event.inputs.version }}
+          tag_name: v${{ github.event.inputs.version }}-b${{ github.event.inputs.beta }}
+          name: v${{ github.event.inputs.version }}-b${{ github.event.inputs.beta }}
           files: |
             release-assets/*.ipk
             release-assets/*.apk

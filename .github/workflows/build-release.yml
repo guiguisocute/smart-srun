@@ -19,7 +19,7 @@ on:
         required: true
         default: "25.12.2"
       version:
-        description: "Version of this release build."
+        description: "Version of this release build (for example: 1.3.0)."
         required: true
         default: ""
 
@@ -40,7 +40,7 @@ jobs:
 
     steps:
       - name: Checkout plugin repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -78,6 +78,9 @@ jobs:
       - name: Apply version to Makefile
         run: |
           VERSION='${{ github.event.inputs.version }}'
+          if [ "${{ matrix.format }}" = "apk" ]; then
+            VERSION="${VERSION//-/_}"
+          fi
           awk -v ver="$VERSION" '
             BEGIN { replaced=0 }
             /^PKG_VERSION:=/ { print "PKG_VERSION:=" ver; replaced=1; next }
@@ -88,7 +91,7 @@ jobs:
           grep -n '^PKG_VERSION:=' Makefile
 
       - name: Cache SDK archive
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: sdk.tar
           key: ${{ runner.os }}-${{ steps.sdk.outputs.sdk_name }}
@@ -104,7 +107,7 @@ jobs:
           mv "$SDK_DIR" openwrt
 
       - name: Cache OpenWrt downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             openwrt/dl
@@ -113,8 +116,13 @@ jobs:
       - name: Update and install required feeds
         working-directory: openwrt
         run: |
-          ./scripts/feeds update luci
-          ./scripts/feeds install -p luci -a
+          # 只装本插件真正依赖的 luci 包，不用 `-a` 全量安装：luci feed 分支 HEAD
+          # 全量安装时会 "recursive dependency detected" 直接中断 defconfig。
+          # luci-compat 会拉入旧式 lua LuCI 栈（lucihttp-lua、luci-lib-* 等），
+          # 其编译需要 lua.h，由 packages feed 的 lua/liblua 提供。
+          ./scripts/feeds update luci packages
+          ./scripts/feeds install -p luci luci-base luci-compat
+          ./scripts/feeds install lua
 
       - name: Inject package
         run: |
@@ -135,6 +143,11 @@ jobs:
           echo "CONFIG_PACKAGE_smart-srun=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-smart-srun=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-smart-srun-bundle=y" >> .config
+          # luci-compat 拉入的 lucihttp-lua 编译需要 lua.h。它 DEPENDS +liblua，
+          # 但依赖自动解析在 luci HEAD 上被 "recursive dependency" 打断，liblua
+          # 不会被选中编译，lua.h 也就不会 staging。显式选中 liblua 强制它先编译
+          # 并安装开发头文件。
+          echo "CONFIG_PACKAGE_liblua=y" >> .config
           make defconfig
 
       - name: Compile package
@@ -184,7 +197,7 @@ jobs:
           ls -lh artifacts/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smart-srun-${{ matrix.format }}
           path: artifacts/*.${{ matrix.format }}
@@ -194,7 +207,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout plugin repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -208,7 +221,7 @@ jobs:
           fi
 
       - name: Download all built artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: smart-srun-*
@@ -259,6 +272,7 @@ jobs:
 
           mkdir -p "$WORKTREE_DIR/${VERSION}"
           cp -f "split-downloads/${SPLIT_ZIP_NAME}" "$WORKTREE_DIR/${VERSION}/${SPLIT_ZIP_NAME}"
+          cp -f "split-downloads/${SPLIT_ZIP_NAME}.sha256" "$WORKTREE_DIR/${VERSION}/${SPLIT_ZIP_NAME}.sha256"
 
           git -C "$WORKTREE_DIR" add -- "${VERSION}/"
           if git -C "$WORKTREE_DIR" diff --cached --quiet; then
@@ -273,10 +287,10 @@ jobs:
           git worktree remove --force "$WORKTREE_DIR"
 
       - name: Publish release and upload assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.event.inputs.version }}
-          name: ${{ github.event.inputs.version }}
+          tag_name: v${{ github.event.inputs.version }}
+          name: v${{ github.event.inputs.version }}
           files: |
             release-assets/*.ipk
             release-assets/*.apk

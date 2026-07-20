@@ -9,9 +9,10 @@ local schema = require "luci.smart_srun.schema"
 
 local STATE_FILE = "/var/run/smart_srun/state.json"
 local ACTION_FILE = "/var/run/smart_srun/action.json"
+local INFLIGHT_ACTION_FILE = "/var/run/smart_srun/action_inflight.json"
 local LOG_FILE = "/var/log/smart_srun.log"
 local restore_manual_guarded_enabled
-local ACTION_STALE_SECONDS = 20
+local ACTION_STALE_SECONDS = 90
 local LOG_TAIL_SOURCE_LINES = 2000
 
 local NETWORK_EVENTS = {
@@ -29,6 +30,8 @@ local NETWORK_EVENTS = {
     srun_online_result = true,
     ip_wait_progress = true,
     ip_wait_result = true,
+    dhcp_kick = true,
+    sta_iface_up = true,
     wifi_reload = true,
     sta_section_disabled = true,
     uci_wireless_update = true,
@@ -78,6 +81,45 @@ function index()
     entry({"admin", "services", "smart_srun", "status"}, call("action_status")).leaf = true
     entry({"admin", "services", "smart_srun", "enqueue"}, call("action_enqueue")).leaf = true
     entry({"admin", "services", "smart_srun", "log_tail"}, call("action_log_tail")).leaf = true
+    entry({"admin", "services", "smart_srun", "log_clear"}, call("action_log_clear")).leaf = true
+    entry({"admin", "services", "smart_srun", "update_check"}, call("action_update_check")).leaf = true
+    entry({"admin", "services", "smart_srun", "update_start"}, call("action_update_start")).leaf = true
+    entry({"admin", "services", "smart_srun", "update_status"}, call("action_update_status")).leaf = true
+    entry({"admin", "services", "smart_srun", "presets_refresh"}, call("action_presets_refresh")).leaf = true
+    entry({"admin", "services", "smart_srun", "detect_acid"}, call("action_detect_acid")).leaf = true
+end
+
+local function write_json_response(payload)
+    http.prepare_content("application/json")
+    http.write(jsonc.stringify(payload or {}) or "{}")
+end
+
+local function run_srunnet_json(args)
+    local output = sys.exec("/usr/bin/srunnet " .. args .. " 2>&1") or ""
+    local parsed = jsonc.parse(output)
+    if type(parsed) == "table" then
+        return parsed
+    end
+    return {
+        ok = false,
+        message = util.trim(output) ~= "" and util.trim(output) or "命令返回非 JSON 输出",
+    }
+end
+
+function action_update_check()
+    write_json_response(run_srunnet_json("update check"))
+end
+
+function action_update_start()
+    write_json_response(run_srunnet_json("update run --background"))
+end
+
+function action_update_status()
+    write_json_response(run_srunnet_json("update status"))
+end
+
+function action_presets_refresh()
+    write_json_response(run_srunnet_json("presets refresh"))
 end
 
 local function read_json_file(path)
@@ -98,7 +140,18 @@ local function write_json_file(path, payload)
     if dir and not fs.access(dir) then
         fs.mkdirr(dir)
     end
-    fs.writefile(path, (jsonc.stringify(payload) or "{}") .. "\n")
+    -- 原子写：先写临时文件再 rename，避免守护进程读到截断中的半截 JSON
+    -- （撕裂读会被当成空动作，进而误删刚入队的 action.json）。
+    local body = (jsonc.stringify(payload) or "{}") .. "\n"
+    local tmp = path .. ".tmp"
+    if fs.writefile(tmp, body) then
+        if not fs.rename(tmp, path) then
+            fs.writefile(path, body)
+            fs.remove(tmp)
+        end
+    else
+        fs.writefile(path, body)
+    end
 end
 
 local function remove_file(path)
@@ -141,6 +194,9 @@ local function handle_force_stop()
     sys.call("/etc/init.d/smart_srun stop >/dev/null 2>&1")
     local killed = force_stop_client_processes()
     remove_file(ACTION_FILE)
+    -- 强停是用户明确取消动作，必须一并清掉执行中标记，
+    -- 否则下次服务重启时守护进程会把被取消的动作重新排队执行。
+    remove_file(INFLIGHT_ACTION_FILE)
 
     local state = read_json_file(STATE_FILE)
     restore_manual_guarded_enabled(state)
@@ -162,7 +218,19 @@ local function current_pending_runtime_action()
     if queued ~= "" then
         local requested_at = tonumber(action.requested_at) or 0
         if requested_at > 0 and (os.time() - requested_at) >= ACTION_STALE_SECONDS then
+            -- 丢弃滞留动作时必须同步收敛 state，否则 action_result 会一直停在
+            -- pending，界面永远显示“待执行”（旧版正是这样卡死的）。
             remove_file(ACTION_FILE)
+            local state = read_json_file(STATE_FILE)
+            if tostring(state.action_result or "") == "pending" then
+                state.message = string.format("动作 %s 长时间未被守护进程接取，已取消，请重试", queued)
+                state.pending_action = ""
+                state.action_result = "error"
+                state.action_started_at = 0
+                state.last_action = queued
+                state.last_action_ts = os.time()
+                write_json_file(STATE_FILE, state)
+            end
         else
             return queued
         end
@@ -310,6 +378,30 @@ local function fv(name)
     return tostring(http.formvalue(name) or ""):match("^%s*(.-)%s*$")
 end
 
+function action_detect_acid()
+    local base_url = fv("base_url")
+    local payload = run_srunnet_json("detect acid " .. util.shellquote(base_url))
+    if type(payload) == "table" and payload.acid ~= nil then
+        payload.value = tostring(payload.acid or "")
+        payload.ac_id = tostring(payload.acid or "")
+    end
+    write_json_response(payload)
+end
+
+local function normalize_base_url(value)
+    local text = tostring(value or ""):match("^%s*(.-)%s*$")
+    if text == "" then return "" end
+    local origin = text:match("^(https?://[^/%?#]+)")
+    if origin then return origin end
+    if not text:match("^%a[%w+.-]*://") then
+        local host = text:match("^([^/%?#]+)")
+        if host and host ~= "" then
+            return "http://" .. host
+        end
+    end
+    return (text:gsub("/+$", ""))
+end
+
 function action_enqueue()
     local action = fv("action")
 
@@ -384,8 +476,12 @@ function action_enqueue()
                 operator = fv("operator"), operator_suffix = fv("operator_suffix"),
                 password = fv("password"),
                 access_mode = fv("access_mode"),
-                base_url = fv("base_url"), ac_id = fv("ac_id"),
+                base_url = normalize_base_url(fv("base_url")), ac_id = fv("ac_id"),
                 ssid = fv("ssid"), bssid = fv("bssid"), radio = fv("radio"),
+                n = fv("n"), type = fv("type"), enc = fv("enc"),
+                info_prefix = fv("info_prefix"),
+                double_stack = fv("double_stack"),
+                login_os = fv("login_os"), login_name = fv("login_name"),
             }
             if item.access_mode ~= "wired" then
                 item.access_mode = "wifi"
@@ -397,11 +493,8 @@ function action_enqueue()
             end
             if item.label == "" then
                 local suffix = item.operator_suffix or ""
-                local op = item.operator or ""
                 if suffix ~= "" and item.user_id ~= "" then
                     item.label = item.user_id .. "@" .. suffix
-                elseif item.user_id ~= "" and op ~= "" and op ~= "xn" then
-                    item.label = item.user_id .. "@" .. op
                 elseif item.user_id ~= "" then
                     item.label = item.user_id
                 else
@@ -412,7 +505,13 @@ function action_enqueue()
                 local idx = find_index_by_id(cfg.campus_accounts, id)
                 if idx then
                     item.id = id
-                    cfg.campus_accounts[idx] = item
+                    -- 浅合并：以现有账号为基底，仅覆盖弹窗提交的字段，保留 Python 侧
+                    -- 写入但表单未提交的字段（如 encryption/key 及未来新增字段），
+                    -- 避免每次在网页编辑都把这些字段清空。
+                    local merged = cfg.campus_accounts[idx]
+                    if type(merged) ~= "table" then merged = {} end
+                    for k, v in pairs(item) do merged[k] = v end
+                    cfg.campus_accounts[idx] = merged
                     ok = true; message = "已更新"; need_restart = true
                 else
                     ok = false; message = "未找到 ID: " .. id
@@ -443,7 +542,11 @@ function action_enqueue()
                 local idx = find_index_by_id(cfg.hotspot_profiles, id)
                 if idx then
                     item.id = id
-                    cfg.hotspot_profiles[idx] = item
+                    -- 同 edit_campus：浅合并保留表单未提交的既有字段。
+                    local merged = cfg.hotspot_profiles[idx]
+                    if type(merged) ~= "table" then merged = {} end
+                    for k, v in pairs(item) do merged[k] = v end
+                    cfg.hotspot_profiles[idx] = merged
                     ok = true; message = "已更新"; need_restart = true
                 else
                     ok = false; message = "未找到 ID: " .. id
@@ -500,7 +603,8 @@ function action_enqueue()
             local id = fv("id")
             if find_index_by_id(cfg.campus_accounts, id) then
                 cfg.default_campus_id = id
-                ok = true; message = "已设为默认账号，手动登录后生效"
+                cfg.active_campus_id = id
+                ok = true; message = "已设为当前默认账号"; need_restart = true
             else
                 ok = false; message = "未找到"
             end
@@ -511,7 +615,8 @@ function action_enqueue()
             local id = fv("id")
             if find_index_by_id(cfg.hotspot_profiles, id) then
                 cfg.default_hotspot_id = id
-                ok = true; message = "已设为默认热点，不会立即切换；如与当前连接不同，将显示为待生效"
+                cfg.active_hotspot_id = id
+                ok = true; message = "已设为当前默认热点"; need_restart = true
             else
                 ok = false; message = "未找到"
             end
@@ -536,11 +641,13 @@ local event_zh = {
     login_success       = "登录成功",
     login_failed        = "登录失败",
     retry_scheduled     = "即将重试",
+    retry_interrupted   = "重试被中断",
     retry_success       = "重试成功",
     retry_failed        = "重试失败",
     retry_stopped       = "停止重试",
     disconnect_detected = "检测到断线",
     status_check_error  = "状态检测异常",
+    online_account_mismatch = "在线账号与配置不符",
     logout_request      = "正在登出",
     logout_success      = "登出成功",
     logout_failed       = "登出失败",
@@ -553,6 +660,8 @@ local event_zh = {
     action_result       = "操作结果",
     action_started      = "开始执行动作",
     action_unknown      = "未知操作",
+    action_requeued     = "动作重新排队",
+    action_interrupted  = "动作已中断",
     switch_progress     = "切换进度",
     quiet_enter         = "进入夜间停用",
     quiet_exit          = "退出夜间停用",
@@ -571,6 +680,8 @@ local event_zh = {
     config_action_consumed = "操作已出队",
     config_loaded       = "配置已加载",
     status_query        = "状态查询",
+    update_status       = "更新状态",
+    presets_refresh     = "学校预设刷新",
     -- 重试与生命周期
     retry_cycle_start   = "进入重试循环",
     retry_cycle_end     = "重试循环结束",
@@ -587,6 +698,8 @@ local event_zh = {
     sta_section_disabled = "已禁用 STA 配置段",
     ip_wait_progress    = "等待 IPv4 中",
     ip_wait_result      = "IPv4 等待结果",
+    dhcp_kick           = "重新触发 DHCP",
+    sta_iface_up        = "拉起 STA 网络接口",
     runtime_mode_detect = "检测运行模式",
     profile_rebuild     = "重建无线配置",
     uci_wireless_update = "更新 UCI 无线配置",
@@ -1327,4 +1440,19 @@ function action_log_tail()
         channel = channel,
         ts = os.time(),
     }))
+end
+
+function action_log_clear()
+    local channel = http.formvalue("channel") or "plugin"
+    if channel ~= "plugin" then
+        write_json_response({ ok = false, message = "系统网络日志不能由插件清空", channel = channel })
+        return
+    end
+    local ok = fs.writefile(LOG_FILE, "")
+    write_json_response({
+        ok = ok and true or false,
+        message = ok and "日志已清空" or "清空日志失败",
+        channel = "plugin",
+        ts = os.time(),
+    })
 end

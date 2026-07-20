@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import importlib
 import io
 import json
@@ -205,7 +206,46 @@ class ReleaseAssetsTests(unittest.TestCase):
 
             self.assertEqual(
                 sorted(path.name for path in split_dir.iterdir()),
-                ["smart-srun-split-packages-v1.2.3.zip"],
+                [
+                    "smart-srun-split-packages-v1.2.3.zip",
+                    "smart-srun-split-packages-v1.2.3.zip.sha256",
+                ],
+            )
+
+    def test_prepare_release_outputs_writes_matching_sha256_sidecar(self):
+        release_assets = load_release_assets_module(self)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            artifacts_dir = temp_path / "artifacts"
+            release_dir = temp_path / "release"
+            split_dir = temp_path / "split"
+            artifacts_dir.mkdir()
+
+            (artifacts_dir / "luci-app-smart-srun-bundle_1.2.3_all.ipk").write_text(
+                "bundle", encoding="utf-8"
+            )
+            (artifacts_dir / "smart-srun_1.2.3_all.ipk").write_text(
+                "core", encoding="utf-8"
+            )
+            (artifacts_dir / "luci-app-smart-srun_1.2.3_all.ipk").write_text(
+                "luci", encoding="utf-8"
+            )
+
+            metadata = release_assets.prepare_release_outputs(
+                artifacts_dir, release_dir, split_dir, "v1.2.3"
+            )
+
+            self.assertEqual(
+                metadata["split_zip_sha256_name"],
+                "smart-srun-split-packages-v1.2.3.zip.sha256",
+            )
+            sidecar = split_dir / metadata["split_zip_sha256_name"]
+            zip_bytes = Path(metadata["split_zip_path"]).read_bytes()
+            expected = hashlib.sha256(zip_bytes).hexdigest()
+            self.assertEqual(
+                sidecar.read_text(encoding="utf-8"),
+                "%s  smart-srun-split-packages-v1.2.3.zip\n" % expected,
             )
 
     def test_prepare_release_outputs_rejects_ambiguous_bundle_matches(self):
@@ -661,6 +701,44 @@ class ReleaseAssetsUnifiedTests(unittest.TestCase):
                 "smart-srun-split-packages-v1.2.3.zip",
             )
 
+    def test_prerelease_workflow_requires_version_and_publishes_prerelease(self):
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github"
+            / "workflows"
+            / "build-prerelease.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('description: "Base version of this beta build', workflow)
+        self.assertIn('description: "Beta number (bX)"', workflow)
+        self.assertIn('VERSION="${BASE_VERSION#v}-b${{ github.event.inputs.beta }}"', workflow)
+        self.assertIn("required: true", workflow)
+        self.assertIn('description: "Publish to GitHub pre-release"', workflow)
+        self.assertIn("tag_name: v${{ github.event.inputs.version }}-b${{ github.event.inputs.beta }}", workflow)
+        self.assertIn("prerelease: true", workflow)
+
+    def test_workflows_use_apk_safe_versions_and_node24_actions(self):
+        root = Path(__file__).resolve().parents[1]
+        for name in ("build-release.yml", "build-prerelease.yml"):
+            workflow = (root / ".github" / "workflows" / name).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('if [ "${{ matrix.format }}" = "apk" ]; then', workflow)
+            self.assertIn("uses: actions/checkout@v7", workflow)
+            self.assertIn("uses: actions/cache@v6", workflow)
+            self.assertIn("uses: actions/upload-artifact@v7", workflow)
+            self.assertIn("uses: actions/download-artifact@v8", workflow)
+            self.assertIn("uses: softprops/action-gh-release@v3", workflow)
+        prerelease = (
+            root / ".github" / "workflows" / "build-prerelease.yml"
+        ).read_text(encoding="utf-8")
+        # apk-tools 只接受 _alpha/_beta/_pre/_rc 后缀；预发布 apk 版本必须用合法的
+        # _beta<N>，而不是曾导致 mkpkg "package version is invalid" 的 _b<N>。
+        self.assertIn(
+            'VERSION="${BASE_VERSION}_beta${{ github.event.inputs.beta }}"', prerelease
+        )
+        self.assertNotIn('VERSION="${VERSION//-/_}"', prerelease)
+
     def test_unified_prepare_zip_contains_all_four_split_packages(self):
         release_assets = load_release_assets_module(self)
 
@@ -755,8 +833,11 @@ class ReleaseAssetsUnifiedTests(unittest.TestCase):
                 ]),
             )
             self.assertEqual(
-                [path.name for path in split_dir.iterdir()],
-                ["smart-srun-split-packages-v1.2.3.zip"],
+                sorted(path.name for path in split_dir.iterdir()),
+                [
+                    "smart-srun-split-packages-v1.2.3.zip",
+                    "smart-srun-split-packages-v1.2.3.zip.sha256",
+                ],
             )
 
     def test_main_prepare_unified_subcommand(self):
