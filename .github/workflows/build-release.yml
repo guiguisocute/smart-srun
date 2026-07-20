@@ -116,8 +116,12 @@ jobs:
       - name: Update and install required feeds
         working-directory: openwrt
         run: |
-          ./scripts/feeds update luci
+          # lucihttp 的 liblucihttp-lua 子包 DEPENDS +liblua，liblua 来自 packages
+          # feed。luci feed 按分支 HEAD 拉取，新版本会让 defconfig 选中该 lua 绑定；
+          # 若只装 luci feed，liblua 缺失会导致 lucihttp 编译时找不到 lua.h 而中断。
+          ./scripts/feeds update luci packages
           ./scripts/feeds install -p luci -a
+          ./scripts/feeds install liblua
 
       - name: Inject package
         run: |
