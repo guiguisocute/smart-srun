@@ -182,9 +182,9 @@ class DefaultRuntime(LegacyProfileRuntimeAdapter):
 
 
 def _get_runtime_metadata(short_name):
-    if short_name == "default":
-        return schools.get_default_school_metadata()
-    metadata = schools.get_school_metadata(short_name)
+    # "default" 不再短路：schools/default.py 存在时优先取其元数据（默认配置），
+    # 模块缺失时才回落到内置基类元数据。
+    metadata = schools.get_school_metadata(short_name) if short_name else None
     if metadata:
         return metadata
     return schools.get_default_school_metadata()
@@ -206,19 +206,20 @@ def _finalize_runtime(runtime, metadata, runtime_type, source_file):
 
 def resolve_runtime(cfg):
     cfg = cfg or {}
-    short_name = str(cfg.get("school", "")).strip()
-    if not short_name or short_name == "default":
-        log(
-            "DEBUG",
-            "runtime_resolved",
-            school="default",
-            runtime_type="DefaultRuntime",
-            source="builtin",
-        )
-        return DefaultRuntime()
+    short_name = str(cfg.get("school", "")).strip() or "default"
 
     entry = schools.get_school_entry(short_name)
     if not entry:
+        # schools/default.py 缺失（如部署不完整）时退回内置默认实现。
+        if short_name == "default":
+            log(
+                "DEBUG",
+                "runtime_resolved",
+                school="default",
+                runtime_type="DefaultRuntime",
+                source="builtin",
+            )
+            return DefaultRuntime()
         raise LookupError("unknown school runtime: %s" % short_name)
 
     module = entry["module"]

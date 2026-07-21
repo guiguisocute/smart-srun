@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-07-19",
+  "updated_at": "2026-07-20",
   "source": "bundled fallback",
   "schools": [
     {
@@ -179,7 +179,7 @@
       "id": "nchu",
       "name": "南昌航空大学（前湖校区）",
       "status": "active",
-      "description": "环境信息来自 #22 真实抓包；电信运营商后缀尚未验证（捕获脚本上报值与实际不符），选择后请按提示手动确认。",
+      "description": "前湖 Wi-Fi 已在 2026-07 实测登录/登出（见 doc/nchu.md）。真实后缀为 stu.nchu.edu.cn（学生用户），勿使用油猴旧版误抓的 1-@stu.nchu.edu.cn。有线拨号未覆盖。其它套餐未验证前不要臆造 cmcc/ctcc。",
       "defaults": {
         "base_url": "http://10.1.88.4",
         "ac_id": "1",
@@ -192,23 +192,21 @@
         "enc": "srun_bx1",
         "info_prefix": "SRBX1",
         "double_stack": "0",
-        "os": "Mac OS",
-        "name": "Macintosh"
+        "os": "Windows 10",
+        "name": "Windows"
       },
       "operators": [
         {
-          "suffix": "??",
-          "label": "中国电信"
-        },
-        {
-          "suffix": "",
-          "label": "校园网"
+          "suffix": "stu.nchu.edu.cn",
+          "label": "学生用户"
         }
       ],
       "contributors": [
-        "@REALBochengWen"
+        "@REALBochengWen",
+        "@guiguisocute"
       ],
-      "source_issue": "https://github.com/matthewlu070111/smart-srun/issues/22"
+      "source_issue": "https://github.com/matthewlu070111/smart-srun/issues/22",
+      "doc_url": "https://github.com/matthewlu070111/smart-srun/blob/main/doc/nchu.md"
     },
     {
       "id": "hsyu",

@@ -9,6 +9,7 @@ local CONFIG_FILE = "/usr/lib/smart_srun/config.json"
 local STATE_FILE = "/var/run/smart_srun/state.json"
 local LOG_FILE = "/var/log/smart_srun.log"
 local PRESETS_CACHE_FILE = "/usr/lib/smart_srun/school_presets_cache.json"
+local USER_PRESETS_FILE = "/usr/lib/smart_srun/user_presets.json"
 local JS_ASSET_PATH = "/luci-static/resources/smart_srun.js"
 local GLOBAL_SCALAR_KEYS = schema.GLOBAL_SCALAR_KEYS
 local POINTER_KEYS = schema.POINTER_KEYS
@@ -575,22 +576,39 @@ s:tab("log", "日志")
 
 -- 学校配置选择器
 school = s:taboption("basic", ListValue, "school", "学校预设")
-if #schools == 0 then
-    school:value("jxnu", "默认配置")
-else
-    for _, sch in ipairs(schools) do
+-- "default" 是内置通用深澜运行时：不绑定任何学校，作为出厂默认值。
+school:value("default", "通用配置")
+local school_current = util.trim(tostring(cfg.school or ""))
+local school_listed = school_current == "" or school_current == "default"
+for _, sch in ipairs(schools) do
+    if tostring(sch.short_name or "") ~= "default" then
         school:value(sch.short_name, sch.name)
+        if tostring(sch.short_name or "") == school_current then
+            school_listed = true
+        end
     end
+end
+-- schools 列表加载失败或不含当前值时保留原值选项，避免一次保存把 school 悄悄改掉。
+if not school_listed then
+    school:value(school_current, school_current)
 end
 function school.cfgvalue()
-    return cfg.school or "jxnu"
+    local value = util.trim(tostring(cfg.school or ""))
+    if value == "" then
+        value = "default"
+    end
+    return value
 end
 function school.write(self, section, value)
-    local next_school = util.trim(value or "jxnu")
+    local next_school = util.trim(value or "")
     if next_school == "" then
-        next_school = "jxnu"
+        next_school = "default"
     end
-    if next_school ~= (cfg.school or "jxnu") then
+    local current_school = util.trim(tostring(cfg.school or ""))
+    if current_school == "" then
+        current_school = "default"
+    end
+    if next_school ~= current_school then
         school_changed_during_parse = true
         cfg[SCHOOL_EXTRA_KEY] = {}
         changed = true
@@ -598,7 +616,7 @@ function school.write(self, section, value)
     end
     set_value("school", next_school)
 end
-school.description = render_school_info_html(schools, cfg.school or "jxnu")
+school.description = render_school_info_html(schools, cfg.school or "default")
 
 if school_runtime_renderable then
     for idx, descriptor in ipairs(school_runtime_descriptors) do
@@ -728,6 +746,9 @@ function tables_html.cfgvalue()
     local default_hid = cfg.default_hotspot_id or ""
     local current_mode = tostring(state.current_mode or "")
     local online_account_label = tostring(state.online_account_label or "")
+    -- 部分学校（如南昌航空）rad_user_info 返回带后缀的完整账号，
+    -- 比对账号池条目时只取 @ 前主体
+    local online_account_main = online_account_label:match("^([^@]+)") or online_account_label
     local current_ssid = tostring(state.current_ssid or "")
     local current_bssid = tostring(state.current_bssid or "")
     local current_iface = tostring(state.current_iface or "")
@@ -750,7 +771,7 @@ function tables_html.cfgvalue()
             local campus_ssid = tostring(a.ssid or "")
             local campus_bssid = tostring(a.bssid or ""):lower()
             local access_mode = tostring(a.access_mode or "wifi")
-            local ssid_display = access_mode == "wired" and "有线" or tostring(a.ssid or "jxnu_stu")
+            local ssid_display = access_mode == "wired" and "有线" or tostring(a.ssid or "")
             local is_active = (aid == active_cid)
             local is_default = (aid == default_cid)
             local wifi_match = current_mode == "campus"
@@ -762,7 +783,7 @@ function tables_html.cfgvalue()
                 and current_campus_access_mode == "wired"
                 and access_mode == "wired"
                 and current_iface == "wan"
-            local identity_match = campus_user ~= "" and online_account_label == campus_user
+            local identity_match = campus_user ~= "" and online_account_main == campus_user
             local is_connected = false
             if access_mode == "wired" then
                 is_connected = wired_match and identity_match
@@ -786,7 +807,7 @@ function tables_html.cfgvalue()
             campus_rows = campus_rows .. '<tr class="tr">'
                 .. '<td class="td">' .. badge .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.label or "")) .. '</td>'
-                .. '<td class="td">' .. util.pcdata(tostring(a.base_url or "http://172.17.1.2")) .. '</td>'
+                .. '<td class="td">' .. util.pcdata(tostring(a.base_url or "")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.ac_id or "1")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.user_id or "")) .. '</td>'
                 .. '<td class="td">' .. util.pcdata(tostring(a.operator_suffix or "")) .. '</td>'
@@ -846,6 +867,11 @@ function tables_html.cfgvalue()
     local campus_json = jsonc.stringify(campus) or "[]"
     local hotspot_json = jsonc.stringify(hotspots) or "[]"
     local school_presets_json = jsonc.stringify(school_presets or {}) or "[]"
+    -- 用户自定义预设/运营商（路由器侧文件，跨设备共享）；解析失败时按空存储处理。
+    local user_presets_raw = fs.readfile(USER_PRESETS_FILE) or ""
+    if user_presets_raw == "" or type(jsonc.parse(user_presets_raw)) ~= "table" then
+        user_presets_raw = "{}"
+    end
 
     return [[
 <style>
@@ -891,6 +917,7 @@ function tables_html.cfgvalue()
 <textarea id="smart-hotspot-data" style="display:none;">]] .. util.pcdata(hotspot_json) .. [[</textarea>
 <textarea id="smart-radio-options" style="display:none;">]] .. util.pcdata(radio_options) .. [[</textarea>
 <textarea id="smart-school-preset-data" style="display:none;">]] .. util.pcdata(school_presets_json) .. [[</textarea>
+<textarea id="smart-user-preset-data" style="display:none;">]] .. util.pcdata(user_presets_raw) .. [[</textarea>
 ]]
 end
 
@@ -918,7 +945,7 @@ function retry_max_cooldown_seconds.validate(self, value)
     end
     return nil, "退避等待上限必须是大于等于 0 的数字"
 end
-retry_max_cooldown_seconds.placeholder = "600"
+retry_max_cooldown_seconds.placeholder = "60"
 bind_text(retry_max_cooldown_seconds, "retry_max_cooldown_seconds", validate_non_negative_number)
 
 switch_ready_timeout_seconds = s:taboption("advanced", Value, "switch_ready_timeout_seconds", "切网完成等待时间（秒）",

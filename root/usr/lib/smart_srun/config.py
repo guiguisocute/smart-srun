@@ -150,11 +150,14 @@ def _load_defaults():
         "force_logout_in_quiet": "1",
         "failover_enabled": "1",
         "backoff_enable": "1",
-        "backoff_max_retries": "0",
+        # max_retries=0（无限）会把守护 tick 永远困在重试循环里：状态快照
+        # 不刷新、guard 恢复不执行。限次后循环返回主 tick，下一轮重新进入
+        # 时还能再获得一次 stale_session_rebuild 机会。
+        "backoff_max_retries": "4",
         "backoff_initial_duration": "10",
-        "backoff_max_duration": "600",
+        "backoff_max_duration": "60",
         "retry_cooldown_seconds": "10",
-        "retry_max_cooldown_seconds": "600",
+        "retry_max_cooldown_seconds": "60",
         "switch_ready_timeout_seconds": "30",
         "manual_terminal_check_max_attempts": "5",
         "manual_terminal_check_interval_seconds": "2",
@@ -170,7 +173,7 @@ def _load_defaults():
         "n": "200",
         "type": "1",
         "enc": "srun_bx1",
-        "school": "jxnu",
+        "school": "default",
         "active_campus_id": "",
         "default_campus_id": "",
         "active_hotspot_id": "",
@@ -557,7 +560,7 @@ def build_school_runtime_luci_contract(cfg, inspection=None):
 
 
 def _get_school_metadata(cfg):
-    school_key = str((cfg or {}).get("school", "jxnu")).strip() or "jxnu"
+    school_key = str((cfg or {}).get("school", "default")).strip() or "default"
     try:
         import schools
 
@@ -605,6 +608,32 @@ def restore_manual_login_service_guard(clear_only=False):
     def _apply(payload):
         payload["manual_service_guard_active"] = False
         payload["manual_service_enabled_before"] = ""
+        payload["updated_at"] = int(time.time())
+        return payload
+
+    update_json_file(STATE_FILE, _apply)
+    return True, previous_enabled
+
+
+def restore_switch_service_guard():
+    """恢复被切网动作暂停的自动守护。
+
+    LuCI 的 switch_hotspot 在守护开启时会置 enabled=0 并在 state 里记
+    switch_service_guard_active；恢复不绑定某个具体动作，由守护进程在检测到
+    已回到校园网时调用（覆盖切回按钮、热点回退、手动登录重建三条路径）。
+    """
+    runtime_state = load_runtime_state()
+    if not _state_flag_enabled(runtime_state.get("switch_service_guard_active")):
+        return False, ""
+
+    previous_enabled = (
+        str(runtime_state.get("switch_service_enabled_before", "")).strip() or "1"
+    )
+    set_json_scalar_config("enabled", previous_enabled)
+
+    def _apply(payload):
+        payload["switch_service_guard_active"] = False
+        payload["switch_service_enabled_before"] = ""
         payload["updated_at"] = int(time.time())
         return payload
 
@@ -1048,12 +1077,12 @@ def resolve_active_items(cfg):
     cfg["user_id"] = str(campus.get("user_id", "")).strip()
     cfg["operator"] = normalize_operator_id(campus.get("operator", ""))
     cfg["password"] = str(campus.get("password", "")).strip()
-    cfg["base_url"] = normalize_base_url(campus.get("base_url", "http://172.17.1.2"))
+    cfg["base_url"] = normalize_base_url(campus.get("base_url", ""))
     cfg["campus_access_mode"] = normalize_campus_access_mode(
         campus.get("access_mode", "wifi")
     )
     cfg["ac_id"] = str(campus.get("ac_id", "1")).strip()
-    cfg["campus_ssid"] = str(campus.get("ssid", "jxnu_stu")).strip()
+    cfg["campus_ssid"] = str(campus.get("ssid", "")).strip()
     cfg["campus_bssid"] = str(campus.get("bssid", "")).strip()
     cfg["campus_radio"] = str(campus.get("radio", "")).strip()
     cfg["campus_encryption"] = normalize_wifi_encryption(
@@ -1174,6 +1203,19 @@ def load_config():
         except OSError:
             pass
 
+    # 默认运行时标识由历史的 "jxnu" 更名为 "default"，旧配置一次性落盘迁移。
+    if str(raw.get("school", "")).strip() == "jxnu":
+        raw["school"] = "default"
+        try:
+            save_json_raw_config(raw)
+            log(
+                "INFO",
+                "config_legacy_fix",
+                "school identifier 'jxnu' renamed to 'default'",
+            )
+        except OSError:
+            pass
+
     cfg = {}
     for key in GLOBAL_SCALAR_KEYS:
         default_val = DEFAULTS.get(key, "")
@@ -1200,7 +1242,7 @@ def load_config():
     if str(raw.get("retry_max_cooldown_seconds", "")).strip() == "":
         cfg["retry_max_cooldown_seconds"] = str(
             raw.get(
-                "backoff_max_duration", cfg.get("retry_max_cooldown_seconds", "600")
+                "backoff_max_duration", cfg.get("retry_max_cooldown_seconds", "60")
             )
         ).strip()
 
@@ -1208,18 +1250,18 @@ def load_config():
 
     _sanitize_school(cfg)
 
-    cfg["backoff_max_retries"] = parse_non_negative_int(cfg["backoff_max_retries"], 0)
+    cfg["backoff_max_retries"] = parse_non_negative_int(cfg["backoff_max_retries"], 4)
     cfg["backoff_initial_duration"] = parse_non_negative_float(
         cfg["backoff_initial_duration"], 10.0
     )
     cfg["backoff_max_duration"] = parse_non_negative_float(
-        cfg["backoff_max_duration"], 600.0
+        cfg["backoff_max_duration"], 60.0
     )
     cfg["retry_cooldown_seconds"] = parse_non_negative_float(
         cfg["retry_cooldown_seconds"], 10.0
     )
     cfg["retry_max_cooldown_seconds"] = parse_non_negative_float(
-        cfg["retry_max_cooldown_seconds"], 600.0
+        cfg["retry_max_cooldown_seconds"], 60.0
     )
     cfg["switch_ready_timeout_seconds"] = parse_non_negative_int(
         cfg["switch_ready_timeout_seconds"], 30
@@ -1361,8 +1403,8 @@ def get_retry_cooldown_seconds(cfg):
 
 
 def get_retry_max_cooldown_seconds(cfg):
-    value = max(float(cfg.get("retry_max_cooldown_seconds", 600.0)), 0.0)
-    return value if value > 0 else 600.0
+    value = max(float(cfg.get("retry_max_cooldown_seconds", 60.0)), 0.0)
+    return value if value > 0 else 60.0
 
 
 def get_switch_ready_timeout_seconds(cfg):

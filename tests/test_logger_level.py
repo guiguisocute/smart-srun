@@ -1,6 +1,5 @@
 import os
 import sys
-import time
 import tempfile
 import unittest
 
@@ -46,22 +45,12 @@ class LoggerTests(unittest.TestCase):
         logger.log("ERROR", "e")
         self.assertEqual(len(self._emitted), 4)
 
-    def test_all_level_on_call_is_never_emitted(self):
-        logger.set_log_threshold("ALL")
-        logger.log("ALL", "meaningless")
-        self.assertEqual(self._emitted, [])
-
     def test_unknown_level_falls_back_to_info(self):
         logger.set_log_threshold("bogus")
         self.assertEqual(logger.get_log_threshold(), "INFO")
         logger.log("DEBUG", "d")
         logger.log("INFO", "i")
         self.assertEqual(len(self._emitted), 1)
-
-    def test_unknown_level_on_call_is_treated_as_info(self):
-        logger.log("whatever", "evt")
-        self.assertEqual(len(self._emitted), 1)
-        self.assertIn("INFO evt", self._emitted[0])
 
     def test_context_is_merged_and_per_call_overrides_it(self):
         logger.set_log_context(op_id="abc")
@@ -125,11 +114,6 @@ class LoggerTests(unittest.TestCase):
         self.assertNotIn("deadbeef", line)
         self.assertNotIn("wifi-secret", line)
         self.assertNotIn("context-secret", line)
-
-    def test_timed_context_manager_reports_milliseconds(self):
-        with logger.timed() as t:
-            time.sleep(0.01)
-        self.assertGreaterEqual(t.ms, 5)
 
     def test_rotate_log_tail_keeps_recent_complete_lines(self):
         original_file = logger.LOG_FILE

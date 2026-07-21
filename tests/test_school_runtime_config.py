@@ -42,7 +42,7 @@ class SchoolRuntimeConfigTests(unittest.TestCase):
                 "password": "pw",
                 "base_url": PORTAL_ORIGIN,
                 "ac_id": "1",
-                "campus_ssid": "jxnu_stu",
+                "campus_ssid": "campus_wifi",
             }
         )
 
@@ -64,7 +64,7 @@ class SchoolRuntimeConfigTests(unittest.TestCase):
         ]
         raw_cfg = {
             "enabled": "1",
-            "school": "jxnu",
+            "school": "default",
             "school_extra": {
                 "domain": "override.example",
                 "ignored": "drop-me",
@@ -279,7 +279,7 @@ class SchoolRuntimeConfigTests(unittest.TestCase):
                     "base_url": PORTAL_ORIGIN,
                     "ac_id": "1",
                     "access_mode": "wifi",
-                    "ssid": "jxnu_stu",
+                    "ssid": "campus_wifi",
                     "encryption": "none",
                 }
             ],
@@ -316,7 +316,7 @@ class SchoolRuntimeConfigTests(unittest.TestCase):
                     "base_url": PORTAL_ORIGIN,
                     "ac_id": "1",
                     "access_mode": "wifi",
-                    "ssid": "jxnu_stu",
+                    "ssid": "campus_wifi",
                     "encryption": "none",
                 }
             ],
@@ -475,7 +475,7 @@ class SchoolRuntimeConfigTests(unittest.TestCase):
 
     def test_luci_contract_normalizes_bool_descriptor_defaults(self):
         contract = config.build_school_runtime_luci_contract(
-            {"school": "jxnu", config.SCHOOL_EXTRA_KEY: {}},
+            {"school": "default", config.SCHOOL_EXTRA_KEY: {}},
             {
                 "runtime_type": "runtime_class",
                 "runtime_api_version": 1,
@@ -495,7 +495,7 @@ class SchoolRuntimeConfigTests(unittest.TestCase):
 
     def test_luci_contract_keeps_int_descriptor_default_empty_when_missing(self):
         contract = config.build_school_runtime_luci_contract(
-            {"school": "jxnu", config.SCHOOL_EXTRA_KEY: {}},
+            {"school": "default", config.SCHOOL_EXTRA_KEY: {}},
             {
                 "runtime_type": "runtime_class",
                 "runtime_api_version": 1,

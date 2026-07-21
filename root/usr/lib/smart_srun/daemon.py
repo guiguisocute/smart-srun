@@ -33,6 +33,7 @@ from config import (
     requeue_runtime_action,
     save_runtime_status,
     reconcile_manual_login_service_guard,
+    restore_switch_service_guard,
     set_log_context,
     timed,
     wifi_key_required,
@@ -451,7 +452,10 @@ def _daemon_tick_active(cfg, state, interval):
 
         if online_now:
             expected_main = str(cfg["username"]).split("@", 1)[0]
-            if online_name and expected_main and online_name != expected_main:
+            # 与 parse_online_status 同规则：比对去后缀主体，避免南昌航空等
+            # rad_user_info 返回带后缀账号的学校误报账号不符。
+            online_main = online_name.split("@", 1)[0] if online_name else ""
+            if online_name and expected_main and online_main != expected_main:
                 # 别的账号占着本机会话（例如残留的第三方登录脚本、他人经
                 # 路由器网页认证）。srun 对已在线 IP 的重复登录会被拒绝，
                 # 强行抢登只会反复失败，这里只告警一次让用户能发现。
@@ -581,7 +585,7 @@ def run_daemon(runtime=None):
         "daemon_start",
         "daemon entering main loop",
         pid=os.getpid(),
-        school=startup_cfg.get("school", "jxnu"),
+        school=startup_cfg.get("school", "default"),
         enabled=startup_cfg.get("enabled", "0"),
         interval=startup_cfg.get("interval", "60"),
         failover=startup_cfg.get("failover_enabled", "0"),
@@ -626,6 +630,21 @@ def run_daemon(runtime=None):
 
         _refresh_school_presets_after_online(runtime_state)
         state["presets_refresh_checked_at"] = runtime_state.get("presets_refresh_checked_at", 0)
+
+        # 切网暂停的自动守护：只要已回到校园网就恢复（不依赖具体动作路径，
+        # 覆盖切回按钮、热点无网回退、手动登录重建校园连接三种情况）。
+        if runtime_state.get("switch_service_guard_active") and (
+            detect_runtime_mode(cfg) == "campus"
+        ):
+            restored, previous_enabled = restore_switch_service_guard()
+            if restored:
+                log(
+                    "INFO",
+                    "switch_guard_restored",
+                    "auto guard restored after returning to campus",
+                    previous_enabled=previous_enabled,
+                )
+                cfg = load_config()
 
         if cfg["enabled"] != "1":
             state.update(_make_daemon_state())
@@ -741,7 +760,7 @@ def _show_runtime_log(cfg):
         )
         or "(none)"
     )
-    school_name = str(inspect_payload.get("short_name") or cfg.get("school") or "jxnu")
+    school_name = str(inspect_payload.get("short_name") or cfg.get("school") or "default")
     runtime_type = str(inspect_payload.get("runtime_type") or "unknown")
     runtime_api_version = inspect_payload.get("runtime_api_version")
     if runtime_api_version in (None, ""):
@@ -887,7 +906,7 @@ def _show_config():
     """Print a human-readable configuration summary."""
     raw = load_json_raw_config()
 
-    school = raw.get("school", "jxnu")
+    school = raw.get("school", "default")
     enabled = raw.get("enabled", "0") == "1"
     interval = raw.get("interval", "60")
 
@@ -1102,7 +1121,7 @@ def _get_current_profile():
         import schools
 
         raw = load_json_raw_config()
-        school_key = str(raw.get("school", "jxnu")).strip()
+        school_key = str(raw.get("school", "default")).strip()
         return schools.get_profile(school_key)
     except Exception:
         return None
@@ -1204,7 +1223,7 @@ def _interactive_campus(existing=None):
     fields["access_mode"] = _prompt(
         "接入方式", item.get("access_mode", "wifi"), choices=["wifi", "wired"]
     )
-    fields["base_url"] = _prompt("认证地址", item.get("base_url", "http://172.17.1.2"))
+    fields["base_url"] = _prompt("认证地址", item.get("base_url", ""))
     fields["ac_id"] = _prompt("AC_ID", item.get("ac_id", "1"))
     fields["n"] = _prompt("高级登录参数 n", item.get("n", ""))
     fields["type"] = _prompt("高级登录参数 type", item.get("type", ""))
@@ -1218,11 +1237,11 @@ def _interactive_campus(existing=None):
     fields["login_os"] = _prompt("高级登录参数 os", item.get("login_os", ""))
     fields["login_name"] = _prompt("高级登录参数 name", item.get("login_name", ""))
     if fields["access_mode"] != "wired":
-        fields["ssid"] = _prompt("校园网 SSID", item.get("ssid", "jxnu_stu"))
+        fields["ssid"] = _prompt("校园网 SSID", item.get("ssid", ""))
         fields["bssid"] = _prompt("BSSID（留空不锁定）", item.get("bssid", ""))
         fields["radio"] = _prompt("频段（留空自动）", item.get("radio", ""))
     else:
-        fields["ssid"] = item.get("ssid", "jxnu_stu")
+        fields["ssid"] = item.get("ssid", "")
         fields["bssid"] = item.get("bssid", "")
         fields["radio"] = item.get("radio", "")
 

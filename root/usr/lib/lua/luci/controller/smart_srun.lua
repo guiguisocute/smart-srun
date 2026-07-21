@@ -11,6 +11,8 @@ local STATE_FILE = "/var/run/smart_srun/state.json"
 local ACTION_FILE = "/var/run/smart_srun/action.json"
 local INFLIGHT_ACTION_FILE = "/var/run/smart_srun/action_inflight.json"
 local LOG_FILE = "/var/log/smart_srun.log"
+local USER_PRESETS_FILE = "/usr/lib/smart_srun/user_presets.json"
+local USER_PRESETS_MAX_ITEMS = 50
 local restore_manual_guarded_enabled
 local ACTION_STALE_SECONDS = 90
 local LOG_TAIL_SOURCE_LINES = 2000
@@ -86,6 +88,7 @@ function index()
     entry({"admin", "services", "smart_srun", "update_start"}, call("action_update_start")).leaf = true
     entry({"admin", "services", "smart_srun", "update_status"}, call("action_update_status")).leaf = true
     entry({"admin", "services", "smart_srun", "presets_refresh"}, call("action_presets_refresh")).leaf = true
+    entry({"admin", "services", "smart_srun", "user_presets_set"}, call("action_user_presets_set")).leaf = true
     entry({"admin", "services", "smart_srun", "detect_acid"}, call("action_detect_acid")).leaf = true
 end
 
@@ -378,6 +381,122 @@ local function fv(name)
     return tostring(http.formvalue(name) or ""):match("^%s*(.-)%s*$")
 end
 
+-- 用户自定义预设/运营商存储（/usr/lib/smart_srun/user_presets.json）。
+-- 由浏览器整份提交、此处白名单清洗后落盘，跨设备共享；凭据类字段一律不收。
+
+local function sanitize_user_operator(raw)
+    if type(raw) ~= "table" then
+        return nil
+    end
+    local item = {
+        suffix = tostring(raw.suffix or ""),
+        label = tostring(raw.label or ""),
+    }
+    if item.suffix == "" and item.label == "" then
+        return nil
+    end
+    return item
+end
+
+local function sanitize_user_preset(raw)
+    if type(raw) ~= "table" then
+        return nil
+    end
+    local name = util.trim(tostring(raw.name or ""))
+    local short_name = util.trim(tostring(raw.short_name or ""))
+    if name == "" or not short_name:match("^custom%-[%w%-]+$") then
+        return nil
+    end
+    local defaults_raw = type(raw.defaults) == "table" and raw.defaults or {}
+    local shape_raw = type(raw.observed_login_shape) == "table" and raw.observed_login_shape or {}
+    local item = {
+        short_name = short_name,
+        name = name,
+        custom = true,
+        defaults = {
+            base_url = tostring(defaults_raw.base_url or ""),
+            ac_id = tostring(defaults_raw.ac_id or ""),
+            ssid = tostring(defaults_raw.ssid or ""),
+            access_mode = tostring(defaults_raw.access_mode or ""),
+        },
+        observed_login_shape = {
+            n = tostring(shape_raw.n or ""),
+            type = tostring(shape_raw.type or ""),
+            enc = tostring(shape_raw.enc or ""),
+            info_prefix = tostring(shape_raw.info_prefix or ""),
+            double_stack = tostring(shape_raw.double_stack or ""),
+            os = tostring(shape_raw.os or ""),
+            name = tostring(shape_raw.name or ""),
+        },
+        operators = {},
+    }
+    if type(raw.operators) == "table" then
+        for _, op in ipairs(raw.operators) do
+            if #item.operators >= USER_PRESETS_MAX_ITEMS then break end
+            local so = sanitize_user_operator(op)
+            if so then
+                item.operators[#item.operators + 1] = so
+            end
+        end
+    end
+    return item
+end
+
+local function sanitize_user_preset_store(raw)
+    local store = { schema_version = 1, presets = {}, operators = {} }
+    if type(raw) ~= "table" then
+        return store
+    end
+    local seen = {}
+    if type(raw.presets) == "table" then
+        for _, p in ipairs(raw.presets) do
+            if #store.presets >= USER_PRESETS_MAX_ITEMS then break end
+            local item = sanitize_user_preset(p)
+            if item and not seen[item.short_name] then
+                seen[item.short_name] = true
+                store.presets[#store.presets + 1] = item
+            end
+        end
+    end
+    if type(raw.operators) == "table" then
+        for _, op in ipairs(raw.operators) do
+            if #store.operators >= USER_PRESETS_MAX_ITEMS then break end
+            local so = sanitize_user_operator(op)
+            if so then
+                store.operators[#store.operators + 1] = so
+            end
+        end
+    end
+    return store
+end
+
+function action_user_presets_set()
+    if http.getenv("REQUEST_METHOD") ~= "POST" then
+        write_json_response({ ok = false, message = "仅支持 POST" })
+        return
+    end
+    local parsed = jsonc.parse(tostring(http.formvalue("data") or ""))
+    if type(parsed) ~= "table" then
+        write_json_response({ ok = false, message = "数据格式错误" })
+        return
+    end
+    local store = sanitize_user_preset_store(parsed)
+    local write_ok = true
+    schema.with_file_lock(USER_PRESETS_FILE, function()
+        write_json_file(USER_PRESETS_FILE, store)
+        write_ok = fs.access(USER_PRESETS_FILE)
+    end)
+    if not write_ok then
+        write_json_response({ ok = false, message = "写入 user_presets.json 失败" })
+        return
+    end
+    write_json_response({
+        ok = true,
+        presets = #store.presets,
+        operators = #store.operators,
+    })
+end
+
 function action_detect_acid()
     local base_url = fv("base_url")
     local payload = run_srunnet_json("detect acid " .. util.shellquote(base_url))
@@ -407,8 +526,8 @@ function action_enqueue()
 
     -- 原有的 daemon action 处理
     local daemon_actions = {
-        switch_hotspot = "已提交切到热点请求，并已停用自动守护服务",
-        switch_campus = "已提交切回校园网请求，并已停用自动守护服务",
+        switch_hotspot = "已提交切到热点请求，自动守护已暂停",
+        switch_campus = "已提交切回校园网请求",
         manual_login = "已提交手动登录请求",
         manual_logout = "已提交手动登出请求",
     }
@@ -435,18 +554,28 @@ function action_enqueue()
 
         local requested_at = os.time()
         local state = read_json_file(STATE_FILE)
-        if action == "switch_hotspot" or action == "switch_campus" then
+        local action_message = daemon_actions[action]
+        if action == "switch_hotspot" then
+            -- 热点模式下自动守护会抢着重连校园网，切热点时暂停守护；
+            -- 仅当守护原本开启时记录 guard，守护进程检测到回到校园网后恢复。
             update_config_json(function(cfg)
+                if tostring(cfg.enabled or "0") == "1" then
+                    state.switch_service_guard_active = true
+                    state.switch_service_enabled_before = "1"
+                end
                 cfg.enabled = "0"
                 return true, cfg
             end)
             state.enabled = false
+        elseif action == "switch_campus" and state.switch_service_guard_active then
+            -- 恢复由守护进程在确认回到校园网后执行（含热点回退路径），这里只提示
+            action_message = action_message .. "，切换完成后将恢复自动守护并自动认证"
         end
         write_json_file(ACTION_FILE, {
             action = action,
             requested_at = requested_at,
         })
-        state.message = daemon_actions[action]
+        state.message = action_message
         state.pending_action = action
         state.last_action = action
         state.last_action_ts = requested_at
@@ -456,7 +585,7 @@ function action_enqueue()
         write_json_file(STATE_FILE, state)
         sys.call("(/etc/init.d/smart_srun restart >/dev/null 2>&1) >/dev/null 2>&1 &")
         http.prepare_content("application/json")
-        http.write(jsonc.stringify({ ok = true, message = daemon_actions[action], requested_at = requested_at }))
+        http.write(jsonc.stringify({ ok = true, message = action_message, requested_at = requested_at }))
         return
     end
 
@@ -673,6 +802,8 @@ local event_zh = {
     switch_hotspot_done = "已切换到热点",
     switch_hotspot_no_ip = "热点未获取IP",
     hotspot_failback    = "热点回退",
+    switch_guard_restored = "已恢复自动守护",
+    stale_session_rebuild = "清理残留会话并重建连接",
     config_migrated     = "配置已迁移",
     config_legacy_fix   = "修复遗留状态",
     config_default_applied = "应用默认配置",

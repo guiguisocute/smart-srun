@@ -32,7 +32,7 @@ local function load_defaults()
         parsed = {}
     end
     if parsed.school == nil then
-        parsed.school = "jxnu"
+        parsed.school = "default"
     end
 
     local defaults = {}

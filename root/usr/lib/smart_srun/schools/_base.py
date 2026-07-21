@@ -187,7 +187,10 @@ class SchoolProfile:
             return False, "", msg
         online_name = str(data.get("user_name", "")).strip()
         expected_main = expected_username.split("@", 1)[0]
-        if online_name and online_name == expected_main:
+        # 部分学校（如南昌航空）rad_user_info 返回带后缀的完整账号
+        # （user@stu.xxx.edu.cn），主体一致即视为同一账号。
+        online_main = online_name.split("@", 1)[0]
+        if online_name and online_main == expected_main:
             return True, online_name, "在线"
         if online_name:
             return True, online_name, "在线账号: %s" % online_name

@@ -116,8 +116,13 @@ jobs:
       - name: Update and install required feeds
         working-directory: openwrt
         run: |
-          ./scripts/feeds update luci
-          ./scripts/feeds install -p luci -a
+          # 只装本插件真正依赖的 luci 包，不用 `-a` 全量安装：luci feed 分支 HEAD
+          # 全量安装时会 "recursive dependency detected" 直接中断 defconfig。
+          # luci-compat 会拉入旧式 lua LuCI 栈（lucihttp-lua、luci-lib-* 等），
+          # 其编译需要 lua.h，由 packages feed 的 lua/liblua 提供。
+          ./scripts/feeds update luci packages
+          ./scripts/feeds install -p luci luci-base luci-compat
+          ./scripts/feeds install lua
 
       - name: Inject package
         run: |
@@ -138,6 +143,11 @@ jobs:
           echo "CONFIG_PACKAGE_smart-srun=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-smart-srun=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-smart-srun-bundle=y" >> .config
+          # luci-compat 拉入的 lucihttp-lua 编译需要 lua.h。它 DEPENDS +liblua，
+          # 但依赖自动解析在 luci HEAD 上被 "recursive dependency" 打断，liblua
+          # 不会被选中编译，lua.h 也就不会 staging。显式选中 liblua 强制它先编译
+          # 并安装开发头文件。
+          echo "CONFIG_PACKAGE_liblua=y" >> .config
           make defconfig
 
       - name: Compile package
