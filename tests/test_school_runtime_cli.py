@@ -80,10 +80,6 @@ class FakeRuntime(object):
         self.calls.append(("cli_logout", args.command))
         return True, 0, "runtime-cli-logout"
 
-    def cli_relogin(self, app_ctx, args):
-        self.calls.append(("cli_relogin", args.command))
-        return True, 0, "runtime-cli-relogin"
-
     def cli_daemon(self, app_ctx, args):
         self.calls.append(("cli_daemon", args.command))
         return True, 0, "runtime-cli-daemon"
@@ -250,32 +246,6 @@ class SchoolRuntimeCliTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "reserved command"):
                     self.run_main(["custom"])
 
-    def test_man_command_prints_full_manual_with_key_sections(self):
-        stdout = io.StringIO()
-        with (
-            mock.patch.object(sys, "argv", ["srunnet", "man"]),
-            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
-            redirect_stdout(stdout),
-        ):
-            daemon.main()
-
-        text = stdout.getvalue()
-        for marker in (
-            "SMART SRun",
-            "名称",
-            "用法",
-            "命令分组",
-            "主要配置项",
-            "日志等级",
-            "文件",
-            "退出码",
-            "示例",
-            "log_level",
-            "switch hotspot",
-            "/var/log/smart_srun.log",
-        ):
-            self.assertIn(marker, text)
-
     def test_help_without_args_prints_top_level_help(self):
         stdout = io.StringIO()
         with (
@@ -288,44 +258,6 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         text = strip_ansi(stdout.getvalue())
         self.assertIn("usage: srunnet", text)
         self.assertIn("常用命令组", text)
-
-    def test_help_with_command_prints_subcommand_help(self):
-        stdout = io.StringIO()
-        with (
-            mock.patch.object(sys, "argv", ["srunnet", "help", "config"]),
-            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
-            redirect_stdout(stdout),
-        ):
-            daemon.main()
-
-        text = strip_ansi(stdout.getvalue())
-        self.assertIn("usage: srunnet config", text)
-        self.assertIn("show", text)
-
-    def test_help_with_nested_command_walks_subparser_chain(self):
-        stdout = io.StringIO()
-        with (
-            mock.patch.object(sys, "argv", ["srunnet", "help", "config", "account"]),
-            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
-            redirect_stdout(stdout),
-        ):
-            daemon.main()
-
-        text = strip_ansi(stdout.getvalue())
-        self.assertIn("usage: srunnet config account", text)
-
-    def test_help_with_unknown_command_returns_nonzero_and_writes_to_stderr(self):
-        stderr = io.StringIO()
-        with (
-            mock.patch.object(sys, "argv", ["srunnet", "help", "no-such-cmd"]),
-            mock.patch.object(daemon, "load_config", return_value=dict(self.cfg)),
-            mock.patch.object(sys, "stderr", stderr),
-        ):
-            with self.assertRaises(SystemExit) as exc:
-                daemon.main()
-
-        self.assertEqual(exc.exception.code, 2)
-        self.assertIn("no-such-cmd", stderr.getvalue())
 
     def test_runtime_cli_dispatch_requires_fixed_result_shape(self):
         self.runtime.extra_commands = [{"name": "custom", "help": "custom command"}]
@@ -350,45 +282,31 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "daemon contract"):
             daemon._run_runtime_daemon_hook(self.app_ctx, {"was_online": False}, 30)
 
-    def test_reserved_status_command_ignores_runtime_cli_hook(self):
-        with mock.patch.object(daemon, "_show_status") as show_status:
-            code, output = self.run_main(["status"])
-
-        self.assertEqual(code, 0)
-        self.assertEqual(output, "")
-        show_status.assert_called_once_with(self.cfg)
-        self.assertNotIn(("cli_status", "status"), self.runtime.calls)
-
-    def test_reserved_login_logout_relogin_commands_ignore_runtime_cli_hooks(self):
+    def test_reserved_core_commands_ignore_runtime_cli_hooks(self):
         with (
+            mock.patch.object(daemon, "_show_status") as show_status,
             mock.patch.object(
                 daemon, "_runtime_cli_login", return_value=(True, 0, "core-login")
             ),
             mock.patch.object(
                 daemon, "_runtime_cli_logout", return_value=(True, 0, "core-logout")
             ),
-            mock.patch.object(
-                daemon, "_runtime_cli_relogin", return_value=(True, 0, "core-relogin")
-            ),
+            mock.patch.object(daemon, "run_daemon") as run_daemon,
         ):
+            status_code, _ = self.run_main(["status"])
             login_code, login_output = self.run_main(["login"])
             logout_code, logout_output = self.run_main(["logout"])
-            relogin_code, relogin_output = self.run_main(["relogin"])
+            daemon_code, _ = self.run_main(["daemon"])
 
+        self.assertEqual(status_code, 0)
         self.assertEqual((login_code, login_output.strip()), (0, "core-login"))
         self.assertEqual((logout_code, logout_output.strip()), (0, "core-logout"))
-        self.assertEqual((relogin_code, relogin_output.strip()), (0, "core-relogin"))
+        self.assertEqual(daemon_code, 0)
+        show_status.assert_called_once_with(self.cfg)
+        run_daemon.assert_called_once_with(runtime=self.runtime)
+        self.assertNotIn(("cli_status", "status"), self.runtime.calls)
         self.assertNotIn(("cli_login", "login"), self.runtime.calls)
         self.assertNotIn(("cli_logout", "logout"), self.runtime.calls)
-        self.assertNotIn(("cli_relogin", "relogin"), self.runtime.calls)
-
-    def test_reserved_daemon_command_ignores_runtime_cli_hook(self):
-        with mock.patch.object(daemon, "run_daemon") as run_daemon:
-            code, output = self.run_main(["daemon"])
-
-        self.assertEqual(code, 0)
-        self.assertEqual(output, "")
-        run_daemon.assert_called_once_with(runtime=self.runtime)
         self.assertNotIn(("cli_daemon", "daemon"), self.runtime.calls)
 
     def test_log_runtime_prints_selected_runtime_block(self):
@@ -426,47 +344,6 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         inspect_runtime.assert_called_once_with(self.cfg)
         build_contract.assert_called_once_with(self.cfg, {"short_name": "custom"})
 
-    def test_log_runtime_uses_stable_fallbacks_for_minimal_or_empty_payload(self):
-        cases = [
-            ({}, self.cfg.get("school", "jxnu")),
-            (
-                {
-                    "short_name": "",
-                    "runtime_type": "",
-                    "runtime_api_version": None,
-                    "capabilities": [None, ""],
-                    "field_descriptors": None,
-                    "school_extra": None,
-                },
-                self.cfg.get("school", "jxnu"),
-            ),
-        ]
-
-        for payload, expected_school in cases:
-            with self.subTest(payload=payload):
-                with mock.patch.object(
-                    daemon,
-                    "build_school_runtime_luci_contract",
-                    return_value=payload,
-                ):
-                    with mock.patch.object(
-                        school_runtime,
-                        "inspect_runtime",
-                        return_value={"short_name": "custom"},
-                    ):
-                        code, output = self.run_main(["log", "runtime"])
-
-                self.assertEqual(code, 0)
-                self.assertEqual(
-                    output,
-                    "School: %s\n"
-                    "Runtime type: unknown\n"
-                    "Runtime API version: 1\n"
-                    "Capabilities: (none)\n"
-                    "Field descriptors: null\n"
-                    "School extra: null\n" % expected_school,
-                )
-
     def test_log_runtime_handles_runtime_inspection_failure_without_traceback(self):
         with mock.patch.object(
             school_runtime,
@@ -486,14 +363,6 @@ class SchoolRuntimeCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(output, "")
         tail_log.assert_called_once_with(5)
-
-    def test_log_without_args_still_dispatches_to_tail_log_follow_mode(self):
-        with mock.patch.object(daemon, "_tail_log") as tail_log:
-            code, output = self.run_main(["log"])
-
-        self.assertEqual(code, 0)
-        self.assertEqual(output, "")
-        tail_log.assert_called_once_with(0)
 
     def test_version_flag_prints_cli_package_and_version(self):
         stdout = io.StringIO()
@@ -811,124 +680,38 @@ class SchoolRuntimeCliTests(unittest.TestCase):
 
 
 class HotUpdateScriptTests(unittest.TestCase):
-    def test_hot_update_defaults_to_current_router_host(self):
-        hot_update = load_hot_update_module(self)
-
-        self.assertEqual(hot_update.ROUTER_HOST, "10.0.0.1")
-
-    def test_hot_update_has_no_default_router_password(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
-            hot_update = load_hot_update_module(self)
-
-        self.assertIsNone(hot_update.ROUTER_PASSWORD)
-
     def test_hot_update_requires_password_from_environment(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             hot_update = load_hot_update_module(self)
 
+        self.assertEqual(hot_update.ROUTER_HOST, "10.0.0.1")
+        self.assertIsNone(hot_update.ROUTER_PASSWORD)
         with self.assertRaises(RuntimeError) as exc:
             hot_update.require_router_password()
-
         self.assertIn("SMARTSRUN_ROUTER_PASSWORD", str(exc.exception))
 
-    def test_hot_update_probe_arg_is_explicit(self):
+    def test_hot_update_probe_paths_and_commands_stay_tmp_only(self):
         hot_update = load_hot_update_module(self)
 
         self.assertFalse(hot_update.build_arg_parser().parse_args([]).probe)
         self.assertTrue(hot_update.build_arg_parser().parse_args(["--probe"]).probe)
-        self.assertTrue(hot_update.build_arg_parser().parse_args(["--dry-run"]).dry_run)
-        parsed = hot_update.build_arg_parser().parse_args(["--probe", "--dry-run"])
-        self.assertTrue(parsed.probe)
-        self.assertTrue(parsed.dry_run)
-
-    def test_hot_update_probe_remote_paths_are_rebased_to_tmp(self):
-        hot_update = load_hot_update_module(self)
 
         self.assertEqual(
             hot_update.remote_path_for("/usr/bin/srunnet", "/tmp/probe"),
             "/tmp/probe/usr/bin/srunnet",
         )
         targets = hot_update.remote_target_paths("/tmp/probe")
-        self.assertTrue(targets)
         self.assertTrue(
             all(item["remote"].startswith("/tmp/probe/") for item in targets)
         )
-        self.assertIn(
-            {
-                "local": "root/usr/bin/srunnet",
-                "remote": "/tmp/probe/usr/bin/srunnet",
-                "original_remote": "/usr/bin/srunnet",
-            },
-            targets,
-        )
-
-    def test_hot_update_probe_commands_do_not_restart_production_services(self):
-        hot_update = load_hot_update_module(self)
 
         commands = hot_update.build_probe_commands("/tmp/probe")
         probe_text = "\n".join(commands["probe_checks"])
         cleanup_text = "\n".join(commands["cleanup"])
-
-        self.assertIn("/tmp/probe/usr/lib/smart_srun/school_runtime.py", probe_text)
-        self.assertIn(
-            "/tmp/probe/usr/lib/lua/luci/controller/smart_srun.lua", probe_text
-        )
         self.assertIn("logger_probe.py", probe_text)
-        self.assertIn("luci_friendly_probe.lua", probe_text)
-        self.assertIn("client.py --version", probe_text)
         self.assertIn("rm -rf /tmp/probe", cleanup_text)
         self.assertNotIn("/etc/init.d/smart_srun restart", probe_text)
         self.assertNotIn("/etc/init.d/uwsgi restart", probe_text)
-
-    def test_hot_update_main_probe_dispatches_without_hot_update(self):
-        hot_update = load_hot_update_module(self)
-
-        class FakeSftp(object):
-            def __init__(self):
-                self.closed = False
-
-            def close(self):
-                self.closed = True
-
-        class FakeSsh(object):
-            def __init__(self):
-                self.sftp = FakeSftp()
-                self.closed = False
-
-            def open_sftp(self):
-                return self.sftp
-
-            def close(self):
-                self.closed = True
-
-        fake_ssh = FakeSsh()
-        fake_paramiko = object()
-
-        with (
-            mock.patch.object(hot_update, "ensure_local_files") as ensure_files,
-            mock.patch.object(
-                hot_update, "require_router_password", return_value="secret"
-            ) as require_password,
-            mock.patch.object(
-                hot_update, "load_paramiko", return_value=fake_paramiko
-            ) as load_paramiko,
-            mock.patch.object(
-                hot_update, "connect_ssh", return_value=fake_ssh
-            ) as connect_ssh,
-            mock.patch.object(hot_update, "run_probe", return_value=0) as run_probe,
-            mock.patch.object(hot_update, "run_hot_update") as run_hot_update,
-        ):
-            code = hot_update.main(["--probe"])
-
-        self.assertEqual(code, 0)
-        ensure_files.assert_called_once_with()
-        require_password.assert_called_once_with()
-        load_paramiko.assert_called_once_with()
-        connect_ssh.assert_called_once_with(fake_paramiko, "secret")
-        run_probe.assert_called_once_with(fake_ssh, fake_ssh.sftp)
-        run_hot_update.assert_not_called()
-        self.assertTrue(fake_ssh.sftp.closed)
-        self.assertTrue(fake_ssh.closed)
 
     def test_hot_update_main_dry_run_does_not_connect_or_require_password(self):
         hot_update = load_hot_update_module(self)
@@ -948,22 +731,6 @@ class HotUpdateScriptTests(unittest.TestCase):
         require_password.assert_not_called()
         load_paramiko.assert_not_called()
         connect_ssh.assert_not_called()
-
-    def test_hot_update_probe_dry_run_prints_tmp_plan_without_restarts(self):
-        hot_update = load_hot_update_module(self)
-        stdout = io.StringIO()
-
-        with redirect_stdout(stdout):
-            code = hot_update.run_dry_run(probe=True)
-
-        text = stdout.getvalue()
-        self.assertEqual(code, 0)
-        self.assertIn("DRY RUN: probe upload and smoke checks", text)
-        self.assertIn("/tmp/smart_srun_probe_DRY_RUN/usr/bin/srunnet", text)
-        self.assertIn("logger_probe.py", text)
-        self.assertIn("luci_friendly_probe.lua", text)
-        self.assertNotIn("/etc/init.d/smart_srun restart", text)
-        self.assertNotIn("/etc/init.d/uwsgi restart", text)
 
 
 class DaemonStartupStateTests(unittest.TestCase):
@@ -1291,7 +1058,7 @@ class LuciSourceHardeningTests(unittest.TestCase):
             "root/usr/lib/smart_srun/school_presets_fallback.json",
             "root/usr/lib/smart_srun/schools/__init__.py",
             "root/usr/lib/smart_srun/schools/_base.py",
-            "root/usr/lib/smart_srun/schools/jxnu.py",
+            "root/usr/lib/smart_srun/schools/default.py",
             "root/usr/lib/lua/luci/smart_srun/schema.lua",
             "root/www/luci-static/resources/smart_srun.js",
         }

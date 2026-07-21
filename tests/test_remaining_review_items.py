@@ -273,28 +273,6 @@ class WirelessSanitizationTests(unittest.TestCase):
         self.assertIn(["uci", "set", "wireless.sta0.ssid=campusssid"], calls)
         self.assertIn(["uci", "set", "wireless.sta0.key=pass"], calls)
 
-    def test_set_sta_profile_uci_strips_newlines_from_bssid(self):
-        calls = []
-
-        def fake_run(cmd):
-            calls.append(cmd)
-            return True, ""
-
-        with mock.patch.object(wireless, "run_cmd", side_effect=fake_run):
-            ok, message = wireless._set_sta_profile_uci(
-                "sta0",
-                {
-                    "ssid": "campus-ssid",
-                    "bssid": "aa:bb\n:cc:dd:ee:ff",
-                    "encryption": "none",
-                    "key": "",
-                },
-            )
-
-        self.assertTrue(ok)
-        self.assertEqual(message, "")
-        self.assertIn(["uci", "set", "wireless.sta0.bssid=aa:bb:cc:dd:ee:ff"], calls)
-
     def test_create_sta_on_radio_strips_newlines_from_written_profile_values(self):
         calls = []
 
@@ -310,7 +288,7 @@ class WirelessSanitizationTests(unittest.TestCase):
                 "wwan",
                 {
                     "ssid": "guest\nnet",
-                    "bssid": "",
+                    "bssid": "aa:bb\n:cc:dd:ee:ff",
                     "encryption": "psk2",
                     "key": "to\x00ken\n42",
                 },
@@ -319,6 +297,7 @@ class WirelessSanitizationTests(unittest.TestCase):
         self.assertEqual(section, "sta0")
         self.assertEqual(message, "")
         self.assertIn(["uci", "set", "wireless.sta0.ssid=guestnet"], calls)
+        self.assertIn(["uci", "set", "wireless.sta0.bssid=aa:bb:cc:dd:ee:ff"], calls)
         self.assertIn(["uci", "set", "wireless.sta0.key=token42"], calls)
 
 

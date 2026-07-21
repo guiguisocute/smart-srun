@@ -2,6 +2,7 @@ import importlib
 import sys
 import textwrap
 import unittest
+from unittest import mock
 
 from pathlib import Path
 
@@ -58,17 +59,17 @@ class SchoolRuntimeLoaderTests(unittest.TestCase):
     def test_list_schools_keeps_legacy_metadata_shape(self):
         schools = importlib.import_module("schools")
 
-        jxnu = None
+        default = None
         for item in schools.list_schools():
-            if item["short_name"] == "jxnu":
-                jxnu = item
+            if item["short_name"] == "default":
+                default = item
                 break
 
-        self.assertIsNotNone(jxnu)
-        self.assertEqual(jxnu["name"], "默认配置")
-        self.assertIn("description", jxnu)
-        self.assertIn("contributors", jxnu)
-        self.assertIn("operators", jxnu)
+        self.assertIsNotNone(default)
+        self.assertEqual(default["name"], "默认配置")
+        self.assertIn("description", default)
+        self.assertIn("contributors", default)
+        self.assertIn("operators", default)
 
     def test_list_schools_uses_school_metadata_without_building_runtime(self):
         with TemporarySchoolModule(
@@ -218,8 +219,19 @@ class SchoolRuntimeLoaderTests(unittest.TestCase):
         default_runtime = school_runtime.resolve_runtime({})
         explicit_default = school_runtime.resolve_runtime({"school": "default"})
 
-        self.assertIsInstance(default_runtime, school_runtime.DefaultRuntime)
-        self.assertIsInstance(explicit_default, school_runtime.DefaultRuntime)
+        for runtime in (default_runtime, explicit_default):
+            self.assertEqual(runtime.SHORT_NAME, "default")
+            self.assertEqual(runtime.NAME, "默认配置")
+
+    def test_resolve_runtime_uses_builtin_default_when_module_missing(self):
+        school_runtime = load_school_runtime_module(self)
+
+        with mock.patch.object(
+            school_runtime.schools, "get_school_entry", return_value=None
+        ):
+            runtime = school_runtime.resolve_runtime({"school": "default"})
+
+        self.assertIsInstance(runtime, school_runtime.DefaultRuntime)
 
     def test_srun_auth_get_profile_rejects_invalid_explicit_school(self):
         srun_auth = load_srun_auth_module(self)
@@ -227,11 +239,11 @@ class SchoolRuntimeLoaderTests(unittest.TestCase):
         with self.assertRaises(LookupError):
             srun_auth.get_profile({"school": "missing-school"})
 
-    def test_get_default_profile_prefers_jxnu_when_available(self):
+    def test_get_default_profile_prefers_default_module_when_available(self):
         schools = importlib.import_module("schools")
         default_profile = schools.get_default_profile()
 
-        self.assertEqual(default_profile.SHORT_NAME, "jxnu")
+        self.assertEqual(default_profile.SHORT_NAME, "default")
         self.assertEqual(default_profile.NAME, "默认配置")
 
     def test_inspect_runtime_exposes_runtime_contract_details(self):

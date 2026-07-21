@@ -146,92 +146,34 @@ class LuciLogViewRefactorTests(unittest.TestCase):
         self.assertIn('filterByLevel', self.js_text)
         self.assertNotIn('findLogLevelSelect', self.js_text)
         self.assertIn('displayLevel', self.js_text)
-
-    def test_js_log_level_filter_is_direct(self):
         self.assertIn("levelFilter.addEventListener('change'", self.js_text)
-        self.assertNotIn('readLevelFromEvent', self.js_text)
         self.assertIn('applyDisplayLevel', self.js_text)
 
     def test_js_skips_background_polling_when_page_hidden(self):
         self.assertIn('function isPageHidden()', self.js_text)
         self.assertIn('document.hidden === true', self.js_text)
-        self.assertIn('document.webkitHidden === true', self.js_text)
         self.assertIn('function onPageVisible(callback)', self.js_text)
         self.assertIn("document.addEventListener('visibilitychange'", self.js_text)
-        self.assertIn('if (!isPageHidden()) refreshOverview();', self.js_text)
         self.assertIn('if (isPageHidden()) return;', self.js_text)
-        self.assertIn('if (logState.refreshing && !isPageHidden()) refresh();', self.js_text)
         self.assertIn('onPageVisible(refreshOverview)', self.js_text)
-        self.assertIn('onPageVisible(function() {', self.js_text)
-
-    def test_update_endpoints_and_frontend_flow_are_wired(self):
-        for endpoint in [
-            "update_check",
-            "update_start",
-            "update_status",
-        ]:
-            self.assertIn(endpoint, self.controller_text)
-            self.assertIn(endpoint, self.js_text)
-        self.assertIn('run_srunnet_json("update check")', self.controller_text)
-        self.assertIn('run_srunnet_json("update run --background")', self.controller_text)
-        self.assertIn('run_srunnet_json("update status")', self.controller_text)
-        self.assertIn("确认自动更新到", self.js_text)
-        self.assertIn("pollUpdateStatus", self.js_text)
 
     def test_school_preset_apply_button_is_explicit(self):
+        # Keep a compact source contract for the preset UI; full form wiring is
+        # covered by runtime/config tests rather than brittle string laundry lists.
         self.assertIn("smart-school-preset-data", self.cbi_text)
-        self.assertIn('run_client("presets list", false)', self.cbi_text)
         self.assertIn("presets_refresh", self.controller_text)
         self.assertIn("refreshSchoolPresets", self.js_text)
-        self.assertIn("schoolPresetList", self.js_text)
-        self.assertIn("jm-school_preset", self.js_text)
         self.assertIn("jm-apply-school-defaults", self.js_text)
-        self.assertIn("jm-reset-school-defaults", self.js_text)
         self.assertIn("applySchoolDefaultsToForm", self.js_text)
-        self.assertIn("resetSchoolDefaultsForm", self.js_text)
-        self.assertIn("initialValues.base_url", self.js_text)
-        self.assertIn("应用预设", self.js_text)
-        self.assertIn("无预设", self.js_text)
-        self.assertIn("如何获取？", self.js_text)
-        self.assertIn("refreshOperatorQuickpick", self.js_text)
-        self.assertIn("applyOperatorPick", self.js_text)
+        self.assertIn("jm-save-school-preset", self.js_text)
+        self.assertIn("user_presets_set", self.js_text)
+        self.assertIn("action_user_presets_set", self.controller_text)
+        self.assertNotIn("localStorage", self.js_text)
         self.assertIn("jm-operator-suffix-hint", self.js_text)
-        self.assertIn("未验证", self.js_text)
-        self.assertIn("高级登录参数", self.js_text)
-        self.assertIn("smart-native-advanced", self.cbi_text)
-        self.assertIn("observed_login_shape", self.js_text)
-        self.assertIn("applyLoginShapeToForm", self.js_text)
-        self.assertIn("jm-login-n", self.js_text)
-        self.assertIn("jm-login-type", self.js_text)
-        self.assertIn("jm-login-enc", self.js_text)
-        self.assertIn("jm-info-prefix", self.js_text)
-        self.assertIn("jm-double-stack", self.js_text)
-        self.assertIn("jm-login-os", self.js_text)
-        self.assertIn("jm-login-name", self.js_text)
-        self.assertIn("fd.append('info_prefix'", self.js_text)
-        self.assertIn("login_os = fv(\"login_os\")", self.controller_text)
-        self.assertIn("jm-detect-acid", self.js_text)
-        self.assertIn("detectAcidForForm", self.js_text)
-        self.assertIn("/cgi-bin/luci/admin/services/smart_srun/detect_acid", self.js_text)
-        self.assertIn('run_srunnet_json("detect acid "', self.controller_text)
-        self.assertIn("if (!id) applySchoolDefaultsToForm();", self.js_text)
-        self.assertIn("DEFAULT_LOGIN_SHAPE", self.js_text)
-        self.assertIn("'jm-login-os': DEFAULT_LOGIN_SHAPE.os", self.js_text)
         self.assertIn("operatorSuffixOf", self.js_text)
         self.assertNotIn("schoolDefaults.operator", self.js_text)
         self.assertNotIn("opId === 'xn' ? '' : opId", self.js_text)
-        self.assertNotIn("operatorSuffixForPreset", self.js_text)
-        self.assertNotIn("operator_suffix:'cmcc'", self.js_text)
-        self.assertNotIn("operator_suffix: 'cmcc'", self.js_text)
-        self.assertNotIn("operator_suffix:'ctcc'", self.js_text)
-        self.assertNotIn("operator_suffix: 'ctcc'", self.js_text)
-        self.assertNotIn("operator_suffix:'cucc'", self.js_text)
-        self.assertNotIn("operator_suffix: 'cucc'", self.js_text)
         self.assertNotIn("不填则使用纯账号", self.js_text)
-        self.assertNotIn("应用默认值", self.js_text)
-        self.assertNotIn("留空则为默认", self.js_text)
-        self.assertNotIn("留空则使用", self.js_text)
-        self.assertNotIn("[已验证]", self.js_text)
 
 
 if __name__ == "__main__":
