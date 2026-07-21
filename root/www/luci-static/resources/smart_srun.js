@@ -660,11 +660,18 @@
       }
     }
 
-    // 应用预设时把该预设的 operators 合并进下拉（预填写，不覆盖已有条目）。
-    function mergePresetOperators(preset) {
+    // 应用预设时用该校 operators 整体替换下拉中的「预设预填」项。
+    // 上一所学校留下的 label/suffix（如南航「学生用户」）必须清掉，否则会串到
+    // 下一所学校；用户自建（custom）条目仍保留（与「复位」一致）。
+    function replacePresetOperators(preset) {
+      var kept = [];
+      for (var i = 0; i < operatorChoices.length; i++) {
+        if (operatorChoices[i].custom) kept.push(operatorChoices[i]);
+      }
+      operatorChoices = kept;
       var ops = (preset && preset.operators && preset.operators.length) ? preset.operators : [];
-      for (var i = 0; i < ops.length; i++) {
-        addOperatorChoice(operatorSuffixOf(ops[i]), String(ops[i].label || ''), false);
+      for (var j = 0; j < ops.length; j++) {
+        addOperatorChoice(operatorSuffixOf(ops[j]), String(ops[j].label || ''), false);
       }
       return ops;
     }
@@ -875,14 +882,22 @@
         if (!target) continue;
         target.value = (schoolDefaults[key] !== undefined && schoolDefaults[key] !== null) ? String(schoolDefaults[key]) : '';
       }
-      var nextOperators = mergePresetOperators(preset);
+      var nextOperators = replacePresetOperators(preset);
       var nextSuffix = nextOperators.length ? operatorSuffixOf(nextOperators[0]) : '';
       renderOperatorChoices(nextOperators.length ? nextSuffix : undefined);
       applyLoginShapeToForm(loginShape);
       presetApplied = true;
-      // 应用预设时，若该预设提供了运营商，则用第一个运营商联动填充后缀；否则保持手填。
+      // 应用预设时：有运营商则用第一个联动填充后缀；无运营商则清空后缀，避免残留旧校值。
       if (nextOperators.length) {
         applyOperatorPick();
+      } else {
+        var emptySuffix = document.getElementById('jm-operator_suffix');
+        if (emptySuffix) emptySuffix.value = '';
+        var emptyHint = document.getElementById('jm-operator-suffix-hint');
+        if (emptyHint) {
+          emptyHint.textContent = '';
+          emptyHint.style.display = 'none';
+        }
       }
       if (schoolDefaults.access_mode) {
         var modeSel = document.getElementById('jm-access_mode');

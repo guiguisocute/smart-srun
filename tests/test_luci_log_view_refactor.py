@@ -175,6 +175,19 @@ class LuciLogViewRefactorTests(unittest.TestCase):
         self.assertNotIn("opId === 'xn' ? '' : opId", self.js_text)
         self.assertNotIn("不填则使用纯账号", self.js_text)
 
+    def test_apply_school_preset_replaces_operator_choices_not_merges(self):
+        # Switching school A -> school B must drop A's operators (e.g. nchu
+        # "学生用户"/stu.nchu.edu.cn) and install B's list; custom entries stay.
+        self.assertIn("function replacePresetOperators(preset)", self.js_text)
+        self.assertIn("var nextOperators = replacePresetOperators(preset)", self.js_text)
+        self.assertNotIn("function mergePresetOperators", self.js_text)
+        self.assertNotIn("mergePresetOperators(preset)", self.js_text)
+        # Non-custom rows are discarded before re-adding the new preset ops.
+        self.assertIn("if (operatorChoices[i].custom) kept.push(operatorChoices[i])", self.js_text)
+        self.assertIn("operatorChoices = kept", self.js_text)
+        # Empty operator list from a preset must clear leftover suffix text.
+        self.assertIn("if (emptySuffix) emptySuffix.value = ''", self.js_text)
+
 
 if __name__ == "__main__":
     unittest.main()
