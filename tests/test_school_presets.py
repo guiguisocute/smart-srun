@@ -30,7 +30,6 @@ from _portal_urls import (
     PORTAL_IPV4_ORIGIN,
     PORTAL_ORIGIN,
     PORTAL_ACID4_THEME_URL,
-    PROJECT_DEFAULT_BASE_URL,
 )
 
 
@@ -280,7 +279,8 @@ class SchoolPresetTests(unittest.TestCase):
         schools = importlib.import_module("schools")
 
         listed = {item["short_name"]: item for item in schools.list_schools()}
-        self.assertIn("jxnu", listed)
+        self.assertIn("default", listed)
+        self.assertNotIn("jxnu", listed)
         self.assertNotIn("lnut-hld", listed)
         self.assertNotIn("qdu", listed)
 
@@ -309,7 +309,9 @@ class SchoolPresetConfigTests(unittest.TestCase):
         with mock.patch("schools.get_school_metadata", return_value=metadata):
             resolved = config.resolve_active_items(cfg)
 
-        self.assertEqual(resolved["base_url"], PROJECT_DEFAULT_BASE_URL)
+        # 预设 defaults 不落入解析结果；账号缺 base_url 时不再回落到 jxnu 网关，
+        # 而是保持为空，交给用户显式填写。
+        self.assertEqual(resolved["base_url"], "")
         self.assertEqual(resolved["ac_id"], "1")
         self.assertEqual(resolved["campus_access_mode"], "wifi")
         self.assertEqual(resolved["username"], "20260001")

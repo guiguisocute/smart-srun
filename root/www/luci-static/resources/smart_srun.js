@@ -430,20 +430,9 @@
   }
 
   function schoolPresetList() {
+    // 不再内置任何学校的兜底预设：预设列表完全来自后端（远端/缓存/打包 fallback）。
     var items = readJson('smart-school-preset-data', []);
-    return items && items.length ? items : [{
-      short_name: 'jxnu',
-      name: '江西师范大学',
-      doc_url: 'https://github.com/matthewlu070111/smart-srun/blob/main/doc/jxnu.md',
-      defaults: { base_url: 'http://172.17.1.2', ac_id: '1', ssid: 'jxnu_stu' },
-      observed_login_shape: { n: '200', type: '1', enc: 'srun_bx1', info_prefix: 'SRBX1', double_stack: '0', os: 'Windows 10', name: 'Windows' },
-      operators: [
-        {suffix:'cmcc', label:'中国移动'},
-        {suffix:'ctcc', label:'中国电信'},
-        {suffix:'cucc', label:'中国联通'},
-        {suffix:'', label:'校园网'}
-      ]
-    }];
+    return (items && items.length) ? items : [];
   }
 
   function refreshSchoolPresets() {
@@ -468,16 +457,71 @@
   };
 
   function findSchoolPreset(id) {
-    var items = schoolPresetList();
-    var wanted = String(id || 'jxnu');
-    if (wanted === '__none__') return null;
+    // 无预设（空/哨兵值）或找不到时一律返回 null，不再回落到任何特定学校。
+    // 查找范围包含用户自定义预设（路由器侧 user_presets.json）。
+    var wanted = String(id || '');
+    if (!wanted || wanted === '__none__') return null;
+    var items = schoolPresetList().concat(loadCustomPresets());
     for (var i = 0; i < items.length; i++) {
       if (String(items[i].short_name || '') === wanted) return items[i];
     }
-    for (var j = 0; j < items.length; j++) {
-      if (String(items[j].short_name || '') === 'jxnu') return items[j];
-    }
-    return items[0] || null;
+    return null;
+  }
+
+  // 用户自定义预设/运营商存储：真身在路由器侧 /usr/lib/smart_srun/user_presets.json，
+  // 页面渲染时经 #smart-user-preset-data 注入，增删后整份 POST 回写，跨设备共享。
+  var USER_PRESETS_SET_URL = '/cgi-bin/luci/admin/services/smart_srun/user_presets_set';
+  var userPresetStore = { presets: [], operators: [] };
+
+  function normalizeUserStore(raw) {
+    var store = { presets: [], operators: [] };
+    if (raw && raw.presets && raw.presets.length) store.presets = raw.presets;
+    if (raw && raw.operators && raw.operators.length) store.operators = raw.operators;
+    return store;
+  }
+
+  function initUserPresetStore() {
+    userPresetStore = normalizeUserStore(readJson('smart-user-preset-data', null));
+  }
+
+  function pushUserPresetStore(callback) {
+    var fd = new FormData();
+    fd.append('data', JSON.stringify(userPresetStore));
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', USER_PRESETS_SET_URL, true);
+    xhr.onload = function() {
+      var data = {};
+      try { data = JSON.parse(xhr.responseText || '{}'); } catch (e) {}
+      if (xhr.status === 200 && data.ok) {
+        if (callback) callback(null);
+      } else {
+        if (callback) callback(new Error((data && data.message) ? data.message : ('HTTP ' + xhr.status)));
+      }
+    };
+    xhr.onerror = function() {
+      if (callback) callback(new Error('网络错误'));
+    };
+    xhr.send(fd);
+  }
+
+  // 返回存储内的原数组引用：调用方就地增删后调 pushUserPresetStore 落盘。
+  function loadCustomPresets() {
+    return userPresetStore.presets;
+  }
+
+  function loadCustomOperators() {
+    return userPresetStore.operators;
+  }
+
+  function saveCustomOperators(ops) {
+    userPresetStore.operators = ops || [];
+    pushUserPresetStore(function(err) {
+      if (err) alert('运营商列表已在本页生效，但保存到路由器失败：' + err.message);
+    });
+  }
+
+  function isCustomPresetId(id) {
+    return String(id || '').indexOf('custom-') === 0;
   }
 
   function radioOptionsMarkup() {
@@ -529,22 +573,18 @@
     modalEditId = id;
     var item = id ? findById(campusData, id) : {};
     var presets = schoolPresetList();
+    var customPresets = loadCustomPresets();
     var NO_PRESET_ID = '__none__';
-    var selectedPresetId = 'jxnu';
-    var selectedPreset = findSchoolPreset(selectedPresetId);
+    // 默认不选任何学校预设：预设只负责预填写，所有字段都由用户决定。
+    var selectedPresetId = NO_PRESET_ID;
+    var selectedPreset = null;
     var presetApplied = false;
-    var defaultOperators = [
-      {suffix:'cmcc', label:'中国移动'},
-      {suffix:'ctcc', label:'中国电信'},
-      {suffix:'cucc', label:'中国联通'},
-      {suffix:'', label:'校园网'}
-    ];
     var initialValues = {
       label: item.label || '',
       user_id: item.user_id || '',
       operator_suffix: item.operator_suffix || '',
       access_mode: item.access_mode || 'wifi',
-      base_url: item.base_url || 'http://172.17.1.2',
+      base_url: item.base_url || '',
       ac_id: item.ac_id || '1',
       n: item.n || '',
       type: item.type || '',
@@ -553,16 +593,13 @@
       double_stack: item.double_stack || '',
       login_os: item.login_os || '',
       login_name: item.login_name || '',
-      ssid: item.ssid || 'jxnu_stu',
+      ssid: item.ssid || '',
       bssid: item.bssid || '',
       radio: item.radio || ''
     };
 
-    // 运营商后缀的快捷下拉只在学校预设提供了 operators 时展示；没有则只保留可编辑的后缀输入框。
-    function presetOperators(preset) {
-      return (preset && preset.operators && preset.operators.length) ? preset.operators : [];
-    }
-
+    // 运营商快捷下拉是一份可编辑列表：学校预设的 operators 只作预填写（可删），
+    // 用户自增的条目落在路由器侧 user_presets.json，跨设备共享。
     // 字段已从 id 改名为 suffix；仍兼容旧的 id 键。
     function operatorSuffixOf(op) {
       if (!op) return '';
@@ -570,33 +607,73 @@
       return String(v || '');
     }
 
-    function operatorOptionsMarkup(ops, selectedSuffix) {
-      var out = '';
-      var selectedText = String(selectedSuffix || '');
-      for (var oi = 0; oi < ops.length; oi++) {
-        var sfx = operatorSuffixOf(ops[oi]);
-        var label = String(ops[oi].label || sfx || '校园网');
-        // suffix 为 "??" 表示该运营商后缀尚未被提供者验证，下拉里标注“未验证”。
-        var text = (sfx === '??') ? (label + '（未验证）') : label;
-        var selected = (sfx === selectedText) ? ' selected' : '';
-        out += '<option value="' + escapeHtml(sfx) + '"' + selected + '>' + escapeHtml(text) + '</option>';
+    var operatorChoices = [];
+
+    function operatorChoiceExists(suffix, label) {
+      for (var i = 0; i < operatorChoices.length; i++) {
+        if (operatorChoices[i].suffix === suffix && operatorChoices[i].label === label) return true;
       }
-      return out;
+      return false;
     }
 
-    // 根据当前预设刷新快捷下拉的可见性与选项。
-    function refreshOperatorQuickpick(preset, selectedSuffix) {
-      var wrap = document.getElementById('jm-operator-quickpick-wrap');
-      var opSel = document.getElementById('jm-operator');
-      if (!wrap || !opSel) return;
-      var ops = presetOperators(preset);
-      if (ops.length) {
-        opSel.innerHTML = operatorOptionsMarkup(ops, selectedSuffix);
-        wrap.style.display = '';
-      } else {
-        opSel.innerHTML = '';
-        wrap.style.display = 'none';
+    function addOperatorChoice(suffix, label, custom) {
+      suffix = String(suffix || '');
+      label = String(label || '') || (suffix === '' ? '无后缀' : suffix);
+      if (operatorChoiceExists(suffix, label)) return;
+      operatorChoices.push({ suffix: suffix, label: label, custom: !!custom });
+    }
+
+    function persistCustomOperators() {
+      var out = [];
+      for (var i = 0; i < operatorChoices.length; i++) {
+        if (operatorChoices[i].custom) out.push({ suffix: operatorChoices[i].suffix, label: operatorChoices[i].label });
       }
+      saveCustomOperators(out);
+    }
+
+    function seedOperatorChoices() {
+      operatorChoices = [];
+      var saved = loadCustomOperators();
+      for (var i = 0; i < saved.length; i++) {
+        addOperatorChoice(saved[i].suffix, saved[i].label, true);
+      }
+      var current = String(initialValues.operator_suffix || '');
+      if (current) addOperatorChoice(current, current, false);
+    }
+
+    function renderOperatorChoices(selectedSuffix) {
+      var opSel = document.getElementById('jm-operator');
+      if (!opSel) return;
+      var out = '';
+      if (!operatorChoices.length) {
+        out = '<option value="" disabled selected>（暂无选项，点“添加”自建）</option>';
+      }
+      for (var oi = 0; oi < operatorChoices.length; oi++) {
+        var sfx = operatorChoices[oi].suffix;
+        // suffix 为 "??" 表示该运营商后缀尚未被提供者验证，下拉里标注“未验证”。
+        var text = (sfx === '??') ? (operatorChoices[oi].label + '（未验证）') : operatorChoices[oi].label;
+        out += '<option value="' + escapeHtml(sfx) + '">' + escapeHtml(text) + '</option>';
+      }
+      opSel.innerHTML = out;
+      if (operatorChoices.length && selectedSuffix !== undefined && selectedSuffix !== null) {
+        opSel.value = String(selectedSuffix);
+      }
+    }
+
+    // 应用预设时用该校 operators 整体替换下拉中的「预设预填」项。
+    // 上一所学校留下的 label/suffix（如南航「学生用户」）必须清掉，否则会串到
+    // 下一所学校；用户自建（custom）条目仍保留（与「复位」一致）。
+    function replacePresetOperators(preset) {
+      var kept = [];
+      for (var i = 0; i < operatorChoices.length; i++) {
+        if (operatorChoices[i].custom) kept.push(operatorChoices[i]);
+      }
+      operatorChoices = kept;
+      var ops = (preset && preset.operators && preset.operators.length) ? preset.operators : [];
+      for (var j = 0; j < ops.length; j++) {
+        addOperatorChoice(operatorSuffixOf(ops[j]), String(ops[j].label || ''), false);
+      }
+      return ops;
     }
 
     // 下拉选择运营商 -> 填充后缀输入框。"??"（未验证）不直接写入，而是清空并提示用户手填。
@@ -621,8 +698,38 @@
       }
     }
 
+    function addOperatorFromPrompt() {
+      var label = window.prompt('运营商显示名称（例如：学生用户 / 中国移动）', '');
+      if (label === null) return;
+      var sfx = window.prompt('运营商后缀（用户名 @ 后面的部分，留空表示纯账号不带后缀）', '');
+      if (sfx === null) return;
+      label = String(label).replace(/^\s+|\s+$/g, '');
+      sfx = String(sfx).replace(/^\s+|\s+$/g, '').replace(/^@+/, '');
+      addOperatorChoice(sfx, label, true);
+      persistCustomOperators();
+      renderOperatorChoices(sfx);
+      applyOperatorPick();
+    }
+
+    function removeSelectedOperator() {
+      var opSel = document.getElementById('jm-operator');
+      if (!opSel || !operatorChoices.length) return;
+      var idx = opSel.selectedIndex;
+      if (idx < 0 || idx >= operatorChoices.length) return;
+      operatorChoices.splice(idx, 1);
+      persistCustomOperators();
+      var nextIdx = Math.min(idx, operatorChoices.length - 1);
+      renderOperatorChoices(nextIdx >= 0 ? operatorChoices[nextIdx].suffix : undefined);
+    }
+
     function presetOptionsMarkup() {
+      // 自定义预设置顶：无预设 → 自定义 → 远端/内置。
       var out = '<option value="' + NO_PRESET_ID + '"' + (selectedPresetId === NO_PRESET_ID ? ' selected' : '') + '>无预设</option>';
+      for (var ci = 0; ci < customPresets.length; ci++) {
+        var customId = String(customPresets[ci].short_name || '');
+        if (!customId) continue;
+        out += '<option value="' + escapeHtml(customId) + '"' + (customId === selectedPresetId ? ' selected' : '') + '>' + escapeHtml(String(customPresets[ci].name || customId)) + '（自定义）</option>';
+      }
       for (var pi = 0; pi < presets.length; pi++) {
         var presetId = String(presets[pi].short_name || '');
         if (!presetId) continue;
@@ -631,19 +738,113 @@
       return out;
     }
 
-    var initialOperators = presetOperators(selectedPreset);
-    var quickpickDisplay = initialOperators.length ? '' : 'none';
+    function rebuildPresetSelect() {
+      var presetSel = document.getElementById('jm-school_preset');
+      if (presetSel) presetSel.innerHTML = presetOptionsMarkup();
+    }
+
+    function formFieldValue(idKey) {
+      var node = document.getElementById(idKey);
+      return node ? String(node.value || '') : '';
+    }
+
+    // 把当前表单的环境字段存为自定义预设（路由器侧 user_presets.json）。
+    // 只存环境信息（认证地址/AC_ID/SSID/接入方式/登录形态/运营商列表），
+    // 学工号、密码等凭据绝不写入。
+    function saveCurrentFormAsPreset() {
+      var name = window.prompt('预设名称（与已有自定义预设同名会覆盖它）', '');
+      if (name === null) return;
+      name = String(name).replace(/^\s+|\s+$/g, '');
+      if (!name) {
+        alert('预设名称不能为空');
+        return;
+      }
+      var ops = [];
+      for (var i = 0; i < operatorChoices.length; i++) {
+        ops.push({ suffix: operatorChoices[i].suffix, label: operatorChoices[i].label });
+      }
+      var preset = {
+        short_name: 'custom-' + new Date().getTime(),
+        name: name,
+        custom: true,
+        defaults: {
+          base_url: formFieldValue('jm-base_url'),
+          ac_id: formFieldValue('jm-ac_id'),
+          ssid: formFieldValue('jm-ssid'),
+          access_mode: formFieldValue('jm-access_mode')
+        },
+        observed_login_shape: {
+          n: formFieldValue('jm-login-n'),
+          type: formFieldValue('jm-login-type'),
+          enc: formFieldValue('jm-login-enc'),
+          info_prefix: formFieldValue('jm-info-prefix'),
+          double_stack: formFieldValue('jm-double-stack'),
+          os: formFieldValue('jm-login-os'),
+          name: formFieldValue('jm-login-name')
+        },
+        operators: ops
+      };
+      for (var pi = 0; pi < customPresets.length; pi++) {
+        if (String(customPresets[pi].name || '') === name) {
+          preset.short_name = String(customPresets[pi].short_name || preset.short_name);
+          customPresets.splice(pi, 1);
+          break;
+        }
+      }
+      customPresets.push(preset);
+      selectedPresetId = preset.short_name;
+      selectedPreset = preset;
+      presetApplied = true;
+      rebuildPresetSelect();
+      pushUserPresetStore(function(err) {
+        if (err) alert('预设已在本页生效，但保存到路由器失败：' + err.message);
+        else alert('已保存自定义预设：' + name);
+      });
+    }
+
+    function deleteSelectedCustomPreset() {
+      var presetSel = document.getElementById('jm-school_preset');
+      var pid = presetSel ? String(presetSel.value || '') : '';
+      if (!isCustomPresetId(pid)) {
+        alert('只能删除自己保存的自定义预设');
+        return;
+      }
+      var targetIdx = -1;
+      for (var i = 0; i < customPresets.length; i++) {
+        if (String(customPresets[i].short_name || '') === pid) {
+          targetIdx = i;
+          break;
+        }
+      }
+      if (targetIdx < 0) {
+        alert('未找到该自定义预设');
+        return;
+      }
+      if (!confirm('确定删除自定义预设「' + String(customPresets[targetIdx].name || pid) + '」？')) return;
+      customPresets.splice(targetIdx, 1);
+      selectedPresetId = NO_PRESET_ID;
+      selectedPreset = null;
+      presetApplied = false;
+      rebuildPresetSelect();
+      pushUserPresetStore(function(err) {
+        if (err) alert('预设已在本页删除，但保存到路由器失败：' + err.message);
+      });
+    }
 
     var bodyHtml =
       '<div class="smart-native-row"><label>学校预设</label><span><select id="jm-school_preset">' + presetOptionsMarkup() + '</select> <button type="button" id="jm-apply-school-defaults" class="btn cbi-button cbi-button-action">应用预设</button> <button type="button" id="jm-reset-school-defaults" class="btn cbi-button">复位</button></span></div>' +
       '<div class="smart-native-row"><label>标签（选填）</label><input id="jm-label" value="' + escapeHtml(initialValues.label) + '"></div>' +
       '<div class="smart-native-row"><label>学工号</label><input id="jm-user_id" value="' + escapeHtml(initialValues.user_id) + '"></div>' +
+      '<div class="smart-native-row"><label>密码</label><div id="jm-password-field"></div></div>' +
       '<div class="smart-native-row"><label>运营商后缀 <a href="https://github.com/matthewlu070111/smart-srun#%E8%8E%B7%E5%8F%96%E5%AD%A6%E6%A0%A1%E9%A2%84%E8%AE%BE%E4%B8%8E%E7%8E%AF%E5%A2%83%E7%9C%9F%E5%AE%9E%E5%AD%97%E6%AE%B5%E5%80%BC" target="_blank" rel="noopener noreferrer">如何获取？</a></label>' +
-        '<span id="jm-operator-quickpick-wrap" style="display:' + quickpickDisplay + ';margin-bottom:.35rem;"><select id="jm-operator">' + operatorOptionsMarkup(initialOperators, initialValues.operator_suffix) + '</select></span>' +
+        '<span id="jm-operator-quickpick-wrap" style="display:flex;gap:6px;align-items:center;margin-bottom:.35rem;">' +
+          '<select id="jm-operator" style="flex:1 1 auto;width:auto;"></select>' +
+          '<button type="button" id="jm-operator-add" class="btn cbi-button" style="flex:0 0 auto;">添加</button>' +
+          '<button type="button" id="jm-operator-del" class="btn cbi-button cbi-button-remove" style="flex:0 0 auto;">删除</button>' +
+        '</span>' +
         '<input id="jm-operator_suffix" value="' + escapeHtml(initialValues.operator_suffix) + '" placeholder="">' +
         '<div id="jm-operator-suffix-hint" style="display:none;color:#d97706;font-size:12px;margin-top:.25rem;"></div></div>' +
       '<div class="smart-native-row"><label>接入方式</label><select id="jm-access_mode"><option value="wifi"' + (initialValues.access_mode === 'wifi' ? ' selected' : '') + '>无线</option><option value="wired"' + (initialValues.access_mode === 'wired' ? ' selected' : '') + '>有线（WAN）</option></select></div>' +
-      '<div class="smart-native-row"><label>密码</label><div id="jm-password-field"></div></div>' +
       '<div class="smart-native-row"><label>认证地址</label><input id="jm-base_url" value="' + escapeHtml(initialValues.base_url) + '"></div>' +
       '<div class="smart-native-row"><label>AC_ID</label><span><input id="jm-ac_id" value="' + escapeHtml(initialValues.ac_id) + '"> <button type="button" id="jm-detect-acid" class="btn cbi-button">嗅探</button> <span id="jm-detect-acid-status" style="margin-left:6px;color:#6b7280;"></span></span></div>' +
       '<details class="smart-native-advanced"><summary>高级登录参数</summary>' +
@@ -657,7 +858,11 @@
       '</details>' +
       '<div class="smart-native-row" id="jm-ssid-row"><label>校园网 SSID</label><input id="jm-ssid" value="' + escapeHtml(initialValues.ssid) + '"></div>' +
       '<div class="smart-native-row" id="jm-bssid-row"><label>BSSID（留空则不锁定）</label><input id="jm-bssid" value="' + escapeHtml(initialValues.bssid) + '"></div>' +
-      '<div class="smart-native-row" id="jm-radio-row"><label>频段</label><select id="jm-radio">' + radioOptionsMarkup() + '</select></div>';
+      '<div class="smart-native-row" id="jm-radio-row"><label>频段</label><select id="jm-radio">' + radioOptionsMarkup() + '</select></div>' +
+      '<div style="margin-top:1rem;padding-top:.75rem;border-top:1px solid rgba(127,127,127,.25);display:flex;gap:8px;">' +
+        '<button type="button" id="jm-save-school-preset" class="btn cbi-button">保存为新预设</button>' +
+        '<button type="button" id="jm-delete-school-preset" class="btn cbi-button cbi-button-remove">删除预设</button>' +
+      '</div>';
 
     function applySchoolDefaultsToForm() {
       var preset = findSchoolPreset(selectedPresetId);
@@ -677,16 +882,22 @@
         if (!target) continue;
         target.value = (schoolDefaults[key] !== undefined && schoolDefaults[key] !== null) ? String(schoolDefaults[key]) : '';
       }
-      var nextOperators = presetOperators(preset);
+      var nextOperators = replacePresetOperators(preset);
       var nextSuffix = nextOperators.length ? operatorSuffixOf(nextOperators[0]) : '';
-      refreshOperatorQuickpick(preset, nextSuffix);
+      renderOperatorChoices(nextOperators.length ? nextSuffix : undefined);
       applyLoginShapeToForm(loginShape);
       presetApplied = true;
-      // 应用预设时，若该预设提供了运营商，则用第一个运营商联动填充后缀；否则保持手填。
+      // 应用预设时：有运营商则用第一个联动填充后缀；无运营商则清空后缀，避免残留旧校值。
       if (nextOperators.length) {
-        var opSelApply = document.getElementById('jm-operator');
-        if (opSelApply) opSelApply.value = nextSuffix;
         applyOperatorPick();
+      } else {
+        var emptySuffix = document.getElementById('jm-operator_suffix');
+        if (emptySuffix) emptySuffix.value = '';
+        var emptyHint = document.getElementById('jm-operator-suffix-hint');
+        if (emptyHint) {
+          emptyHint.textContent = '';
+          emptyHint.style.display = 'none';
+        }
       }
       if (schoolDefaults.access_mode) {
         var modeSel = document.getElementById('jm-access_mode');
@@ -721,11 +932,16 @@
     function resetSchoolDefaultsForm() {
       presetApplied = false;
       selectedPresetId = NO_PRESET_ID;
-      selectedPreset = findSchoolPreset(selectedPresetId);
+      selectedPreset = null;
       var presetSel = document.getElementById('jm-school_preset');
       if (presetSel) presetSel.value = selectedPresetId;
-      // 无预设：隐藏运营商快捷下拉，仅保留手填后缀输入框。
-      refreshOperatorQuickpick(null, '');
+      // 复位：丢弃预设预填的运营商条目，保留用户自建（路由器侧存储）的条目。
+      var kept = [];
+      for (var ki = 0; ki < operatorChoices.length; ki++) {
+        if (operatorChoices[ki].custom) kept.push(operatorChoices[ki]);
+      }
+      operatorChoices = kept;
+      renderOperatorChoices();
       var resetHint = document.getElementById('jm-operator-suffix-hint');
       if (resetHint) { resetHint.textContent = ''; resetHint.style.display = 'none'; }
       var values = {
@@ -805,9 +1021,15 @@
         });
         document.getElementById('jm-apply-school-defaults').addEventListener('click', applySchoolDefaultsToForm);
         document.getElementById('jm-reset-school-defaults').addEventListener('click', resetSchoolDefaultsForm);
+        document.getElementById('jm-save-school-preset').addEventListener('click', saveCurrentFormAsPreset);
+        document.getElementById('jm-delete-school-preset').addEventListener('click', deleteSelectedCustomPreset);
         document.getElementById('jm-detect-acid').addEventListener('click', detectAcidForForm);
         document.getElementById('jm-access_mode').addEventListener('change', updateCampusAccessModeUI);
         document.getElementById('jm-operator').addEventListener('change', applyOperatorPick);
+        document.getElementById('jm-operator-add').addEventListener('click', addOperatorFromPrompt);
+        document.getElementById('jm-operator-del').addEventListener('click', removeSelectedOperator);
+        seedOperatorChoices();
+        renderOperatorChoices(initialValues.operator_suffix);
         if (!id) applySchoolDefaultsToForm();
         updateCampusAccessModeUI();
         renderPasswordField('jm-password-field', 'jm-password', item.password || '');
@@ -1128,6 +1350,7 @@
     window.__smartTablesInit = true;
     campusData = readJson('smart-campus-data', []);
     hotspotData = readJson('smart-hotspot-data', []);
+    initUserPresetStore();
     refreshSchoolPresets();
   }
 

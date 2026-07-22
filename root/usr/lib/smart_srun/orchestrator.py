@@ -169,6 +169,7 @@ def run_once_with_retry(cfg, ignore_service_disabled=False):
 
         retries = 0
         failures = 1
+        rebuild_attempted = False
 
         while True:
             runtime_cfg = load_config()
@@ -232,6 +233,61 @@ def run_once_with_retry(cfg, ignore_service_disabled=False):
                     pending_action=pending_action,
                 )
                 return False, "检测到待处理操作，中断重试"
+
+            # E2620 already online 僵局：硬重启不发 deauth，旧会话挂在 AC 上，
+            # unbind 登出踢不掉（南昌航空实测），只有干净的断开重连（与手动
+            # 登录预清理相同）能让 AC 清掉旧会话。每轮重试循环只升级一次。
+            stale_online = (
+                "e2620" in str(message).lower()
+                or "already online" in str(message).lower()
+            )
+            if (
+                stale_online
+                and not rebuild_attempted
+                and not campus_uses_wired(runtime_cfg)
+            ):
+                rebuild_attempted = True
+                log(
+                    "INFO",
+                    "stale_session_rebuild",
+                    "already-online deadlock, rebuilding campus connection",
+                )
+                rebuild_ok, rebuild_msg = clean_slate_for_manual_login(runtime_cfg)
+                if rebuild_ok:
+                    with timed() as rebuild_attempt_t:
+                        retry_ok, retry_message = srun_auth.run_once_safe(runtime_cfg)
+                    retries += 1
+                    if retry_ok:
+                        log(
+                            "INFO",
+                            "retry_success",
+                            attempt=retries,
+                            duration_ms=rebuild_attempt_t.ms,
+                        )
+                        log(
+                            "INFO",
+                            "retry_cycle_end",
+                            "cycle succeeded after connection rebuild",
+                            result="ok",
+                            attempts=retries + 1,
+                        )
+                        return True, "重试成功（已重建校园连接）"
+                    log(
+                        "ERROR",
+                        "retry_failed",
+                        attempt=retries,
+                        reason=retry_message,
+                        duration_ms=rebuild_attempt_t.ms,
+                    )
+                    message = retry_message
+                    failures += 1
+                    continue
+                log(
+                    "WARN",
+                    "stale_session_rebuild",
+                    "campus connection rebuild failed",
+                    reason=rebuild_msg or "unknown",
+                )
 
             delay = calc_backoff_delay_seconds(runtime_cfg, failures)
             log(
@@ -330,7 +386,7 @@ def default_run_status(app_ctx):
 
     if failover_enabled(cfg):
         mode_hint = "（校园网SSID: %s，热点SSID: %s）" % (
-            cfg.get("campus_ssid", "jxnu_stu"),
+            cfg.get("campus_ssid", "") or "未设置",
             cfg.get("hotspot_ssid", "未设置"),
         )
 

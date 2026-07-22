@@ -9,6 +9,7 @@ import json
 import os
 import re
 import socket
+import struct
 import subprocess
 import time
 
@@ -41,6 +42,7 @@ if HAVE_URLLIB:
 
 CONNECTIVITY_CHECK_URLS = [
     "http://connect.rom.miui.com/generate_204",
+    "http://connectivitycheck.platform.hicloud.com/generate_204",
     "http://wifi.vivo.com.cn/generate_204",
 ]
 
@@ -465,12 +467,168 @@ def parse_jsonp(text):
     return json.loads(payload)
 
 
+def _split_http_url(url):
+    rest = url.split("://", 1)[1] if "://" in url else url
+    hostport, _, path = rest.partition("/")
+    host, _, port_text = hostport.partition(":")
+    port = int(port_text) if port_text.strip().isdigit() else 80
+    return host, port, "/" + path
+
+
+def _uplink_dns_servers():
+    """上行接口 DHCP 下发的 DNS 服务器（仅 IPv4）。
+
+    连通性探测必须绕开本机 dnsmasq/代理解析链：路由器跑透明代理（如
+    OpenClash）时其 DNS 一旦卡死，127.0.0.1 的解析整体失效，但上行链路本身
+    是好的；只有直接问上行 DNS 才测得到真实连通性。
+    """
+    servers = []
+    for iface in ("wwan", "wan"):
+        ok, output = run_cmd(
+            ["ubus", "-S", "call", "network.interface.%s" % iface, "status"],
+            timeout=5,
+        )
+        if not ok:
+            continue
+        try:
+            payload = json.loads(output or "{}")
+        except ValueError:
+            continue
+        for item in payload.get("dns-server", []):
+            item = str(item).strip()
+            if item and ":" not in item and item not in servers:
+                servers.append(item)
+    if not servers:
+        try:
+            with open("/tmp/resolv.conf.d/resolv.conf.auto", "r") as handle:
+                for line in handle:
+                    fields = line.split()
+                    if (
+                        len(fields) == 2
+                        and fields[0] == "nameserver"
+                        and ":" not in fields[1]
+                        and fields[1] not in servers
+                    ):
+                        servers.append(fields[1])
+        except OSError:
+            pass
+    return servers
+
+
+def _dns_query_a(host, server, timeout):
+    """向指定 DNS 服务器发原始 UDP A 记录查询，返回 IPv4 列表。"""
+    txid = os.urandom(2)
+    header = txid + struct.pack(">HHHHH", 0x0100, 1, 0, 0, 0)
+    qname = (
+        b"".join(bytes([len(p)]) + p for p in host.encode("ascii").split(b"."))
+        + b"\x00"
+    )
+    packet = header + qname + struct.pack(">HH", 1, 1)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.sendto(packet, (server, 53))
+        data, _ = sock.recvfrom(1024)
+    finally:
+        sock.close()
+    if len(data) < 12 or data[:2] != txid:
+        raise ValueError("DNS 响应无效")
+    ancount = struct.unpack(">H", data[6:8])[0]
+    i = 12
+    while i < len(data) and data[i] != 0:
+        i += data[i] + 1
+    i += 5
+    ips = []
+    for _ in range(ancount):
+        if i + 12 > len(data):
+            break
+        if data[i] & 0xC0:
+            i += 2
+        else:
+            while i < len(data) and data[i] != 0:
+                i += data[i] + 1
+            i += 1
+        rtype, _rclass, _ttl, rdlen = struct.unpack(">HHIH", data[i : i + 10])
+        i += 10
+        if rtype == 1 and rdlen == 4:
+            ips.append(".".join(str(b) for b in data[i : i + 4]))
+        i += rdlen
+    if not ips:
+        raise ValueError("无 A 记录")
+    return ips
+
+
+def _resolve_probe_ips(host, timeout):
+    try:
+        socket.inet_aton(host)
+        return [host]
+    except OSError:
+        pass
+    dns_timeout = max(1.0, min(2.0, timeout / 2.0))
+    for server in _uplink_dns_servers()[:2]:
+        try:
+            return _dns_query_a(host, server, dns_timeout)
+        except Exception:
+            continue
+    # 上行 DNS 不可得时退回本机解析链。bytes 主机名直接走 C 解析器：
+    # python3-light 缺 unicodedata 时 str 主机名会因 idna 编解码器不可用
+    # 抛 LookupError。仅取 IPv4，避免 v6 黑洞路由拖满连接超时。
+    infos = socket.getaddrinfo(
+        host.encode("ascii"), 80, socket.AF_INET, socket.SOCK_STREAM
+    )
+    return [info[4][0] for info in infos]
+
+
+def _probe_http_status(url, timeout):
+    """裸 socket 发 HTTP GET 并只读状态行，返回状态码。仅支持 http。
+
+    刻意不用 urllib/http.client（缺 idna 编解码器的设备上 stdlib 解析直接
+    抛错），DNS 也优先绕开本机代理链，见 _uplink_dns_servers。
+    """
+    host, port, path = _split_http_url(url)
+    last_error = None
+    for ip in _resolve_probe_ips(host, timeout)[:2]:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        try:
+            sock.connect((ip, port))
+            request = (
+                "GET %s HTTP/1.1\r\n"
+                "Host: %s\r\n"
+                "User-Agent: %s\r\n"
+                "Accept: */*\r\n"
+                "Connection: close\r\n\r\n" % (path, host, HEADER["User-Agent"])
+            )
+            sock.sendall(request.encode("ascii"))
+            head = b""
+            while b"\r\n" not in head and len(head) < 512:
+                chunk = sock.recv(256)
+                if not chunk:
+                    break
+                head += chunk
+            status_line = head.split(b"\r\n", 1)[0].decode("ascii", "replace")
+            fields = status_line.split()
+            if len(fields) < 2 or not fields[1].isdigit():
+                raise ValueError("异常的 HTTP 状态行: %r" % status_line[:64])
+            return int(fields[1])
+        except Exception as exc:
+            last_error = exc
+        finally:
+            sock.close()
+    raise last_error if last_error else OSError("无可用探测地址")
+
+
 def test_internet_connectivity(timeout=5):
+    # 连通性探测必须快速失败且零依赖：裸 socket 单次请求读真实状态码判定——
+    # generate_204 只有直连时才返回 204，被门户劫持时是 302/200，比"响应字节
+    # 数<64"的启发式可靠。绝不落 http_get 的 wget/uclient-fetch 兜底链：外网
+    # 被墙时该链每个 URL 会串行拖满多个子进程硬超时（实测 20s+），把登录成功
+    # 后的终态校验整个拖死。
     for url in CONNECTIVITY_CHECK_URLS:
         log("DEBUG", "connectivity_probe_begin", url=url, timeout=timeout)
         with timed() as t:
             try:
-                body = http_get(url, timeout=timeout)
+                status_code = _probe_http_status(url, timeout)
             except Exception as exc:
                 log(
                     "DEBUG",
@@ -481,14 +639,13 @@ def test_internet_connectivity(timeout=5):
                     error=str(exc),
                 )
                 continue
-            size = len(str(body or ""))
-            if size < 64:
+            if status_code == 204:
                 log(
                     "DEBUG",
                     "connectivity_probe_result",
                     url=url,
                     outcome="online",
-                    bytes_received=size,
+                    status_code=status_code,
                     duration_ms=t.ms,
                 )
                 return True, ""
@@ -497,7 +654,7 @@ def test_internet_connectivity(timeout=5):
                 "connectivity_probe_result",
                 url=url,
                 outcome="portal",
-                bytes_received=size,
+                status_code=status_code,
                 duration_ms=t.ms,
             )
             return False, "疑似被重定向到认证页面"

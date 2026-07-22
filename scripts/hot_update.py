@@ -111,8 +111,8 @@ RUNTIME_TARGETS = [
         "remote": "/usr/lib/smart_srun/schools/_base.py",
     },
     {
-        "local": "root/usr/lib/smart_srun/schools/jxnu.py",
-        "remote": "/usr/lib/smart_srun/schools/jxnu.py",
+        "local": "root/usr/lib/smart_srun/schools/default.py",
+        "remote": "/usr/lib/smart_srun/schools/default.py",
     },
 ]
 
@@ -206,6 +206,8 @@ def build_remote_commands():
             "rm -rf /tmp/luci-*",
             "rm -f /usr/lib/smart_srun/__pycache__/*.pyc",
             "rm -f /usr/lib/smart_srun/schools/__pycache__/*.pyc",
+            # 默认运行时模块已由 jxnu.py 更名为 default.py，清掉旧文件避免重复注册
+            "rm -f /usr/lib/smart_srun/schools/jxnu.py",
         ],
         "restart": [
             "/etc/init.d/smart_srun restart",

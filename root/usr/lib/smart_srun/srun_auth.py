@@ -313,6 +313,51 @@ def default_login_once(app_ctx):
         except Exception:
             pass
 
+    if (not ok) and (
+        "already online" in message.lower() or "e2620" in message.lower()
+    ):
+        # 网关报 E2620 already online，分两种情况：
+        # a) 本 IP 已认证（路由器重启后拿到同一 IP，旧会话仍有效）——
+        #    "已在线"就是目标状态，按成功处理，否则守护会带退避无限重试；
+        # b) 会话挂在旧 IP 上（重启/重连后 DHCP 换了 IP）——本 IP 查询显示
+        #    未在线，需先 unbind 登出踢掉旧会话，再重新走一次完整登录。
+        try:
+            online, _online_msg = default_query_online_status(
+                app_ctx, expected_username=cfg["username"], bind_ip=bip
+            )
+        except Exception:
+            # 状态复核失败（如网络抖动）时采信网关的明确答复
+            return True, "已在线"
+        if online:
+            return True, "已在线"
+        try:
+            default_logout_once(app_ctx, bind_ip=bip)
+        except Exception:
+            pass
+        # E2532: 网关要求两次认证间隔 >=3 秒；刚发过一次登录（E2620），
+        # 不等待的话重登必然被频率限制拦下，真实结果全被 E2532 遮住。
+        time.sleep(3.5)
+        try:
+            token, ip = get_token(
+                urls["get_challenge_api"], cfg["username"], ip, bind_ip=bip
+            )
+            i_value, hmd5, chksum = runtime.do_complex_work(cfg, ip, token)
+            ok, message = login(
+                runtime,
+                urls["srun_portal_api"],
+                cfg,
+                ip,
+                i_value,
+                hmd5,
+                chksum,
+                bind_ip=bip,
+            )
+            if ok:
+                return True, "登录成功（已清理旧会话）"
+        except Exception as exc:
+            message = str(exc)
+        return False, "登录失败: " + localize_error(message)
+
     if ok:
         return True, "登录成功"
     return False, "登录失败: " + localize_error(message)
