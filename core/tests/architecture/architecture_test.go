@@ -110,10 +110,12 @@ func TestDomainHasNoIO(t *testing.T) {
 // application is how a "small exception" becomes a cycle.
 func TestDependencyDirection(t *testing.T) {
 	rules := map[string][]string{
-		"internal/domain":  {"internal/config", "internal/control", "internal/cli", "cmd"},
-		"internal/config":  {"internal/control", "internal/cli", "cmd"},
-		"internal/control": {"internal/cli", "cmd"},
-		"internal/cli":     {"cmd"},
+		"internal/domain": {"internal/config", "internal/protocol", "internal/control",
+			"internal/cli", "cmd"},
+		"internal/protocol": {"internal/config", "internal/control", "internal/cli", "cmd"},
+		"internal/config":   {"internal/control", "internal/cli", "cmd"},
+		"internal/control":  {"internal/cli", "cmd"},
+		"internal/cli":      {"cmd"},
 	}
 
 	imports := packageImports(t)
@@ -127,6 +129,35 @@ func TestDependencyDirection(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// The protocol layer is bytes in, bytes out. Spec 04 requires timestamps and
+// callback names to arrive as arguments: a package that read the clock or the
+// network could only be tested against a live gateway, which is exactly what
+// fixed protocol vectors exist to avoid.
+func TestProtocolReadsNothing(t *testing.T) {
+	forbidden := []string{
+		"net", "net/http", "net/url", "os", "os/exec", "time", "math/rand",
+		"math/rand/v2", "crypto/rand", "io/ioutil", "bufio",
+	}
+
+	imports := packageImports(t)
+	found := false
+	for pkg, imported := range imports {
+		if !strings.HasPrefix(pkg, modulePath+"/internal/protocol") {
+			continue
+		}
+		found = true
+		for _, name := range imported {
+			if slices.Contains(forbidden, name) {
+				t.Errorf("%s imports %q; the protocol layer takes its inputs as "+
+					"arguments so its output is decided entirely by them", pkg, name)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no protocol package found")
 	}
 }
 
