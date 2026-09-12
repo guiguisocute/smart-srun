@@ -64,12 +64,11 @@ func runConfigValidate(args []string, stdout, stderr *os.File) int {
 		return ExitInvalidInput
 	}
 
-	cfg, err := config.Decode(data)
+	// The same decode-normalize-validate pipeline the repository uses. Spelling
+	// it out again here is how the CLI ends up accepting a file the daemon
+	// would then refuse.
+	cfg, err := config.Parse(data)
 	if err != nil {
-		reportProblems(stderr, source, err)
-		return ExitCodeFor(err)
-	}
-	if err := config.Validate(config.Normalize(cfg)); err != nil {
 		reportProblems(stderr, source, err)
 		return ExitCodeFor(err)
 	}
