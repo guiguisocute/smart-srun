@@ -36,6 +36,13 @@ const (
 	CodeChecksumMismatch       ErrorCode = "ChecksumMismatch"
 	CodePackageIncompatible    ErrorCode = "PackageIncompatible"
 	CodeInstallFailed          ErrorCode = "InstallFailed"
+
+	// CodeInternal is for a failure this program did not classify: a bug, or an
+	// error from the standard library that reached the wire unwrapped. Spec 03
+	// fixes a minimum list and this is above it (D11), because the alternative
+	// is reporting a fault in the daemon as InvalidArgument -- telling the user
+	// to correct input that was already correct.
+	CodeInternal ErrorCode = "Internal"
 )
 
 // Error carries one user-facing problem. Field is the dotted path the user can

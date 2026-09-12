@@ -1,0 +1,211 @@
+// Package architecture checks the dependency rules that keep the packages
+// separable.
+//
+// These are asserted rather than documented because a wrong import compiles
+// fine and is only noticed much later, when the package it corrupted can no
+// longer be tested without a router attached.
+package architecture
+
+import (
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+const modulePath = "github.com/matthewlu070111/smart-srun/core"
+
+// coreRoot is the module root, two levels up from tests/architecture.
+func coreRoot(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve core root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("core root %q has no go.mod: %v", root, err)
+	}
+	return root
+}
+
+// packageImports maps each package's import path to the set of paths it imports.
+// Test files are excluded: a test may reach for anything it needs to build a
+// fixture, and holding tests to the production dependency rules would only
+// push fixtures into production code.
+func packageImports(t *testing.T) map[string][]string {
+	t.Helper()
+	root := coreRoot(t)
+	fileSet := token.NewFileSet()
+	result := map[string][]string{}
+
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") ||
+			strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		relative, err := filepath.Rel(root, filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		importPath := modulePath
+		if relative != "." {
+			importPath += "/" + filepath.ToSlash(relative)
+		}
+
+		file, err := parser.ParseFile(fileSet, path, nil, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		for _, spec := range file.Imports {
+			imported := strings.Trim(spec.Path.Value, `"`)
+			if !slices.Contains(result[importPath], imported) {
+				result[importPath] = append(result[importPath], imported)
+			}
+		}
+		if _, seen := result[importPath]; !seen {
+			result[importPath] = nil
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if len(result) == 0 {
+		t.Fatal("no packages found; the walk is looking in the wrong place")
+	}
+	return result
+}
+
+// domain is the vocabulary every other package shares. Giving it I/O would make
+// every type that mentions it untestable without the thing it reached for.
+func TestDomainHasNoIO(t *testing.T) {
+	forbidden := []string{
+		"os", "os/exec", "net", "net/http", "io/fs", "database/sql",
+		"os/user", "syscall", "golang.org/x/sys/unix", "bufio",
+	}
+	imports := packageImports(t)[modulePath+"/internal/domain"]
+	if imports == nil {
+		t.Fatal("domain package not found")
+	}
+	for _, imported := range imports {
+		if slices.Contains(forbidden, imported) {
+			t.Errorf("domain imports %q; it must stay pure so every type that "+
+				"mentions it can be tested without that dependency", imported)
+		}
+		if strings.HasPrefix(imported, modulePath) {
+			t.Errorf("domain imports %q; the vocabulary package depends on "+
+				"nothing inside the module", imported)
+		}
+	}
+}
+
+// The direction that matters: the layers that make decisions may use the layers
+// that hold data, never the reverse. An adapter reaching back into the
+// application is how a "small exception" becomes a cycle.
+func TestDependencyDirection(t *testing.T) {
+	rules := map[string][]string{
+		"internal/domain":  {"internal/config", "internal/control", "internal/cli", "cmd"},
+		"internal/config":  {"internal/control", "internal/cli", "cmd"},
+		"internal/control": {"internal/cli", "cmd"},
+		"internal/cli":     {"cmd"},
+	}
+
+	imports := packageImports(t)
+	for pkg, forbidden := range rules {
+		full := modulePath + "/" + pkg
+		for _, imported := range imports[full] {
+			for _, banned := range forbidden {
+				if strings.HasPrefix(imported, modulePath+"/"+banned) {
+					t.Errorf("%s imports %s; dependencies point one way only",
+						pkg, imported)
+				}
+			}
+		}
+	}
+}
+
+// cmd wires things together and exits. Business logic there would be reachable
+// only by running the binary.
+func TestCommandPackageOnlyWires(t *testing.T) {
+	root := coreRoot(t)
+	path := filepath.Join(root, "cmd", "srunnet", "main.go")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	lines := strings.Count(string(data), "\n")
+	if lines > 120 {
+		t.Errorf("cmd/srunnet/main.go is %d lines; it should construct "+
+			"dependencies and exit, not carry logic", lines)
+	}
+}
+
+// Third-party dependencies are a supply-chain decision, so each one gets
+// recorded deliberately rather than arriving with a convenient helper.
+func TestNoUnreviewedThirdPartyDependencies(t *testing.T) {
+	// Reviewed and allowed. Spec 02 permits golang.org/x/sys/unix for Linux
+	// syscalls and x/net/html plus its x/text charset support for portal
+	// parsing. Nothing else may appear without being added here and to the
+	// dependency record.
+	allowed := []string{
+		"golang.org/x/sys/unix",
+		"golang.org/x/net/html",
+		"golang.org/x/net/html/charset",
+		"golang.org/x/text/encoding",
+		"golang.org/x/text/encoding/htmlindex",
+		"golang.org/x/text/transform",
+	}
+
+	for pkg, imports := range packageImports(t) {
+		for _, imported := range imports {
+			if strings.HasPrefix(imported, modulePath) {
+				continue
+			}
+			// A standard library path has no dot in its first element.
+			first, _, _ := strings.Cut(imported, "/")
+			if !strings.Contains(first, ".") {
+				continue
+			}
+			if !slices.Contains(allowed, imported) {
+				t.Errorf("%s imports the unreviewed third-party package %q",
+					pkg, imported)
+			}
+		}
+	}
+}
+
+// A shared mutable bag is how ownership stops being traceable: any package can
+// write any key, and nothing can be tested in isolation afterwards.
+func TestNoGlobalServiceLocator(t *testing.T) {
+	root := coreRoot(t)
+	banned := []string{"ServiceLocator", "CoreAPI", "GlobalContext", "AppContext"}
+
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") ||
+			strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		text := string(data)
+		for _, name := range banned {
+			if strings.Contains(text, "type "+name) {
+				relative, _ := filepath.Rel(root, path)
+				t.Errorf("%s declares %s; dependencies are passed explicitly",
+					filepath.ToSlash(relative), name)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+}
