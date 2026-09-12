@@ -12,3 +12,9 @@ __pycache__/
 docs/
 AGENTS.md
 CLAUDE.md
+
+# Go build and test output. Release artifacts are produced by the SDK, never
+# committed from a developer machine.
+core/coverage.out
+core/srunnet
+core/srunnet.exe

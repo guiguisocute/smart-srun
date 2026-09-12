@@ -1,5 +1,7 @@
 *.sh text eol=lf
 *.go text eol=lf
+core/go.mod text eol=lf
+core/go.sum text eol=lf
 doc/school-presets.json text eol=lf
 root/usr/lib/smart_srun/school_presets_fallback.json text eol=lf
 root/lib/upgrade/keep.d/smart-srun text eol=lf
