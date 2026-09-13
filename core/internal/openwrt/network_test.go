@@ -241,12 +241,44 @@ func TestDeviceNamesAreCleanedAndBounded(t *testing.T) {
 		"eth0\x00extra":    {"", false},
 		"@eth0":            {"", false},
 		"a/b":              {"", false},
+		// Punctuation is not a device name. "::" used to normalise to ":",
+		// which passed the character check and then failed when normalised
+		// again -- found by fuzzing.
+		"::":     {"", false},
+		":":      {"", false},
+		"...":    {"", false},
+		"---":    {"", false},
+		"eth0::": {"eth0", true},
+		"eth0:1": {"eth0:1", true},
 	}
 	for input, want := range cases {
 		got, ok := NormalizeDeviceName(input)
 		if ok != want.ok || got != want.want {
 			t.Errorf("NormalizeDeviceName(%q) = (%q, %v), want (%q, %v)",
 				input, got, ok, want.want, want.ok)
+		}
+	}
+}
+
+// Normalising twice must give the same answer.
+//
+// A caller that re-validates a name it was already given has to get the same
+// verdict, or a value can be accepted at one layer and refused at the next for
+// no visible reason. This is what "::" broke.
+func TestNormalisingADeviceNameIsIdempotent(t *testing.T) {
+	inputs := []string{
+		"eth0", "eth0.2@eth0", "eth0:", "eth0::", "::", ":", "...",
+		"br-lan", "phy1-sta0", "wan.v2", "", "  eth0  ", "eth0:1",
+	}
+	for _, input := range inputs {
+		once, okOnce := NormalizeDeviceName(input)
+		if !okOnce {
+			continue
+		}
+		twice, okTwice := NormalizeDeviceName(once)
+		if !okTwice || twice != once {
+			t.Errorf("NormalizeDeviceName(%q) = %q, but normalising that gives "+
+				"(%q, %v)", input, once, twice, okTwice)
 		}
 	}
 }

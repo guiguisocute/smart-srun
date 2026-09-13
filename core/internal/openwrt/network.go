@@ -183,10 +183,27 @@ func (s InterfaceStatus) ErrorCodes() []string {
 // (IFNAMSIZ includes the terminator): a name outside them cannot be a device,
 // and letting it through would put an arbitrary string into an argv or a
 // setsockopt.
+//
+// It is idempotent, and that is not decoration. Trimming a single trailing
+// colon turned "::" into ":", which then passed the character check and came
+// back as a device name -- while normalising that answer a second time
+// rejected it. Any caller that re-validated got a different result from the
+// one that first accepted the value. Found by fuzzing; the corpus entry is
+// kept.
 func NormalizeDeviceName(raw string) (string, bool) {
 	device, _, _ := strings.Cut(strings.TrimSpace(raw), "@")
-	device = strings.TrimSuffix(device, ":")
+	device = strings.TrimRight(device, ":")
 	if device == "" || len(device) > 15 {
+		return "", false
+	}
+	// A name made only of punctuation is not a device. Requiring one
+	// alphanumeric character is what rejects ":", "..." and "---", none of
+	// which the kernel would ever produce.
+	if !strings.ContainsFunc(device, func(symbol rune) bool {
+		return (symbol >= 'a' && symbol <= 'z') ||
+			(symbol >= 'A' && symbol <= 'Z') ||
+			(symbol >= '0' && symbol <= '9')
+	}) {
 		return "", false
 	}
 	for index := 0; index < len(device); index++ {
