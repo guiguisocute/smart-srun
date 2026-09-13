@@ -3,6 +3,7 @@ package openwrt
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -257,6 +258,61 @@ func TestADiagnosisDoesNotTreatTheInterfaceNameAsAFormat(t *testing.T) {
 	if got := err.Error(); !strings.Contains(got, "wan%s%d") ||
 		strings.Contains(got, "%!") {
 		t.Errorf("message = %q; the name is data, not a format", got)
+	}
+}
+
+// A router with no wireless hardware has no wireless configuration at all.
+//
+// uci answers "Entry not found" with status 1, and reporting that as a generic
+// failure would have the interface offer a retry for a system that has nothing
+// to configure. Seen on a real OpenWrt 24.10.8 guest with no radio.
+func TestAConfigurationPackageThatDoesNotExistIsNotFound(t *testing.T) {
+	runner := &recordingRunner{}
+	runner.fail(&ExitError{Program: "uci", Code: 1}, "uci", "show", "wireless")
+	runner.fail(&ExitError{Program: "uci", Code: 1}, "uci", "changes", "wireless")
+
+	adapter := NewAdapter(runner)
+
+	_, err := adapter.UCI(t.Context(), "wireless")
+	if err == nil {
+		t.Fatal("a package that does not exist was read successfully")
+	}
+	if code := codeOf(t, err); code != domain.CodeNotFound {
+		t.Errorf("code = %s, want NotFound", code)
+	}
+	if !strings.Contains(err.Error(), "wireless") {
+		t.Errorf("the message does not name the package: %v", err)
+	}
+
+	// The same for the change list, which must not read as "nothing staged"
+	// either: there is no package, which is a different fact.
+	changes, err := adapter.PendingChanges(t.Context(), "wireless")
+	if err == nil {
+		t.Fatalf("changes = %+v, want an error for a package that is absent",
+			changes)
+	}
+	if code := codeOf(t, err); code != domain.CodeNotFound {
+		t.Errorf("code = %s, want NotFound", code)
+	}
+}
+
+// A uci failure that is not "entry not found" keeps its own answer, so a broken
+// uci does not read as a system with no configuration.
+func TestAnotherUCIFailureIsNotReportedAsAMissingPackage(t *testing.T) {
+	runner := &recordingRunner{}
+	runner.fail(&ExitError{Program: "uci", Code: 255}, "uci", "show", "network")
+
+	adapter := NewAdapter(runner)
+	_, err := adapter.UCI(t.Context(), "network")
+	if err == nil {
+		t.Fatal("expected a failure")
+	}
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 255 {
+		t.Errorf("err = %v, want the original exit status", err)
+	}
+	if code, ok := domain.CodeOf(err); ok && code == domain.CodeNotFound {
+		t.Error("an unexplained uci failure was reported as a missing package")
 	}
 }
 

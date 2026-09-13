@@ -3,11 +3,9 @@ package openwrt
 import (
 	"bytes"
 	"encoding/json"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 )
 
@@ -242,61 +240,11 @@ func TestTheSameReaderHandlesAnotherPackage(t *testing.T) {
 	}
 }
 
-// Every fixture in the directory is read by something.
-//
-// A fixture nobody opens suggests coverage that does not exist: it looks like
-// the case is tested when nothing is asserting anything about it. The files
-// here are captured from real devices and can be regenerated from the raw
-// capture, so the honest state is to commit the ones in use.
-func TestEveryCommittedFixtureIsUsed(t *testing.T) {
-	root := filepath.Join("..", "..", "testdata", "openwrt")
-
-	sources := map[string]string{}
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read the package directory: %v", err)
-	}
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), "_test.go") {
-			continue
-		}
-		data, err := os.ReadFile(entry.Name())
-		if err != nil {
-			t.Fatalf("read %s: %v", entry.Name(), err)
-		}
-		sources[entry.Name()] = string(data)
-	}
-	if len(sources) == 0 {
-		t.Fatal("no test sources found; this check would pass vacuously")
-	}
-
-	found := 0
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return err
-		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		relative = filepath.ToSlash(relative)
-		found++
-		for _, source := range sources {
-			if strings.Contains(source, relative) {
-				return nil
-			}
-		}
-		t.Errorf("testdata/openwrt/%s is committed but no test reads it", relative)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
-	}
-	if found < 10 {
-		t.Fatalf("only %d fixtures found; the walk is looking in the wrong place",
-			found)
-	}
-}
+// The check that every committed fixture is read by something lives in
+// tests/architecture, not here. It is an assertion about the repository, and
+// this package's tests are cross-compiled and run inside a real OpenWrt guest
+// where the repository is not present -- a test that needs the source tree
+// would fail there for a reason that has nothing to do with the target.
 
 // A section header prints its type unquoted, and the section name is not a hint
 // about what it is.

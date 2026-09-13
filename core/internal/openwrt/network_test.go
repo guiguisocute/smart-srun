@@ -30,10 +30,13 @@ func TestTheFourLinkStatesComeFromRealInterfaces(t *testing.T) {
 			"netifd reports NO_DEVICE"},
 		{"kwrt-25.12/iface-lan.json", "lan", domain.LinkReady,
 			"a bridge, whose L3 device is br-lan and not the interface name"},
-		// A second firmware image, so the reader is not tuned to one build's
-		// field set.
+		// Two more firmware images, so the reader is not tuned to one build's
+		// field set: a second Kwrt build, and official OpenWrt 24.10 on x86_64,
+		// which is a different release generation entirely.
 		{"kwrt-25.12-feb/iface-wan.json", "wan", domain.LinkReady,
 			"the same shape from a different firmware build"},
+		{"openwrt-24.10/iface-wan-up.json", "wan", domain.LinkReady,
+			"official 24.10 on x86_64, a different release generation"},
 	}
 
 	for _, testCase := range cases {

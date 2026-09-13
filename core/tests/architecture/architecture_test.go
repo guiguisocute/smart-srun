@@ -222,6 +222,68 @@ func TestOnlyTheRunnerStartsProcesses(t *testing.T) {
 	}
 }
 
+// Every committed fixture is read by something.
+//
+// A fixture nobody opens suggests coverage that does not exist: it looks like
+// the case is covered when nothing asserts anything about it. These files are
+// captured from real devices and can be regenerated from the raw capture, so
+// the honest state is to commit the ones in use.
+//
+// It lives here rather than beside the tests that read them because it is an
+// assertion about the repository, and the adapter's own tests are cross-
+// compiled and run inside a real OpenWrt guest, where there is no source tree.
+func TestEveryCommittedFixtureIsUsed(t *testing.T) {
+	root := coreRoot(t)
+	fixtures := filepath.Join(root, "testdata", "openwrt")
+	tests := filepath.Join(root, "internal", "openwrt")
+
+	sources := map[string]string{}
+	entries, err := os.ReadDir(tests)
+	if err != nil {
+		t.Fatalf("read the adapter directory: %v", err)
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(tests, entry.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.Name(), err)
+		}
+		sources[entry.Name()] = string(data)
+	}
+	if len(sources) == 0 {
+		t.Fatal("no test sources found; this check would pass vacuously")
+	}
+
+	found := 0
+	err = filepath.WalkDir(fixtures, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		relative, err := filepath.Rel(fixtures, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		found++
+		for _, source := range sources {
+			if strings.Contains(source, relative) {
+				return nil
+			}
+		}
+		t.Errorf("testdata/openwrt/%s is committed but no test reads it", relative)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if found < 10 {
+		t.Fatalf("only %d fixtures found; the walk is looking in the wrong place",
+			found)
+	}
+}
+
 // cmd wires things together and exits. Business logic there would be reachable
 // only by running the binary.
 func TestCommandPackageOnlyWires(t *testing.T) {

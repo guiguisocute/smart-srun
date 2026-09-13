@@ -64,19 +64,55 @@ func TestThePackageManagerIsDetectedFromTheBinaryNotTheRelease(t *testing.T) {
 	}
 }
 
+// Two release strings, both opkg.
+//
+// Kwrt calls itself 25.12-SNAPSHOT and official 24.10.8 calls itself 24.10.8;
+// the answer is the same because it comes from the binary. Official 25.12 uses
+// apk, so a reader that keyed on the version would get Kwrt wrong in one
+// direction -- and there is no way to tell these two apart by string that also
+// gets that case right.
+func TestDifferentReleaseStringsWithTheSamePackageManager(t *testing.T) {
+	cases := map[string]string{
+		"kwrt-25.12/openwrt_release":    "25.12-SNAPSHOT",
+		"openwrt-24.10/openwrt_release": "24.10.8",
+	}
+	for fixture, expected := range cases {
+		release := string(testdata(t, fixture))
+		if !strings.Contains(release, expected) {
+			t.Errorf("%s no longer says %s", fixture, expected)
+		}
+	}
+
+	for _, arch := range []string{"kwrt-25.12/opkg-print-architecture.txt",
+		"openwrt-24.10/opkg-print-architecture.txt"} {
+		runner := &recordingRunner{missing: []string{"apk"}}
+		runner.respond(testdata(t, arch), "opkg", "print-architecture")
+
+		if manager := Detect(t.Context(), runner).PackageManager; manager != PackageManagerOpkg {
+			t.Errorf("%s: PackageManager = %q, want opkg", arch, manager)
+		}
+	}
+}
+
 // The architectures come from the tool and are ordered by the priority it
 // reports, so the specific one is offered before the wildcard.
 func TestArchitecturesAreOrderedByTheReportedPriority(t *testing.T) {
-	runner := &recordingRunner{missing: []string{"apk"}}
-	runner.respond(testdata(t, "kwrt-25.12/opkg-print-architecture.txt"),
-		"opkg", "print-architecture")
+	cases := map[string][]string{
+		"kwrt-25.12/opkg-print-architecture.txt": {
+			"aarch64_cortex-a53", "all", "noarch"},
+		"openwrt-24.10/opkg-print-architecture.txt": {
+			"x86_64", "all", "noarch"},
+	}
+	for fixture, want := range cases {
+		runner := &recordingRunner{missing: []string{"apk"}}
+		runner.respond(testdata(t, fixture), "opkg", "print-architecture")
 
-	capabilities := Detect(t.Context(), runner)
-	want := []string{"aarch64_cortex-a53", "all", "noarch"}
-	if !slices.Equal(capabilities.PackageArchitectures, want) {
-		t.Errorf("architectures = %v, want %v; `all` is valid for a LuCI file "+
-			"package and never for the compiled core",
-			capabilities.PackageArchitectures, want)
+		capabilities := Detect(t.Context(), runner)
+		if !slices.Equal(capabilities.PackageArchitectures, want) {
+			t.Errorf("%s: architectures = %v, want %v; `all` is valid for a "+
+				"LuCI file package and never for the compiled core",
+				fixture, capabilities.PackageArchitectures, want)
+		}
 	}
 }
 
@@ -173,6 +209,99 @@ func TestTheDefaultSearchPathCoversWhereOpenWrtKeepsItsTools(t *testing.T) {
 		if !slices.Contains(DefaultSearchPath, required) {
 			t.Errorf("%s is missing from the default search path", required)
 		}
+	}
+}
+
+// A command on disk and a service on the bus are different capabilities, and
+// this program needs the second one.
+//
+// OpenWrt 24.10.8 built without the iwinfo command still answers
+// `ubus call iwinfo devices`, because the object comes from a library that
+// netifd and rpcd link rather than from the command. The adapter's wireless
+// observation goes over ubus, so checking for the command would report the
+// feature unavailable on a system where it works -- which is what this code
+// did until the behaviour was seen on a real 24.10 guest.
+func TestWirelessObservationDependsOnTheBusServiceNotTheCommand(t *testing.T) {
+	runner := &recordingRunner{missing: []string{"iwinfo", "wifi", "apk", "opkg"}}
+	runner.respond([]byte("dhcp\nnetwork\nnetwork.interface.lan\niwinfo\n"+
+		"network.wireless\nsystem\n"), "ubus", "list")
+
+	capabilities := Detect(t.Context(), runner)
+
+	if capabilities.Has(ToolIwinfo) {
+		t.Fatal("the iwinfo command is absent and must be reported as absent")
+	}
+	if !capabilities.HasUbusObject(ObjectIwinfo) {
+		t.Error("the iwinfo bus service is registered and was not found")
+	}
+	if err := capabilities.RequireUbusObject(ObjectIwinfo); err != nil {
+		t.Errorf("wireless observation was refused on a system that supports "+
+			"it: %v", err)
+	}
+}
+
+// And when the service really is absent, that is UnsupportedCapability.
+func TestAMissingBusServiceIsUnsupported(t *testing.T) {
+	runner := &recordingRunner{missing: []string{"apk", "opkg"}}
+	runner.respond([]byte("dhcp\nnetwork\nsystem\n"), "ubus", "list")
+
+	capabilities := Detect(t.Context(), runner)
+	err := capabilities.RequireUbusObject(ObjectIwinfo)
+	if err == nil {
+		t.Fatal("a bus service that is not registered was accepted")
+	}
+	if code := codeOf(t, err); code != domain.CodeUnsupportedCapability {
+		t.Errorf("code = %s, want UnsupportedCapability", code)
+	}
+	if !strings.Contains(err.Error(), "iwinfo") {
+		t.Errorf("the message does not name the service: %v", err)
+	}
+}
+
+// Without ubus itself nothing on the bus can be reached, and the answer has to
+// blame ubus rather than the service.
+//
+// Both messages mention ubus, so checking for that word cannot tell them
+// apart -- which is how the first version of this test passed with the guard
+// deleted. The discriminator is that the no-bus answer must not name a service:
+// telling someone "the iwinfo service is not provided" when the whole bus is
+// absent sends them looking for the wrong package.
+func TestWithoutUbusEveryBusServiceIsUnavailable(t *testing.T) {
+	runner := &recordingRunner{missing: []string{"ubus", "apk", "opkg"}}
+	capabilities := Detect(t.Context(), runner)
+
+	err := capabilities.RequireUbusObject(ObjectIwinfo)
+	if err == nil {
+		t.Fatal("a bus service was accepted with no bus")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "缺少 ubus") {
+		t.Errorf("the message does not say ubus itself is missing: %s", message)
+	}
+	if strings.Contains(message, string(ObjectIwinfo)) {
+		t.Errorf("the message blames a service when the bus is what is "+
+			"absent: %s", message)
+	}
+	for _, call := range runner.calls {
+		if len(call) > 1 && call[0] == "ubus" {
+			t.Errorf("ubus was run even though it is absent: %v", call)
+		}
+	}
+}
+
+// The bus listing is not kept wholesale: it names per-interface and per-radio
+// objects, and those carry the user's network names into anything that later
+// renders a capability report.
+func TestOnlyTheBusServicesThisProgramUsesAreRecorded(t *testing.T) {
+	runner := &recordingRunner{missing: []string{"apk", "opkg"}}
+	runner.respond([]byte("iwinfo\nnetwork.wireless\n"+
+		"hostapd.phy1-ap0\nwpa_supplicant.phy1-sta0\n"+
+		"network.interface.HomeNetwork\n"), "ubus", "list")
+
+	capabilities := Detect(t.Context(), runner)
+	if len(capabilities.objects) != 2 {
+		t.Errorf("recorded %d objects, want only the two this program calls: %v",
+			len(capabilities.objects), capabilities.objects)
 	}
 }
 

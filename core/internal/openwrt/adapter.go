@@ -81,13 +81,29 @@ func (a *Adapter) UCI(ctx context.Context, pkg string) (UCIConfig, error) {
 	}
 	result, err := a.runner.Run(ctx, "uci", "show", pkg)
 	if err != nil {
-		return UCIConfig{}, err
+		return UCIConfig{}, missingPackage(pkg, err)
 	}
 	if result.StdoutTruncated {
 		return UCIConfig{}, domain.Errorf(domain.CodeInternal,
 			"配置 %s 过长，已截断", pkg)
 	}
 	return ParseUCIShow(pkg, result.Stdout)
+}
+
+// missingPackage names the one failure `uci show <package>` actually has.
+//
+// A router with no wireless hardware has no /etc/config/wireless at all, and
+// uci answers "Entry not found" with status 1. That is not a fault to retry: it
+// is a system with nothing to configure, and it needs a different answer from
+// "the uci command failed". Observed on OpenWrt 24.10.8, which ships no
+// wireless configuration when there is no radio.
+func missingPackage(pkg string, err error) error {
+	var exit *ExitError
+	if errors.As(err, &exit) && exit.Code == 1 {
+		return domain.Errorf(domain.CodeNotFound,
+			"系统上没有 %s 配置", pkg).Wrap(err)
+	}
+	return err
 }
 
 // PendingChanges lists the uncommitted changes in a uci package.
@@ -102,7 +118,7 @@ func (a *Adapter) PendingChanges(ctx context.Context, pkg string) ([]UCIChange, 
 	}
 	result, err := a.runner.Run(ctx, "uci", "changes", pkg)
 	if err != nil {
-		return nil, err
+		return nil, missingPackage(pkg, err)
 	}
 	if result.StdoutTruncated {
 		return nil, domain.Errorf(domain.CodeInternal,

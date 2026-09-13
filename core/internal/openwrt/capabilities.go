@@ -26,6 +26,27 @@ const (
 // user tries the feature that needs it.
 var probedTools = []Tool{ToolUCI, ToolUbus, ToolIwinfo, ToolWifi, ToolOpkg, ToolAPK}
 
+// UbusObject is a service registered on the ubus bus.
+//
+// A binary on disk and an object on the bus are different capabilities, and
+// this program needs the second one. An OpenWrt 24.10 image built without the
+// iwinfo command still answers `ubus call iwinfo devices`, because the object
+// comes from a library that netifd and rpcd link, not from the command. Asking
+// whether the command exists would report wireless observation as unavailable
+// on a system where it works.
+type UbusObject string
+
+const (
+	// ObjectIwinfo answers the wireless observation calls this program makes.
+	ObjectIwinfo UbusObject = "iwinfo"
+	// ObjectNetworkWireless is netifd's view of the configured radios.
+	ObjectNetworkWireless UbusObject = "network.wireless"
+	// ObjectUCI is rpcd's uci plugin. Not used yet; not probed.
+	ObjectUCI UbusObject = "uci"
+)
+
+var probedObjects = []UbusObject{ObjectIwinfo, ObjectNetworkWireless}
+
 // PackageManager identifies which one actually manages packages here.
 type PackageManager string
 
@@ -39,6 +60,9 @@ const (
 type Capabilities struct {
 	// tools maps a tool to its absolute path. Absent means absent.
 	tools map[Tool]string
+
+	// objects is what is registered on the ubus bus.
+	objects map[UbusObject]struct{}
 
 	// PackageManager is decided by asking the binaries, never by reading the
 	// firmware version. Kwrt calls itself 25.12-SNAPSHOT and ships opkg, while
@@ -62,6 +86,30 @@ func (c Capabilities) Has(tool Tool) bool {
 func (c Capabilities) Path(tool Tool) (string, bool) {
 	path, ok := c.tools[tool]
 	return path, ok
+}
+
+// HasUbusObject reports whether a service is registered on the bus.
+func (c Capabilities) HasUbusObject(object UbusObject) bool {
+	_, ok := c.objects[object]
+	return ok
+}
+
+// RequireUbusObject reports a missing bus service as UnsupportedCapability.
+//
+// This is the check that belongs in front of a wireless observation, not a
+// check for the iwinfo command: the calls go over ubus.
+func (c Capabilities) RequireUbusObject(objects ...UbusObject) error {
+	if !c.Has(ToolUbus) {
+		return domain.Errorf(domain.CodeUnsupportedCapability,
+			"系统缺少 ubus，该功能在此固件上不可用")
+	}
+	for _, object := range objects {
+		if !c.HasUbusObject(object) {
+			return domain.Errorf(domain.CodeUnsupportedCapability,
+				"系统未提供 ubus 服务 %s，该功能在此固件上不可用", object)
+		}
+	}
+	return nil
 }
 
 // Deliberately absent: a method listing everything that was found. It would
@@ -91,10 +139,19 @@ func (c Capabilities) Require(tools ...Tool) error {
 // architecture list rather than one derived from the CPU. So the package
 // manager has to answer a question before it counts.
 func Detect(ctx context.Context, runner commandRunner) Capabilities {
-	capabilities := Capabilities{tools: map[Tool]string{}}
+	capabilities := Capabilities{
+		tools:   map[Tool]string{},
+		objects: map[UbusObject]struct{}{},
+	}
 	for _, tool := range probedTools {
 		if path, err := runner.Resolve(string(tool)); err == nil {
 			capabilities.tools[tool] = path
+		}
+	}
+
+	if capabilities.Has(ToolUbus) {
+		for _, object := range listUbusObjects(ctx, runner) {
+			capabilities.objects[object] = struct{}{}
 		}
 	}
 
@@ -110,6 +167,31 @@ func Detect(ctx context.Context, runner commandRunner) Capabilities {
 		}
 	}
 	return capabilities
+}
+
+// listUbusObjects reads `ubus list`, one object name per line.
+//
+// Only the objects this program actually calls are recorded. Keeping every name
+// would put the whole bus -- which includes per-interface and per-radio objects
+// naming the user's networks -- into a structure that a status response or a
+// log line might later render.
+func listUbusObjects(ctx context.Context, runner commandRunner) []UbusObject {
+	result, err := runner.Run(ctx, string(ToolUbus), "list")
+	if err != nil {
+		return nil
+	}
+	wanted := make(map[string]UbusObject, len(probedObjects))
+	for _, object := range probedObjects {
+		wanted[string(object)] = object
+	}
+
+	var found []UbusObject
+	for line := range strings.SplitSeq(string(result.Stdout), "\n") {
+		if object, ok := wanted[strings.TrimSpace(line)]; ok {
+			found = append(found, object)
+		}
+	}
+	return found
 }
 
 // opkgArchitectures reads `opkg print-architecture`.
