@@ -3,6 +3,7 @@ package openwrt
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 
@@ -138,6 +139,13 @@ func (a *Adapter) ResolveBinding(ctx context.Context, logicalIface string,
 
 	if IsLogicalInterfaceName(logicalIface) {
 		status, err := a.InterfaceStatus(ctx, logicalIface)
+		if code, ok := domain.CodeOf(err); ok && code == domain.CodeNotFound {
+			// The interface was deleted after being selected, or the name was
+			// typed wrong. That is a setting to correct, not a line to wait
+			// for, and the message already says which -- so it is passed
+			// through rather than flattened into "cannot read interface".
+			return domain.Binding{}, err
+		}
 		if err != nil {
 			return domain.Binding{}, unavailable(logicalIface,
 				"无法读取接口状态").Wrap(err)
@@ -197,6 +205,11 @@ func chooseSourceAddress(logicalIface, device string, expected netip.Addr,
 			"设备 %s 还没有 IPv4 地址", device)
 	}
 	if !expected.IsValid() {
+		// The device path: the selection was a Linux device name, so there is
+		// no netifd interface to say which of its addresses is the one. The
+		// first is taken, in the kernel's order, which is what the baseline
+		// did. A device with a secondary address would need the gateway to
+		// disambiguate, and that is not known here.
 		return usable[0], nil
 	}
 	for _, address := range usable {
@@ -208,9 +221,16 @@ func chooseSourceAddress(logicalIface, device string, expected netip.Addr,
 		"接口报告的地址不在设备 %s 上，线路可能刚刚变化", device)
 }
 
-func unavailable(iface, format string, args ...any) *domain.Error {
+// unavailable builds the field error for a line that cannot carry a request.
+//
+// The interface name is an argument rather than part of the format string: it
+// comes from the user's configuration, and splicing it into a format would make
+// a name containing a percent sign produce a mangled message. The validators
+// happen to reject one today, which is exactly the kind of thing that stops
+// being true later.
+func unavailable(iface, detail string, args ...any) *domain.Error {
 	return domain.FieldErrorf(domain.CodeBindingUnavailable, "wired_iface",
-		"有线接口 "+iface+"："+format, args...)
+		"有线接口 %s：%s", iface, fmt.Sprintf(detail, args...))
 }
 
 // linkProblem turns a link state into advice, because the four reasons an

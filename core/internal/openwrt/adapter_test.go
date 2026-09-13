@@ -225,6 +225,41 @@ func TestSelectingAnInterfaceThatDoesNotExistIsNotFound(t *testing.T) {
 	}
 }
 
+// And resolving a binding for it says the same thing.
+//
+// Flattening this into "cannot read the interface status" would offer a retry
+// for a problem no amount of waiting fixes; the user has to pick a different
+// interface.
+func TestResolvingADeletedInterfaceKeepsTheNotFoundAnswer(t *testing.T) {
+	runner := &recordingRunner{}
+	runner.fail(&ExitError{Program: "ubus", Code: ubusStatusNotFound},
+		"ubus", "call", "network.interface.wan9", "status")
+
+	adapter := NewAdapter(runner)
+	_, err := adapter.ResolveBinding(t.Context(), "wan9", 1)
+	if err == nil {
+		t.Fatal("an interface that does not exist produced a binding")
+	}
+	if code := codeOf(t, err); code != domain.CodeNotFound {
+		t.Errorf("code = %s, want NotFound", code)
+	}
+	if !strings.Contains(err.Error(), "wan9") {
+		t.Errorf("the message does not name the interface: %v", err)
+	}
+}
+
+// A message must not be assembled by splicing a configured value into a format
+// string. Today's validators reject a percent sign, which is exactly the kind
+// of thing that stops being true later, and the result would be a user-facing
+// message with %!s(MISSING) in it.
+func TestADiagnosisDoesNotTreatTheInterfaceNameAsAFormat(t *testing.T) {
+	err := unavailable("wan%s%d", "接口尚未获取到 IPv4 地址")
+	if got := err.Error(); !strings.Contains(got, "wan%s%d") ||
+		strings.Contains(got, "%!") {
+		t.Errorf("message = %q; the name is data, not a format", got)
+	}
+}
+
 // A name that is not a uci section name cannot be a netifd interface, so it is
 // taken as a Linux device -- which is how "wan.v2" works. ubus must not be
 // asked about it at all.
