@@ -24,6 +24,58 @@ const (
 	LinkReady LinkState = "Ready"
 )
 
+// AuthState is the second of the three dimensions spec 04 requires.
+//
+// It is kept apart from the link and connectivity states because the three
+// answer different questions and a single "online" bool cannot. The gateway
+// accepting a login does not mean the session belongs to this account, and an
+// account being online does not mean the internet is reachable.
+type AuthState string
+
+const (
+	// AuthUnknown -- nothing has been asked yet.
+	AuthUnknown AuthState = "Unknown"
+	// AuthAuthenticating -- a request is in flight. Its outcome is not known,
+	// and spec 04 is explicit that a cancellation here does not mean the
+	// gateway did not receive it.
+	AuthAuthenticating AuthState = "Authenticating"
+	// AuthAccepted -- the gateway said the login succeeded. That is the
+	// gateway's claim, not yet a verified identity.
+	AuthAccepted AuthState = "Accepted"
+	// AuthVerifiedSelf -- a query confirmed the online session belongs to this
+	// account. This is the only state that means what a user reads as "logged
+	// in".
+	AuthVerifiedSelf AuthState = "VerifiedSelf"
+	// AuthVerifiedOther -- somebody is online on this line, and it is not this
+	// account. Reported, never acted on automatically: spec 04 forbids
+	// knocking another identity off without an explicit manual action.
+	AuthVerifiedOther AuthState = "VerifiedOther"
+	// AuthRejected -- the gateway refused. A wrong password lives here, and it
+	// must not be retried in a loop.
+	AuthRejected AuthState = "Rejected"
+)
+
+// Connectivity is the third dimension: what can actually be reached.
+//
+// Separate from authentication because a gateway that answers is not the
+// internet, and an HTTP 204 from a probe does not say whose session carried it.
+type Connectivity string
+
+const (
+	ConnectivityUnknown Connectivity = "Unknown"
+	// ConnectivityOffline -- nothing answered.
+	ConnectivityOffline Connectivity = "Offline"
+	// ConnectivityPortalReachable -- the gateway answers but the internet does
+	// not. Spec 04 warns this is reachability, not a diagnosis of why: it does
+	// not mean the password was wrong.
+	ConnectivityPortalReachable Connectivity = "PortalReachable"
+	// ConnectivityInternetReachable -- a probe returned its expected answer.
+	ConnectivityInternetReachable Connectivity = "InternetReachable"
+	// ConnectivityLimited -- something answered, but not what was expected: a
+	// redirect or unexpected HTML, which is weaker evidence than a 204.
+	ConnectivityLimited Connectivity = "Limited"
+)
+
 // Binding is one observation of how a line reaches the network.
 //
 // It is a value, not a handle: every field is what a single observation saw at

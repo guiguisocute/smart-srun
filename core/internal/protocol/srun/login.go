@@ -44,7 +44,15 @@ func NormalizePrefix(raw, fallback string) string {
 //
 // The prefix is normalised here so there is one place that does it and no
 // caller can forget; normalising an already-normalised prefix changes nothing.
+//
+// A nil alphabet means the baseline table. It is the table almost every school
+// uses, and the alternative was a panic on the one path that carries
+// credentials -- a daemon crashing mid-login is a worse answer to "the caller
+// did not pass an alphabet" than quietly using the one it would have chosen.
 func EncryptedInfo(prefix, infoJSON, token string, alphabet *Alphabet) string {
+	if alphabet == nil {
+		alphabet = DefaultAlphabet
+	}
 	marker := NormalizePrefix(prefix, DefaultInfoPrefix)
 	return "{" + marker + "}" + alphabet.Encode(Xencode([]byte(infoJSON), []byte(token)))
 }

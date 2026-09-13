@@ -229,6 +229,25 @@ func TestXencodeRoundTripsThroughAnIndependentDecrypt(t *testing.T) {
 // "correcting" mix() to match the paper, would produce a blob the gateway
 // rejects with no clue why. This asserts the difference so that change cannot
 // pass as a cleanup.
+// A nil alphabet means the baseline table rather than a crash.
+//
+// This is the one call that carries credentials, and it is reached from a
+// daemon. Panicking there because a caller left an argument unset would take
+// the service down for a mistake that has an obvious right answer.
+func TestANilAlphabetUsesTheBaselineTable(t *testing.T) {
+	const (
+		prefix = "SRBX1"
+		body   = `{"username":"u","password":"p","ip":"10.0.0.1","acid":"1",` +
+			`"enc_ver":"srun_bx1"}`
+		token = "tok"
+	)
+	if got, want := EncryptedInfo(prefix, body, token, nil),
+		EncryptedInfo(prefix, body, token, DefaultAlphabet); got != want {
+		t.Errorf("a nil alphabet produced %q, want the baseline table's %q",
+			got, want)
+	}
+}
+
 func TestTheRoundFunctionIsNotTextbookXXTEA(t *testing.T) {
 	// Typed as uint32, not left as untyped constants: those default to int, and
 	// this expression overflows a 32-bit int -- which is the same mistake this

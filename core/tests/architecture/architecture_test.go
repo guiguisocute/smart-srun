@@ -124,6 +124,15 @@ func TestDependencyDirection(t *testing.T) {
 		// tested with a hand-made binding and no router.
 		"internal/transport": {"internal/config", "internal/control",
 			"internal/cli", "internal/openwrt", "cmd"},
+		// auth performs one transaction over a line somebody else chose. It
+		// must not read configuration or answer RPCs, and it must not reach the
+		// adapter: which line to use is decided above it.
+		"internal/auth": {"internal/config", "internal/control", "internal/cli",
+			"internal/openwrt", "cmd"},
+		// strategy is declarative. It describes a school's parameters and
+		// extension points; it does not perform I/O of any kind.
+		"internal/strategy": {"internal/config", "internal/control",
+			"internal/cli", "internal/openwrt", "internal/transport", "cmd"},
 		// The adapter is a leaf. It reads the router and speaks domain; it does
 		// not read the user's configuration or answer RPCs. An adapter that
 		// reaches back into the layers that use it is how a "small exception"
@@ -287,6 +296,76 @@ func TestEveryCommittedFixtureIsUsed(t *testing.T) {
 	if found < 10 {
 		t.Fatalf("only %d fixtures found; the walk is looking in the wrong place",
 			found)
+	}
+}
+
+// There is one HTTP client, and it is the bound one.
+//
+// The M06 card says a school strategy may not carry its own; the same applies
+// to the authentication transaction. A second client would have its own pool,
+// its own timeouts and -- the part that matters -- its own idea of which line
+// to leave by, which is the whole thing the transport package exists to fix. A
+// strategy that needed a request nobody anticipated is a reason to widen the
+// interface it is given, not to open a socket.
+func TestOnlyTheTransportBuildsHTTPClients(t *testing.T) {
+	// The transport package is where the one client lives.
+	restricted := []string{"internal/auth", "internal/strategy",
+		"internal/discovery", "internal/presets", "internal/update"}
+
+	// Imports that mean "I am about to make my own way onto the network".
+	// net/http is allowed: a Request has to be built somewhere. net/netip is
+	// values only.
+	forbiddenImports := []string{"net", "crypto/tls", "net/http/httputil"}
+	// And the constructions that would build a client out of net/http alone.
+	forbiddenText := []string{"http.DefaultClient", "http.DefaultTransport",
+		"http.Client{", "http.Transport{", "&http.Client", "&http.Transport"}
+
+	root := coreRoot(t)
+	fileSet := token.NewFileSet()
+	checked := 0
+
+	for _, relative := range restricted {
+		directory := filepath.Join(root, filepath.FromSlash(relative))
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			// The package does not exist yet. The rule applies when it does.
+			continue
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasSuffix(name, ".go") ||
+				strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			path := filepath.Join(directory, name)
+			checked++
+
+			file, err := parser.ParseFile(fileSet, path, nil, parser.ImportsOnly)
+			if err != nil {
+				t.Fatalf("parse %s: %v", path, err)
+			}
+			for _, spec := range file.Imports {
+				imported := strings.Trim(spec.Path.Value, `"`)
+				if slices.Contains(forbiddenImports, imported) {
+					t.Errorf("%s/%s imports %q; the network is reached through "+
+						"the bound transport, not directly", relative, name, imported)
+				}
+			}
+
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			for _, marker := range forbiddenText {
+				if strings.Contains(string(data), marker) {
+					t.Errorf("%s/%s contains %q; there is one HTTP client and "+
+						"it is the one bound to the line", relative, name, marker)
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no restricted packages found; this check would pass vacuously")
 	}
 }
 
