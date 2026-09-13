@@ -115,9 +115,15 @@ func TestDomainHasNoIO(t *testing.T) {
 func TestDependencyDirection(t *testing.T) {
 	rules := map[string][]string{
 		"internal/domain": {"internal/config", "internal/protocol", "internal/control",
-			"internal/cli", "internal/openwrt", "cmd"},
+			"internal/cli", "internal/openwrt", "internal/transport", "cmd"},
 		"internal/protocol": {"internal/config", "internal/control", "internal/cli",
-			"internal/openwrt", "cmd"},
+			"internal/openwrt", "internal/transport", "cmd"},
+		// transport carries bytes out of one line. It takes a Binding as a
+		// value and knows nothing about where that came from, so it does not
+		// depend on the adapter that produced it -- which is what lets it be
+		// tested with a hand-made binding and no router.
+		"internal/transport": {"internal/config", "internal/control",
+			"internal/cli", "internal/openwrt", "cmd"},
 		// The adapter is a leaf. It reads the router and speaks domain; it does
 		// not read the user's configuration or answer RPCs. An adapter that
 		// reaches back into the layers that use it is how a "small exception"
