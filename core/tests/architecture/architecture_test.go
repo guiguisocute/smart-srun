@@ -85,6 +85,10 @@ func packageImports(t *testing.T) map[string][]string {
 // domain is the vocabulary every other package shares. Giving it I/O would make
 // every type that mentions it untestable without the thing it reached for.
 func TestDomainHasNoIO(t *testing.T) {
+	// "net" is forbidden but "net/netip" is not, and the difference is the
+	// point: netip is value types with no dialing, listening or resolving in
+	// it, so a Binding can name an address without the package that holds it
+	// gaining the ability to open a socket.
 	forbidden := []string{
 		"os", "os/exec", "net", "net/http", "io/fs", "database/sql",
 		"os/user", "syscall", "golang.org/x/sys/unix", "bufio",
@@ -111,11 +115,19 @@ func TestDomainHasNoIO(t *testing.T) {
 func TestDependencyDirection(t *testing.T) {
 	rules := map[string][]string{
 		"internal/domain": {"internal/config", "internal/protocol", "internal/control",
-			"internal/cli", "cmd"},
-		"internal/protocol": {"internal/config", "internal/control", "internal/cli", "cmd"},
-		"internal/config":   {"internal/control", "internal/cli", "cmd"},
-		"internal/control":  {"internal/cli", "cmd"},
-		"internal/cli":      {"cmd"},
+			"internal/cli", "internal/openwrt", "cmd"},
+		"internal/protocol": {"internal/config", "internal/control", "internal/cli",
+			"internal/openwrt", "cmd"},
+		// The adapter is a leaf. It reads the router and speaks domain; it does
+		// not read the user's configuration or answer RPCs. An adapter that
+		// reaches back into the layers that use it is how a "small exception"
+		// becomes a cycle, and it would also make every one of those layers
+		// need a router to test.
+		"internal/openwrt": {"internal/config", "internal/protocol",
+			"internal/control", "internal/cli", "cmd"},
+		"internal/config":  {"internal/control", "internal/cli", "internal/openwrt", "cmd"},
+		"internal/control": {"internal/cli", "cmd"},
+		"internal/cli":     {"cmd"},
 	}
 
 	imports := packageImports(t)
@@ -158,6 +170,55 @@ func TestProtocolReadsNothing(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no protocol package found")
+	}
+}
+
+// Every system command goes through the one runner.
+//
+// That runner is what makes a command cancellable, bounded in output and time,
+// reaped along with its children, and free of a shell. A second place that
+// starts a process gets none of it, and the way that happens is somebody
+// needing one more query and reaching for exec.Command because it is three
+// lines. Restricting the import to the file that owns the guarantees makes the
+// shortcut visible instead of easy.
+func TestOnlyTheRunnerStartsProcesses(t *testing.T) {
+	// command.go declares the runner; the platform files carry the syscalls it
+	// needs for process groups.
+	allowed := map[string]bool{
+		"command.go": true, "platform_unix.go": true, "platform_other.go": true,
+	}
+
+	root := filepath.Join(coreRoot(t), "internal", "openwrt")
+	fileSet := token.NewFileSet()
+	found := false
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read the adapter directory: %v", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") ||
+			strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		found = true
+		file, err := parser.ParseFile(fileSet, filepath.Join(root, name), nil,
+			parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, spec := range file.Imports {
+			imported := strings.Trim(spec.Path.Value, `"`)
+			if (imported == "os/exec" || imported == "syscall") && !allowed[name] {
+				t.Errorf("%s imports %q; system commands go through Runner, "+
+					"which is what bounds their output and reaps their children",
+					name, imported)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no adapter sources found; the walk is looking in the wrong place")
 	}
 }
 
