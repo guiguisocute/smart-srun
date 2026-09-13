@@ -163,10 +163,24 @@ func TestTheBodyLimitIsExactlyABoundary(t *testing.T) {
 	}
 }
 
-// A caller that forgets the limit gets an error rather than an unbounded read.
-func TestReadingWithNoLimitIsRefused(t *testing.T) {
-	if _, err := ReadBounded(strings.NewReader("x"), 0, "认证响应"); err == nil {
-		t.Fatal("an unbounded read was allowed")
+// A caller that forgets the limit gets an error rather than an unbounded read,
+// and the error blames the caller rather than the server.
+//
+// Checking only that something failed was not enough: with the guard removed,
+// a limit of zero still errors -- as "the body exceeds 0 bytes", which is a
+// ProtocolInvalid pointing at the gateway for a mistake in this program. The
+// code is what distinguishes a bug here from a misbehaving server, and that is
+// what a reader of the log will act on.
+func TestReadingWithNoLimitIsRefusedAsAProgrammingError(t *testing.T) {
+	for _, limit := range []int{0, -1} {
+		_, err := ReadBounded(strings.NewReader("x"), limit, "认证响应")
+		if err == nil {
+			t.Fatalf("an unbounded read was allowed for limit %d", limit)
+		}
+		if code := codeOf(t, err); code != domain.CodeInternal {
+			t.Errorf("limit %d: code = %s, want Internal; a missing limit is "+
+				"this program's mistake, not the gateway's", limit, code)
+		}
 	}
 }
 

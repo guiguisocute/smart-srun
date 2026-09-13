@@ -24,6 +24,9 @@ func bindToDevice(device string) func(network, address string, c syscall.RawConn
 	}
 }
 
+// The errno table is Linux's; see the comment on the same name there.
+const bindingErrnosClassified = false
+
 func bindingFailure(err error) string {
 	if errors.Is(err, os.ErrPermission) {
 		return "没有绑定网络设备的权限"

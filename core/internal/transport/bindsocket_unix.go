@@ -33,6 +33,13 @@ func bindToDevice(device string) func(network, address string, c syscall.RawConn
 	}
 }
 
+// bindingErrnosClassified says the errno table below is the platform's real
+// one. Off Linux the numbers differ -- Windows reports WSAEADDRNOTAVAIL rather
+// than EADDRNOTAVAIL, for instance -- so a local failure there falls through to
+// the generic answer. The tests assert the precise classification only where it
+// is implemented, rather than pretending it holds everywhere.
+const bindingErrnosClassified = true
+
 // bindingFailure names the local reasons a connection could not be made, as
 // opposed to the far end not answering.
 //
