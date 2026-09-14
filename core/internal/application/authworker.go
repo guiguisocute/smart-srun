@@ -65,19 +65,41 @@ type Authenticator struct {
 	binder   Binder
 	lines    Lines
 	settings Settings
+	wireless Wireless
 	clock    policy.Clock
 
 	generation atomic.Uint64
 }
 
+// AuthenticatorOptions wires one worker.
+//
+// A struct rather than five positional parameters, and Wireless is allowed to
+// be nil: a build without the wireless transaction still authenticates over a
+// client somebody configured by hand, it just cannot move the radio itself.
+type AuthenticatorOptions struct {
+	Binder   Binder
+	Lines    Lines
+	Settings Settings
+	// Wireless moves the managed client. Nil until M10 supplies the
+	// transaction, and a switch is refused rather than half-performed while it
+	// is nil.
+	Wireless Wireless
+	Clock    policy.Clock
+}
+
 // NewAuthenticator wires one.
-func NewAuthenticator(binder Binder, lines Lines, settings Settings,
-	clock policy.Clock) *Authenticator {
+func NewAuthenticator(options AuthenticatorOptions) *Authenticator {
+	clock := options.Clock
 	if clock == nil {
 		clock = policy.SystemClock{}
 	}
-	return &Authenticator{binder: binder, lines: lines,
-		settings: settings, clock: clock}
+	return &Authenticator{
+		binder:   options.Binder,
+		lines:    options.Lines,
+		settings: options.Settings,
+		wireless: options.Wireless,
+		clock:    clock,
+	}
 }
 
 // Run performs one action.
@@ -88,6 +110,8 @@ func (a *Authenticator) Run(ctx context.Context, action Action,
 		return a.authenticate(ctx, action, report)
 	case KindLogout, KindForcedLogout:
 		return a.logout(ctx, action, report)
+	case KindSwitchHotspot:
+		return a.switchHotspot(ctx, action, report)
 	default:
 		return Outcome{State: StateFailed, Code: domain.CodeUnsupportedCapability,
 			Message: "动作 " + string(action.Request.Kind) + " 尚未实现"}
@@ -111,6 +135,15 @@ type attempt struct {
 // is actually on the line.
 func (a *Authenticator) authenticate(ctx context.Context, action Action,
 	report func(Phase)) Outcome {
+
+	// The radio has to be on the right network before there is a line to
+	// authenticate over. This is a no-op for a wired account, for a build with
+	// no wireless transaction, and -- the case that matters on every
+	// maintenance tick -- for a client that is already associated with an
+	// address, which is checked without scanning.
+	if outcome, stop := a.ensureWirelessLine(ctx, action, report); stop {
+		return outcome
+	}
 
 	prepared, outcome := a.prepare(ctx, action, report)
 	if prepared == nil {

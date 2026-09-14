@@ -67,6 +67,16 @@ func (t Target) Matches(c Candidate) bool {
 	return c.SSID == t.SSID && t.Security.Accepts(c.Security)
 }
 
+// NeedsScan reports whether choosing requires knowing what is on the air.
+//
+// Auto does not: it pins nothing, so there is nothing to choose and no reason
+// to make the radio leave its channel. Asking before scanning rather than
+// scanning and discarding the result is the difference between a switch that
+// interrupts an associated client and one that does not.
+func (t Target) NeedsScan() bool {
+	return t.Policy != domain.APSelectionAuto
+}
+
 // Select picks the access point to join.
 //
 // The candidate list is whatever the caller scanned. For a fixed policy an

@@ -142,7 +142,13 @@ func (b *fakeBinder) ResolveBinding(_ context.Context, _ string,
 	if b.err != nil {
 		return domain.Binding{}, b.err
 	}
-	binding := b.bindings[min(b.calls-1, len(b.bindings)-1)]
+	// An unconfigured binder answers with a steady line rather than panicking.
+	// A fake that falls over when a test did not think about it turns "this
+	// test is about something else" into a stack trace.
+	binding := steadyBinding()
+	if len(b.bindings) > 0 {
+		binding = b.bindings[min(b.calls-1, len(b.bindings)-1)]
+	}
 	binding.Generation = generation
 	return binding, nil
 }
@@ -174,6 +180,14 @@ func (l directLine) SourceAddr() netip.Addr { return l.source }
 func (f *fakeLines) Line(string, domain.Binding, string) (auth.Line, error) {
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.client == nil {
+		// A test that set up no portal is not testing the transaction. Saying
+		// so is honest; handing back a line with no client turns it into a nil
+		// dereference inside net/http, several frames from anything the test
+		// wrote.
+		return nil, domain.Errorf(domain.CodeTransportFailure,
+			"这个测试没有搭建门户")
 	}
 	return directLine{client: f.client, source: f.source}, nil
 }
@@ -224,7 +238,8 @@ func workerFor(t *testing.T, p *portal, binder *fakeBinder) (*Authenticator, *fa
 			}},
 		},
 	}
-	return NewAuthenticator(binder, lines, settings, nil), lines
+	return NewAuthenticator(AuthenticatorOptions{Binder: binder, Lines: lines,
+		Settings: settings}), lines
 }
 
 func runWorker(t *testing.T, worker *Authenticator, kind Kind) Outcome {
