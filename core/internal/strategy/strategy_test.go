@@ -203,29 +203,54 @@ func TestTheBuiltInStrategyIsTheGeneralCase(t *testing.T) {
 
 // The listing order is registration order, so a picker does not reshuffle
 // between runs.
+//
+// Order is a guarantee one comparison barely tests. Go randomises map
+// iteration, but with a handful of entries what it randomises is a rotation of
+// insertion order, and most of the possible rotations are insertion order: a
+// listing built from the map survived the first version of this test about one
+// run in thirty. That is rare enough to look like a passing test and common
+// enough to turn up in a mutation sweep as a missing one. So the registry gets
+// enough entries to leave that layout, every call is checked against the
+// expected order rather than against the first call, and there are enough calls
+// that surviving all of them is not something luck does.
 func TestTheListingOrderIsStable(t *testing.T) {
 	registry := Builtin()
-	for _, id := range []string{"aaa", "zzz", "mmm"} {
+	ids := []string{
+		"aaa", "zzz", "mmm", "bbb", "yyy", "nnn",
+		"ccc", "xxx", "ooo", "ddd", "www", "ppp",
+	}
+	for _, id := range ids {
 		if err := registry.Register(Strategy{ID: id, Label: id}); err != nil {
 			t.Fatalf("register %s: %v", id, err)
 		}
 	}
+	want := append([]string{DefaultID}, ids...)
 
-	var first []string
-	for _, item := range registry.List() {
-		first = append(first, item.ID)
-	}
-	want := []string{DefaultID, "aaa", "zzz", "mmm"}
-	if !slices.Equal(first, want) {
-		t.Fatalf("order = %v, want registration order %v", first, want)
-	}
-	for range 5 {
-		var again []string
-		for _, item := range registry.List() {
-			again = append(again, item.ID)
+	// The premise, checked rather than assumed: map order and registration
+	// order have to actually differ here, or everything below would hold just
+	// as well for a listing built from the map and would be testing nothing.
+	// Iteration is re-randomised per range, so a few attempts settle it.
+	disagrees := false
+	for attempt := 0; attempt < 100 && !disagrees; attempt++ {
+		viaMap := make([]string, 0, len(registry.items))
+		for id := range registry.items {
+			viaMap = append(viaMap, id)
 		}
-		if !slices.Equal(again, first) {
-			t.Fatalf("the order changed between calls: %v then %v", first, again)
+		disagrees = !slices.Equal(viaMap, want)
+	}
+	if !disagrees {
+		t.Fatal("map iteration came out in registration order every time, so " +
+			"this test cannot tell a stable listing from a map-random one")
+	}
+
+	for call := range 100 {
+		var got []string
+		for _, item := range registry.List() {
+			got = append(got, item.ID)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("call %d: order = %v, want registration order %v",
+				call, got, want)
 		}
 	}
 }
