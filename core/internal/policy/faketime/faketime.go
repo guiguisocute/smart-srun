@@ -11,6 +11,7 @@
 package faketime
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -126,11 +127,33 @@ func (c *Clock) Fired() int {
 // never come -- a flake that only appears on a loaded machine. Waiting for the
 // timer to exist first makes the sequence deterministic.
 func (c *Clock) BlockUntil(n int) {
+	_ = c.BlockUntilContext(context.Background(), n)
+}
+
+// BlockUntilContext is BlockUntil with a way out.
+//
+// A test that drives the clock in a loop -- wait for a timer, advance past it,
+// repeat -- has no way to know the code under test has stopped making them, so
+// the last iteration would block forever. Cancelling is how that driver stops
+// instead of leaking a goroutine for the rest of the run.
+func (c *Clock) BlockUntilContext(ctx context.Context, n int) error {
+	// sync.Cond has no deadline, so cancellation has to arrive as a broadcast.
+	stop := context.AfterFunc(ctx, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.changed.Broadcast()
+	})
+	defer stop()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for len(c.waiting) < n {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		c.changed.Wait()
 	}
+	return nil
 }
 
 // Timer is one pending wait.

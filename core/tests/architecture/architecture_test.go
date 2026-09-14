@@ -113,9 +113,11 @@ func TestDomainHasNoIO(t *testing.T) {
 // that hold data, never the reverse. An adapter reaching back into the
 // application is how a "small exception" becomes a cycle.
 func TestDependencyDirection(t *testing.T) {
-	// deciders are the layers that make decisions. Nothing below them may
-	// depend on them, which is most of what the table below repeats.
-	deciders := []string{"internal/policy", "internal/application", "internal/observe"}
+	// deciders are the layers that make decisions, plus the assembly above
+	// them. Nothing below them may depend on them, which is most of what the
+	// table below repeats.
+	deciders := []string{"internal/policy", "internal/application",
+		"internal/observe", "internal/daemon"}
 	below := func(extra ...string) []string {
 		return append(append([]string{}, deciders...), extra...)
 	}
@@ -157,20 +159,26 @@ func TestDependencyDirection(t *testing.T) {
 		"internal/policy": {"internal/config", "internal/protocol",
 			"internal/control", "internal/cli", "internal/openwrt",
 			"internal/transport", "internal/auth", "internal/strategy",
-			"internal/application", "internal/observe", "cmd"},
+			"internal/application", "internal/observe", "internal/daemon", "cmd"},
 		// observe is a projection. It may name what policy decided, but it does
 		// not decide anything itself and it never reaches the network -- a
 		// status poll that probed would turn an idle browser tab into
 		// continuous authentication traffic.
 		"internal/observe": {"internal/config", "internal/protocol",
 			"internal/control", "internal/cli", "internal/openwrt",
-			"internal/transport", "internal/auth", "internal/application", "cmd"},
+			"internal/transport", "internal/auth", "internal/application",
+			"internal/daemon", "cmd"},
 		// application coordinates. It may use everything below it; what it may
 		// not do is reach up into the transports that call it.
 		"internal/application": {"internal/control", "internal/cli",
-			"internal/openwrt", "cmd"},
-		"internal/control": {"internal/cli", "cmd"},
-		"internal/cli":     {"cmd"},
+			"internal/openwrt", "internal/daemon", "cmd"},
+		"internal/control": {"internal/cli", "internal/daemon", "cmd"},
+		// daemon assembles the running service. It is allowed to know about
+		// everything below it -- that is its job -- and nothing about the
+		// command line above it: a service that reached into the CLI could not
+		// be started any other way.
+		"internal/daemon": {"internal/cli", "cmd"},
+		"internal/cli":    {"cmd"},
 	}
 
 	imports := packageImports(t)

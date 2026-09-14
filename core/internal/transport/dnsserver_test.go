@@ -39,16 +39,30 @@ func newTestDNS(t *testing.T) *testDNS {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	udp, err := net.ListenUDP("udp4", udpAddr)
-	if err != nil {
-		t.Fatalf("listen udp: %v", err)
-	}
-	// The TCP side must be on the same port, because a resolver retries the
-	// same server address over TCP.
-	tcp, err := net.Listen("tcp4", udp.LocalAddr().String())
-	if err != nil {
+
+	// The TCP side has to be on the same port as the UDP side, because a
+	// resolver retries the same server address over TCP. The kernel picks the
+	// UDP port, and the two port spaces are independent -- so the TCP bind can
+	// collide with something else entirely, most often a socket an earlier test
+	// in this process has not finished with. Asking for another UDP port is the
+	// whole remedy; retrying makes `go test -count=2` work, which is how a flake
+	// gets found in the first place.
+	var udp *net.UDPConn
+	var tcp net.Listener
+	for attempt := range 20 {
+		udp, err = net.ListenUDP("udp4", udpAddr)
+		if err != nil {
+			t.Fatalf("listen udp: %v", err)
+		}
+		tcp, err = net.Listen("tcp4", udp.LocalAddr().String())
+		if err == nil {
+			break
+		}
 		udp.Close()
-		t.Fatalf("listen tcp on %s: %v", udp.LocalAddr(), err)
+		udp, tcp = nil, nil
+		if attempt == 19 {
+			t.Fatalf("no port was free on both udp and tcp: %v", err)
+		}
 	}
 
 	server := &testDNS{udp: udp, tcp: tcp, answer: net.IPv4(203, 0, 113, 7)}

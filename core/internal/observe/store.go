@@ -208,6 +208,9 @@ func staleness(current AccountView, incoming Observation) Drop {
 // ActionStarted records that an action is running and clears the previous
 // note. A stale explanation sitting above a running action reads as the current
 // state, which is worse than no explanation at all.
+// Calling it repeatedly for the same action changes nothing, so a caller
+// watching a stream of updates does not have to work out which one was the
+// first: only a different action clears the note.
 func (s *Store) ActionStarted(accountID, actionID string) {
 	if accountID == "" {
 		return
@@ -215,6 +218,9 @@ func (s *Store) ActionStarted(accountID, actionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current := s.entryFor(accountID)
+	if current.view.RunningAction == actionID && actionID != "" {
+		return
+	}
 	current.view.RunningAction = actionID
 	current.note = nil
 }
