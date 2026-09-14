@@ -151,22 +151,92 @@ func TestABadSnapshotIsRefused(t *testing.T) {
 		})
 	}
 
-	t.Run("oversized", func(t *testing.T) {
+	// Exactly one byte over, and valid JSON.
+	//
+	// This is the only size at which the limit check is what refuses the file,
+	// and getting there took two attempts. Padding with spaces does not work:
+	// the decoder rejects whitespace on its own. Nor does "very large": the
+	// read stops at limit+1, so anything bigger arrives truncated and fails to
+	// parse whatever the limit says. At exactly limit+1 the document is intact
+	// and would be accepted -- which is precisely what reading one byte past
+	// the limit exists to catch.
+	t.Run("one byte over the limit and well-formed", func(t *testing.T) {
 		paths := tempPaths(t)
 		if err := os.MkdirAll(paths.Runtime, RuntimeDirMode); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		big := make([]byte, MaxSnapshotBytes+1)
-		for index := range big {
-			big[index] = ' '
+		prefix := `{"schema_version":1,"service":"stopped","pad":"`
+		suffix := `"}`
+		document := prefix +
+			strings.Repeat("x", MaxSnapshotBytes+1-len(prefix)-len(suffix)) +
+			suffix
+		if len(document) != MaxSnapshotBytes+1 {
+			t.Fatalf("the fixture is %d bytes; it has to be exactly %d",
+				len(document), MaxSnapshotBytes+1)
 		}
-		if err := os.WriteFile(paths.State(), big, RuntimeFileMode); err != nil {
+		var check Snapshot
+		if err := json.Unmarshal([]byte(document), &check); err != nil {
+			t.Fatalf("the fixture is not valid JSON, so this would pass for "+
+				"the wrong reason: %v", err)
+		}
+
+		if err := os.WriteFile(paths.State(), []byte(document),
+			RuntimeFileMode); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 		if _, err := ReadSnapshot(paths); err == nil {
-			t.Fatal("an oversized snapshot was read")
+			t.Fatal("a snapshot one byte over the limit was accepted; a reader " +
+				"that trusted the length of a file in /var/run would be " +
+				"trusting whatever last wrote there")
 		}
 	})
+
+	// And a genuinely huge one is not read whole on the way to refusing it.
+	t.Run("far over the limit", func(t *testing.T) {
+		paths := tempPaths(t)
+		if err := os.MkdirAll(paths.Runtime, RuntimeDirMode); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		document := `{"schema_version":1,"service":"stopped","pad":"` +
+			strings.Repeat("x", 4*MaxSnapshotBytes) + `"}`
+		if err := os.WriteFile(paths.State(), []byte(document),
+			RuntimeFileMode); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if _, err := ReadSnapshot(paths); err == nil {
+			t.Fatal("a four-megabyte snapshot was accepted")
+		}
+	})
+}
+
+// A write that cannot land leaves nothing behind.
+//
+// The happy path never exercises this: a successful rename moves the temporary
+// file, so there is nothing to clean up. Only a failure between creating it and
+// renaming it can leave one, and on a tmpfs those accumulate.
+func TestAFailedWriteLeavesNoTemporaryFile(t *testing.T) {
+	paths := tempPaths(t)
+	if err := os.MkdirAll(paths.Runtime, RuntimeDirMode); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// A directory where the state file should be: the rename cannot succeed.
+	if err := os.MkdirAll(paths.State(), RuntimeDirMode); err != nil {
+		t.Fatalf("mkdir state: %v", err)
+	}
+
+	if err := WriteSnapshot(paths, Snapshot{Service: ServiceRunning}); err == nil {
+		t.Fatal("a write that could not land reported success")
+	}
+
+	entries, err := os.ReadDir(paths.Runtime)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Errorf("a failed write left %s behind", entry.Name())
+		}
+	}
 }
 
 // T25 -- recording a stop does not touch the automatic-authentication switch.

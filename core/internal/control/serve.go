@@ -37,9 +37,14 @@ const maxAcceptFailures = 16
 // the blocked Accept return; anything else is reported.
 func Serve(ctx context.Context, listener net.Listener, registry *Registry) error {
 	// Closing the listener is the only way to interrupt Accept. AfterFunc runs
-	// it on cancellation and unregisters itself when Serve returns first.
+	// it on cancellation and unregisters itself when Serve returns first --
+	// which is why the close is also deferred: on the path where Serve gives up
+	// on its own, nothing else would ever close it, and the socket file would
+	// stay on disk with no listener behind it for the next caller to hang on.
+	// Closing twice is harmless.
 	stop := context.AfterFunc(ctx, func() { _ = listener.Close() })
 	defer stop()
+	defer listener.Close()
 
 	var callers sync.WaitGroup
 	// Waited on before returning, so a stop does not leave a handler writing to

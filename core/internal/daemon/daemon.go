@@ -170,11 +170,13 @@ func Run(ctx context.Context, options Options) error {
 	stopBackground()
 	loops.Wait()
 
-	// Only now: a reader that sees "stopped" must not then find something still
-	// listening on the socket.
-	if err := os.Remove(paths.Socket()); err != nil && !os.IsNotExist(err) {
-		onError(domain.Errorf(domain.CodeInternal, "无法清理控制套接字").Wrap(err))
-	}
+	// The socket is already gone: closing a Unix listener unlinks the path it
+	// created, and Serve closes its listener on every return. An explicit
+	// removal here looked like belt and braces and was in fact unreachable --
+	// a mutation of it changed nothing, which is how it was noticed. The case
+	// it appeared to cover, a socket outliving a daemon that was killed, is
+	// real; it is handled by the lifecycle helper, which is the only thing
+	// running at that point.
 	current := repository.Snapshot()
 	if err := MarkStopped(paths, current.Enabled, repository.Revision(),
 		options.Version); err != nil {

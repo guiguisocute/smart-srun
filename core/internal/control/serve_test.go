@@ -185,16 +185,22 @@ func TestServeReturnsCleanlyWhenStopped(t *testing.T) {
 
 // Serve waits for its handlers. A stop that returned while one was still
 // writing would leave the caller reading a socket nobody was tracking.
+//
+// The handler here ignores its cancellation and waits for the test instead,
+// which is what makes the check decisive: if Serve did not wait, it would
+// return immediately, and the only way to say so is to watch it not return
+// while the handler is definitely still there.
 func TestServeWaitsForItsHandlers(t *testing.T) {
 	entered := make(chan struct{})
-	finished := make(chan struct{})
+	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	defer releaseOnce()
 
 	registry := NewRegistry()
-	registry.Register("presets.refresh", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	registry.Register("presets.refresh", func(context.Context, json.RawMessage) (any, error) {
 		close(entered)
-		<-ctx.Done()
-		close(finished)
-		return nil, ctx.Err()
+		<-release
+		return map[string]any{"ok": true}, nil
 	})
 	client, stop, wait := served(t, registry)
 
@@ -205,12 +211,26 @@ func TestServeWaitsForItsHandlers(t *testing.T) {
 		t.Fatal("the handler never started")
 	}
 
+	returned := make(chan error, 1)
+	go func() { returned <- wait() }()
+
 	stop()
-	wait()
 	select {
-	case <-finished:
-	default:
-		t.Error("Serve returned while a handler was still running")
+	case <-returned:
+		t.Fatal("Serve returned while a handler was still running")
+	case <-time.After(200 * time.Millisecond):
+		// Still waiting, which is the point. Serve takes microseconds to
+		// return once it stops waiting, so this bound is not a race.
+	}
+
+	releaseOnce()
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Errorf("Serve returned %v after its handler finished", err)
+		}
+	case <-time.After(patience):
+		t.Fatal("Serve never returned after its handler finished")
 	}
 }
 

@@ -5,6 +5,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"os"
 	"sync"
 	"testing"
@@ -321,12 +322,31 @@ func TestStoppingSomethingThatIsNotRunningIsNotAnError(t *testing.T) {
 	runner := &recordingRunner{}
 	lifecycle := Lifecycle{Paths: paths, Runner: runner, Clock: clock}
 
+	// A socket file a killed daemon left behind. Nothing unlinked it, because
+	// SIGKILL closes nothing, and a caller that dials it waits for a connection
+	// that will never be accepted instead of seeing a stopped service.
+	if err := os.MkdirAll(paths.Runtime, RuntimeDirMode); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	stale, err := net.Listen("unix", paths.Socket())
+	if err != nil {
+		t.Fatalf("create a stale socket: %v", err)
+	}
+	stale.(*net.UnixListener).SetUnlinkOnClose(false)
+	stale.Close()
+	if _, err := os.Stat(paths.Socket()); err != nil {
+		t.Fatalf("the stale socket was not left in place: %v", err)
+	}
+
 	report, err := lifecycle.Stop(t.Context())
 	if err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	if !report.AlreadyStopped || report.CancelledActions != 0 {
 		t.Errorf("report = %+v", report)
+	}
+	if _, err := os.Stat(paths.Socket()); !os.IsNotExist(err) {
+		t.Errorf("the stale socket survived the stop: %v", err)
 	}
 	// The script is still run: a snapshot that says "running" after a crash is
 	// exactly when procd may still have something to stop.
