@@ -10,10 +10,10 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/application"
 	"github.com/matthewlu070111/smart-srun/core/internal/config"
 	"github.com/matthewlu070111/smart-srun/core/internal/control"
-	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 	"github.com/matthewlu070111/smart-srun/core/internal/observe"
 	"github.com/matthewlu070111/smart-srun/core/internal/openwrt"
 	"github.com/matthewlu070111/smart-srun/core/internal/policy"
+	"github.com/matthewlu070111/smart-srun/core/internal/transport"
 )
 
 // readBudget bounds an internal read of the coordinator's state.
@@ -28,8 +28,9 @@ type Options struct {
 	Clock   policy.Clock
 	Version string
 
-	// Runner performs actions. Without one the service still runs, still
-	// answers, still queues -- and fails every action saying what is missing.
+	// Runner performs actions. Nil means the real one: an authenticator wired
+	// to this device's adapter and connection pool. A test supplies its own so
+	// that the lifecycle can be exercised without a router.
 	Runner application.Runner
 
 	// Capabilities is what this device can actually do, detected once by the
@@ -93,10 +94,6 @@ func Run(ctx context.Context, options Options) error {
 	if clock == nil {
 		clock = policy.SystemClock{}
 	}
-	runner := options.Runner
-	if runner == nil {
-		runner = UnavailableRunner{}
-	}
 	onError := options.OnError
 	if onError == nil {
 		onError = func(error) {}
@@ -114,6 +111,21 @@ func Run(ctx context.Context, options Options) error {
 	repository, err := config.Open(paths.ConfigFile())
 	if err != nil {
 		return err
+	}
+
+	// One pool for the process, closed when the service stops. Its clients hold
+	// sockets bound to particular addresses, and leaving them open past the
+	// stop would leave a socket bound to an address the next start may not
+	// have.
+	pool := transport.NewPool()
+	defer pool.Close()
+
+	// The worker is built here rather than by the caller: the CLI has no
+	// business knowing which adapter or which pool the service authenticates
+	// through, and a test supplies its own through Options.
+	runner := options.Runner
+	if runner == nil {
+		runner = newDeviceRunner(repository, pool, clock)
 	}
 
 	observer := options.Observer
@@ -138,6 +150,12 @@ func Run(ctx context.Context, options Options) error {
 		Runner:   runner,
 		Lines:    service.lineOf,
 		Observer: service.onAction,
+		// The store decides for itself whether an arriving observation is still
+		// current -- it holds the revision, generation and sequence rules -- so
+		// the answer is handed over rather than filtered first.
+		Record: func(observation observe.Observation) {
+			service.store.Accept(observation)
+		},
 	})
 
 	// The coordinator and the snapshot writer outlive the listener on purpose:
@@ -287,19 +305,8 @@ func (d *Daemon) Snapshot() Snapshot {
 	return snapshot
 }
 
-// UnavailableRunner fails every action, saying why.
-//
-// This build has the service, the queue and the action state machine but not
-// the authentication worker behind them; that is M09. So an action queues,
-// runs, and fails with UnsupportedCapability. Reporting success without doing
-// anything would be worse than the command not existing at all.
-type UnavailableRunner struct{}
-
-func (UnavailableRunner) Run(context.Context, application.Action,
-	func(application.Phase)) application.Outcome {
-	return application.Outcome{
-		State:   application.StateFailed,
-		Code:    domain.CodeUnsupportedCapability,
-		Message: "本次构建尚未包含认证执行组件，动作无法完成",
-	}
-}
+// UnavailableRunner is gone. It existed because M08 had the service, the queue
+// and the action state machine but no authentication worker behind them, so an
+// action queued, ran, and failed with UnsupportedCapability -- which was the
+// honest answer at the time. M09 supplies the worker, newDeviceRunner builds
+// it, and nothing referred to the placeholder any more.

@@ -184,10 +184,13 @@ func TestASecondDaemonOnTheSamePathsRefusesToStart(t *testing.T) {
 // An action submitted over the socket goes all the way through the state
 // machine and comes back with the reason it failed.
 //
-// This build has no authentication worker, so the reason is that. What the test
-// is really checking is that queued, running and a terminal state all happen
-// and are all visible -- reporting success without doing the work would be the
-// failure worth catching.
+// The reason used to be "this build has no authentication worker". It now has
+// one, and this service was started on an empty configuration, so the reason is
+// that the account does not exist -- which is the more interesting answer,
+// because it means the real worker ran and read the real configuration. What
+// the test is checking either way is that queued, running and a terminal state
+// all happen and are all visible: reporting success without doing the work is
+// the failure worth catching.
 func TestAnActionRunsAndReportsWhyItFailed(t *testing.T) {
 	service := start(t, nil)
 
@@ -205,8 +208,9 @@ func TestAnActionRunsAndReportsWhyItFailed(t *testing.T) {
 	if finished.State != application.StateFailed {
 		t.Errorf("state = %s, want failed", finished.State)
 	}
-	if finished.Code != domain.CodeUnsupportedCapability {
-		t.Errorf("code = %s, want UnsupportedCapability", finished.Code)
+	if finished.Code != domain.CodeNotFound {
+		t.Errorf("code = %s, want NotFound for an account this service does not have",
+			finished.Code)
 	}
 
 	var view ActionView
