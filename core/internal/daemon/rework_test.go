@@ -1,11 +1,15 @@
 package daemon
 
 import (
+	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/application"
 	"github.com/matthewlu070111/smart-srun/core/internal/config"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/policy/faketime"
 )
 
 // R08 -- everything that touches the radio serialises on one key.
@@ -66,6 +70,118 @@ func TestWiredAccountsAreNotSerialisedOntoTheRadio(t *testing.T) {
 		Kind: application.KindLogin, AccountID: "wired2"})
 	if other == wired {
 		t.Errorf("two interfaces shared the key %q", wired)
+	}
+}
+
+// maintainRunner answers every action at once and says what it was asked.
+type maintainRunner struct{ seen chan application.Action }
+
+func (r maintainRunner) Run(_ context.Context, action application.Action,
+	_ func(application.Phase)) application.Outcome {
+
+	select {
+	case r.seen <- action:
+	default:
+	}
+	return application.Outcome{State: application.StateSucceeded,
+		Message: "认证完成"}
+}
+
+// M09.1 -- the assembled service authenticates on its own, and learns how it
+// went.
+//
+// Two attempts rather than one, and the second is the point. The first proves
+// the maintenance loop is wired to the coordinator at all; only the second
+// proves the results come back, because an account whose result never arrives
+// stays marked in-flight forever and is never queued again. Removing that one
+// line in Run leaves the first attempt working and the service silently stuck
+// after it -- which is exactly the failure a test that stopped at one would
+// miss.
+func TestTheServiceAuthenticatesOnItsOwnAndLearnsHowItWent(t *testing.T) {
+	paths := tempPaths(t)
+	repository, err := config.Open(paths.ConfigFile())
+	if err != nil {
+		t.Fatalf("open config: %v", err)
+	}
+	if _, err := repository.Update(repository.Revision(),
+		func(cfg *domain.Config) error {
+			cfg.Enabled = true
+			cfg.Checks.IntervalSeconds = 60
+			cfg.Selection.ActiveCampusID = "c1"
+			cfg.CampusAccounts = []domain.CampusAccount{{
+				ID: "c1", Label: "校园网", UserID: "a", Password: "p",
+				AccessMode: domain.AccessModeWired, WiredIface: "wan",
+				BaseURL: "http://192.0.2.1", ACID: "1",
+			}}
+			return nil
+		}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	clock := faketime.New(time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC))
+	runner := maintainRunner{seen: make(chan application.Action, 8)}
+
+	ready := make(chan struct{})
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Options{
+			Paths:   paths,
+			Version: "2.0.0rc1",
+			Clock:   clock,
+			Runner:  runner,
+			Ready:   sync.OnceFunc(func() { close(ready) }),
+			OnError: func(error) {},
+		})
+	}()
+	t.Cleanup(func() {
+		stop()
+		select {
+		case <-done:
+		case <-time.After(patience):
+			t.Error("the daemon did not stop")
+		}
+	})
+
+	select {
+	case <-ready:
+	case <-time.After(patience):
+		t.Fatal("the daemon never became ready")
+	}
+
+	first := awaitRun(t, runner.seen, "the service never authenticated on its own")
+	if first.Request.Kind != application.KindMaintain {
+		t.Fatalf("first action = %s, want maintain", first.Request.Kind)
+	}
+
+	// Push the clock along until the next check falls due. The result of the
+	// first attempt has to have reached the loop for this to happen at all.
+	deadline := time.Now().Add(patience)
+	for {
+		select {
+		case second := <-runner.seen:
+			if second.Request.Kind != application.KindMaintain {
+				t.Errorf("second action = %s, want maintain", second.Request.Kind)
+			}
+			return
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no second check: the loop was never told how the first attempt ended")
+		}
+		clock.Advance(30 * time.Second)
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func awaitRun(t *testing.T, seen chan application.Action, why string) application.Action {
+	t.Helper()
+	select {
+	case action := <-seen:
+		return action
+	case <-time.After(patience):
+		t.Fatal(why)
+		return application.Action{}
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/application"
 	"github.com/matthewlu070111/smart-srun/core/internal/config"
 	"github.com/matthewlu070111/smart-srun/core/internal/control"
+	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 	"github.com/matthewlu070111/smart-srun/core/internal/observe"
 	"github.com/matthewlu070111/smart-srun/core/internal/openwrt"
 	"github.com/matthewlu070111/smart-srun/core/internal/policy"
@@ -145,11 +146,33 @@ func Run(ctx context.Context, options Options) error {
 		dirty:        make(chan struct{}, 1),
 	}
 	service.store.SetRevision(repository.Revision())
-	service.actions = application.New(application.Options{
+
+	// The maintenance loop is built before the coordinator and submits through
+	// a closure, because each needs the other: the loop submits actions, and
+	// the coordinator publishes their results back to it. Resolving
+	// service.actions at call time rather than at construction is what breaks
+	// the knot without an initialisation order nobody can see.
+	maintainer := application.NewMaintainer(application.MaintainerOptions{
 		Clock:    clock,
-		Runner:   runner,
-		Lines:    service.lineOf,
-		Observer: service.onAction,
+		Settings: repository,
+		Submit: func(ctx context.Context, request application.Request) (
+			application.Receipt, error) {
+			return service.actions.Submit(ctx, request)
+		},
+		Line:    service.lineOf,
+		OnEvent: service.onMaintenanceEvent,
+	})
+
+	service.actions = application.New(application.Options{
+		Clock:  clock,
+		Runner: runner,
+		Lines:  service.lineOf,
+		Observer: func(action application.Action) {
+			service.onAction(action)
+			// The loop learns what happened from the same publication the
+			// status projection does, rather than polling for it.
+			maintainer.Observe(action)
+		},
 		// The store decides for itself whether an arriving observation is still
 		// current -- it holds the revision, generation and sequence rules -- so
 		// the answer is handed over rather than filtered first.
@@ -165,8 +188,9 @@ func Run(ctx context.Context, options Options) error {
 	defer stopBackground()
 
 	var loops sync.WaitGroup
-	var coordinatorErr error
+	var coordinatorErr, maintainerErr error
 	loops.Go(func() { coordinatorErr = service.actions.Run(background) })
+	loops.Go(func() { maintainerErr = maintainer.Run(background) })
 	loops.Go(func() { service.writeSnapshots(background) })
 
 	listener, err := control.Listen(paths.Socket())
@@ -200,7 +224,7 @@ func Run(ctx context.Context, options Options) error {
 		options.Version); err != nil {
 		onError(err)
 	}
-	return errors.Join(serveErr, coordinatorErr)
+	return errors.Join(serveErr, coordinatorErr, maintainerErr)
 }
 
 // wirelessLine is the scheduling key every wireless account shares.
@@ -251,6 +275,20 @@ func (d *Daemon) lineOf(request application.Request) string {
 // names.
 func wirelessKind(kind application.Kind) bool {
 	return kind == application.KindSwitchHotspot
+}
+
+// onMaintenanceEvent is where the maintenance loop's narration goes until M11
+// gives it a structured log.
+//
+// Only the line conflict reaches onError, because it is the one event somebody
+// has to act on: two accounts resolving to one line will never both be online,
+// and the loop has stopped trying rather than letting them knock each other off
+// every interval. Backoffs, pauses and queueings are ordinary progress and would
+// be noise on a stderr that procd captures.
+func (d *Daemon) onMaintenanceEvent(event application.MaintenanceEvent) {
+	if event.Kind == application.EventLineConflict {
+		d.onError(domain.Errorf(domain.CodeConflict, "%s", event.Message))
+	}
 }
 
 // onAction is the coordinator's observer. It runs on the coordinator's
