@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -163,6 +164,30 @@ func TestTooManyConcurrentCallersAreRefusedWithAReason(t *testing.T) {
 	}
 	if code, _ := domain.CodeOf(err); code != domain.CodeBusy {
 		t.Errorf("code = %s, want Busy", code)
+	}
+
+	// The same refusal, by a caller whose request is too large to sit in the
+	// socket buffer. This is the version that does not depend on timing, and it
+	// is the one that found the defect: with a small request the caller's write
+	// usually lands before the refusal closes, so the answer survives and the
+	// check above passes -- most of the time, and less often on a loaded
+	// machine. With a request bigger than the buffer the write is still in
+	// flight when the close arrives, and a refusal that closed without reading
+	// reset the connection and destroyed the answer it had just written. The
+	// caller then saw a failed write, which is the silent-EOF outcome this path
+	// exists to prevent, and saw it only when the daemon really was busy.
+	//
+	// 400 KiB is comfortably past a Linux Unix-socket buffer (208 KiB) and
+	// still inside the 512 KiB request limit, so the client sends it rather
+	// than refusing it itself.
+	blob := strings.Repeat("x", 400*1024)
+	_, err = client.Call(t.Context(), "presets.refresh",
+		map[string]string{"blob": blob})
+	if err == nil {
+		t.Fatal("a large caller beyond the cap was served")
+	}
+	if code, _ := domain.CodeOf(err); code != domain.CodeBusy {
+		t.Errorf("large request refused with %s, want Busy", code)
 	}
 
 	releaseOnce()

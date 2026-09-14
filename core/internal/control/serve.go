@@ -3,11 +3,13 @@
 package control
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 )
@@ -88,10 +90,29 @@ func Serve(ctx context.Context, listener net.Listener, registry *Registry) error
 }
 
 // refuse answers a caller this daemon has no slot for, then closes.
+//
+// Reading the request before closing is not politeness. On a Unix socket,
+// closing while bytes the peer sent are still unread resets the connection, and
+// the reset discards the answer already written -- so the caller gets exactly
+// the silent EOF this function exists to prevent, and gets it only when the
+// daemon really is busy, which is when the reason matters most. A caller whose
+// request is larger than the socket buffer sees it every time: its write is
+// still in flight when the close lands, so the write itself fails and the
+// answer is never read.
+//
+// Bounded by the same request limit and the same read deadline as a served
+// connection. No new number: spec 03 fixes two deadlines and inventing a third
+// here would make the refusal path behave unlike everything else for no reason
+// anybody could look up.
 func refuse(conn net.Conn) {
 	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(RequestReadDeadline))
 	_ = WriteResponse(conn, NewFailure("", domain.Errorf(domain.CodeBusy,
 		"同时处理的本地请求过多，请稍后重试")))
+	// One frame, discarded. Draining to EOF instead would hold this connection
+	// for the whole deadline every time, because the caller stops writing after
+	// its request and waits for the answer.
+	_, _ = readLine(bufio.NewReader(conn), MaxRequestBytes)
 }
 
 // serveOne checks who is calling before it reads anything they sent.
