@@ -80,11 +80,13 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 	case challengePath:
 		body = `{"challenge":"` + challenge + `","client_ip":"` + clientIP + `"}`
 	case portalPath:
-		if r.URL.Query().Get("action") == "logout" {
-			body = logout
-		} else {
-			body = login
-		}
+		// The portal path serves logins and nothing else. Routing a logout
+		// here on the strength of action=logout is what let the production
+		// code send the signed logout to the wrong endpoint without any test
+		// noticing: the fake had the same wrong idea, so the two agreed.
+		body = login
+	case logoutPath:
+		body = logout
 	case onlinePath:
 		body = online
 	default:

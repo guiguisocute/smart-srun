@@ -3,6 +3,8 @@ package application
 import (
 	"context"
 	"errors"
+	"slices"
+	"sync"
 	"sync/atomic"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/auth"
@@ -69,6 +71,11 @@ type Authenticator struct {
 	clock    policy.Clock
 
 	generation atomic.Uint64
+
+	// seen is the binding each account was last observed on, so a generation is
+	// spent when the line changes rather than when an action starts.
+	mu   sync.Mutex
+	seen map[string]domain.Binding
 }
 
 // AuthenticatorOptions wires one worker.
@@ -99,6 +106,7 @@ func NewAuthenticator(options AuthenticatorOptions) *Authenticator {
 		settings: options.Settings,
 		wireless: options.Wireless,
 		clock:    clock,
+		seen:     map[string]domain.Binding{},
 	}
 }
 
@@ -151,31 +159,13 @@ func (a *Authenticator) authenticate(ctx context.Context, action Action,
 	}
 	transaction := auth.NewTransaction(prepared.line, prepared.gateway)
 
-	report(PhaseChallenge)
-	challenge, err := transaction.Challenge(ctx, prepared.username)
-	if err != nil {
-		return prepared.failed(a, err, domain.AuthUnknown, "")
-	}
-
-	// Spec 04: the credentials are re-checked against the line before they go
-	// out. A DHCP lease that changes between the challenge and the login means
-	// the token was issued for an address this account no longer has, and
-	// sending it anyway spends an attempt and teaches the user nothing.
-	if err := a.confirmUnchanged(ctx, prepared); err != nil {
-		return prepared.failed(a, err, domain.AuthUnknown, "")
-	}
-
-	report(PhaseLogin)
-	result, err := transaction.Login(ctx,
-		auth.Credentials{Username: prepared.username,
-			Password: prepared.account.Password},
-		prepared.shape, challenge)
+	result, err := a.attemptLogin(ctx, transaction, prepared, report)
 	if err != nil {
 		return prepared.failed(a, err, domain.AuthAuthenticating, "")
 	}
 
 	if result.AlreadyOnline {
-		return a.settleAlreadyOnline(ctx, transaction, prepared, challenge, report)
+		return a.settleAlreadyOnline(ctx, transaction, prepared, report)
 	}
 	if result.State == domain.AuthRejected {
 		// A refusal is an answer, and retrying it in a loop is how an account
@@ -235,7 +225,7 @@ func (a *Authenticator) verify(ctx context.Context, transaction *auth.Transactio
 // The clean-up happens once. Doing it in a loop would be a program that logs
 // somebody out every time it is unsure.
 func (a *Authenticator) settleAlreadyOnline(ctx context.Context,
-	transaction *auth.Transaction, prepared *attempt, challenge auth.Challenge,
+	transaction *auth.Transaction, prepared *attempt,
 	report func(Phase)) Outcome {
 
 	report(PhaseVerify)
@@ -259,32 +249,69 @@ func (a *Authenticator) settleAlreadyOnline(ctx context.Context,
 		}
 		// An explicit request may clear this line's session -- and it clears
 		// the identity the query just returned, not a name somebody passed in.
-		return a.clearAndRetry(ctx, transaction, prepared, challenge,
+		return a.clearAndRetry(ctx, transaction, prepared,
 			identity.Username, report)
 
 	default:
 		// Nobody is online at this address, so the session the gateway is
 		// refusing over is on the one before the lease changed.
-		return a.clearAndRetry(ctx, transaction, prepared, challenge,
+		return a.clearAndRetry(ctx, transaction, prepared,
 			prepared.username, report)
 	}
 }
 
-// clearAndRetry unbinds one session and logs in once more.
-func (a *Authenticator) clearAndRetry(ctx context.Context,
-	transaction *auth.Transaction, prepared *attempt, challenge auth.Challenge,
-	username string, report func(Phase)) Outcome {
+// attemptLogin is the only path credentials take.
+//
+// Challenge, re-check the line, then send -- in that order, every time. The
+// first attempt and the retry after a clean-up both go through here because a
+// retry that skipped either step would be a second, weaker way of doing the
+// same thing, and that is precisely what the earlier version was: it reused the
+// token issued before the unbind and never looked at the line again, so a lease
+// that moved during the clean-up sent credentials from an address the account
+// no longer had.
+//
+// Spec 04 asks for both. A token issued for an address this account has since
+// lost is refused by the gateway without saying why, and the attempt is spent.
+func (a *Authenticator) attemptLogin(ctx context.Context,
+	transaction *auth.Transaction, prepared *attempt,
+	report func(Phase)) (auth.Result, error) {
 
-	report(PhaseLogout)
-	if _, err := transaction.Logout(ctx, username, ""); err != nil {
-		return prepared.failed(a, err, domain.AuthVerifiedOther, username)
+	report(PhaseChallenge)
+	challenge, err := transaction.Challenge(ctx, prepared.username)
+	if err != nil {
+		return auth.Result{}, err
+	}
+	if err := a.confirmUnchanged(ctx, prepared); err != nil {
+		return auth.Result{}, err
 	}
 
 	report(PhaseLogin)
-	result, err := transaction.Login(ctx,
+	return transaction.Login(ctx,
 		auth.Credentials{Username: prepared.username,
 			Password: prepared.account.Password},
 		prepared.shape, challenge)
+}
+
+// clearAndRetry unbinds one session and logs in once more.
+func (a *Authenticator) clearAndRetry(ctx context.Context,
+	transaction *auth.Transaction, prepared *attempt,
+	username string, report func(Phase)) Outcome {
+
+	report(PhaseLogout)
+	cleared, err := transaction.Logout(ctx, username, "")
+	if err != nil {
+		return prepared.failed(a, err, domain.AuthVerifiedOther, username)
+	}
+	if cleared.State == domain.AuthRejected {
+		// The gateway refused the unbind. Logging in again on the strength of a
+		// clean-up that did not happen just spends another attempt.
+		return prepared.failed(a,
+			domain.Errorf(domain.CodeConflict,
+				"网关拒绝了清理旧会话的请求：%s", gatewayWords(cleared)),
+			domain.AuthVerifiedOther, username)
+	}
+
+	result, err := a.attemptLogin(ctx, transaction, prepared, report)
 	if err != nil {
 		return prepared.failed(a, err, domain.AuthAuthenticating, "")
 	}
@@ -325,7 +352,7 @@ func (a *Authenticator) logout(ctx context.Context, action Action,
 		return prepared.failed(a, err, domain.AuthUnknown, "")
 	}
 	if !identity.Present {
-		return prepared.succeeded(a, "这条线路上没有在线会话", "")
+		return prepared.wentOffline(a, "这条线路上没有在线会话")
 	}
 	if !identity.MatchesExpected && prepared.intent != auth.IntentManual {
 		return prepared.failed(a,
@@ -335,10 +362,40 @@ func (a *Authenticator) logout(ctx context.Context, action Action,
 	}
 
 	report(PhaseLogout)
-	if _, err := transaction.Logout(ctx, identity.Username, identity.ClientIP); err != nil {
+	result, err := transaction.Logout(ctx, identity.Username, identity.ClientIP)
+	if err != nil {
 		return prepared.failed(a, err, identity.State(), identity.Username)
 	}
-	return prepared.succeeded(a, "已登出", identity.Username)
+	if result.State == domain.AuthRejected {
+		// The transport succeeded and the gateway refused. These are different
+		// things, and reading only the error made the second look like the
+		// first: a reply of {"error":"sign_error"} came back as a nil error and
+		// was reported as "已登出".
+		return prepared.failed(a,
+			domain.Errorf(domain.CodeAuthRejected,
+				"网关拒绝了登出请求：%s", gatewayWords(result)),
+			identity.State(), identity.Username)
+	}
+
+	// The gateway accepting the unbind is still the gateway's claim about
+	// itself. Spec 04 does not let that stand for a login and it does not stand
+	// for a logout either -- the baseline asks again too (wait_for_logout_status).
+	report(PhaseVerify)
+	after, err := transaction.Online(ctx, prepared.username)
+	if err != nil {
+		// The request was accepted and the result could not be confirmed. Not a
+		// success, and not a claim that the session is still up either.
+		return prepared.unconfirmed(a,
+			"已发送登出请求，但无法确认这条线路是否已下线："+userMessage(err),
+			identity.Username)
+	}
+	if after.Present {
+		return prepared.failed(a,
+			domain.Errorf(domain.CodeConflict,
+				"网关接受了登出请求，但这条线路上仍有在线会话"),
+			after.State(), after.Username)
+	}
+	return prepared.wentOffline(a, "已登出")
 }
 
 // prepare resolves everything an attempt needs, or explains why it cannot.
@@ -372,16 +429,11 @@ func (a *Authenticator) prepare(ctx context.Context, action Action,
 	}
 
 	report(PhaseWaitingLink)
-	generation := a.generation.Add(1)
-	binding, err := a.binder.ResolveBinding(ctx, iface, generation)
+	binding, err := a.observeLine(ctx, account.ID, iface)
 	if err != nil {
 		return nil, a.linkFailure(ctx, prepared, iface, err)
 	}
 	prepared.binding = binding
-
-	// Anything older than this observation is gone: its socket is bound to an
-	// address this account may no longer have.
-	a.lines.Retire(account.ID, generation)
 
 	gateway, err := auth.ParseGateway(account.BaseURL, account.ACID)
 	if err != nil {
@@ -395,6 +447,70 @@ func (a *Authenticator) prepare(ctx context.Context, action Action,
 	}
 	prepared.line = line
 	return prepared, Outcome{}
+}
+
+// observeLine reads where an account's line is, and spends a generation only if
+// it moved.
+//
+// A generation is the identity of a binding, not a counter of actions. The
+// earlier version raised it at the start of every action and retired the pool
+// against the new number, so two consecutive logins on an unchanged line closed
+// a perfectly good connection and built another -- paying for a handshake and a
+// resolution to arrive where it already was, every single tick of the
+// maintenance loop.
+//
+// What must not be lost is the guarantee the churn was standing in for: when
+// the line really does move, everything bound to the old address is retired
+// before any credential goes out. That is why the retirement stays here, on the
+// path that assigns the new generation.
+func (a *Authenticator) observeLine(ctx context.Context, accountID,
+	iface string) (domain.Binding, error) {
+
+	a.mu.Lock()
+	previous, known := a.seen[accountID]
+	a.mu.Unlock()
+
+	// Observed under the generation this account is already on. Assigning a new
+	// one first is what made the observation look like a change to everything
+	// downstream.
+	stamp := previous.Generation
+	if !known {
+		stamp = a.generation.Add(1)
+	}
+	binding, err := a.binder.ResolveBinding(ctx, iface, stamp)
+	if err != nil {
+		return domain.Binding{}, err
+	}
+	binding.Generation = stamp
+
+	moved := !known || !sameLine(previous, binding)
+	if moved && known {
+		binding.Generation = a.generation.Add(1)
+	}
+
+	a.mu.Lock()
+	a.seen[accountID] = binding
+	a.mu.Unlock()
+
+	if moved {
+		// Anything older than this observation is gone: its socket is bound to
+		// an address this account no longer has.
+		a.lines.Retire(accountID, binding.Generation)
+	}
+	return binding, nil
+}
+
+// sameLine reports whether two observations describe the same way out.
+//
+// The fields a socket is actually bound to, plus the resolvers it would use. A
+// line that kept its address but changed its DNS is a different line for the
+// purpose of reusing a connection, because the next name it resolves may answer
+// differently.
+func sameLine(before, after domain.Binding) bool {
+	return before.L3Device == after.L3Device &&
+		before.IfIndex == after.IfIndex &&
+		before.SourceIPv4 == after.SourceIPv4 &&
+		slices.Equal(before.DNSServers, after.DNSServers)
 }
 
 // confirmUnchanged re-reads the line and refuses if it moved.
@@ -458,6 +574,38 @@ func (p *attempt) succeeded(a *Authenticator, message, identity string) Outcome 
 	}
 }
 
+// wentOffline is a logout that reached its goal.
+//
+// It exists because the login helper does not fit: that one writes
+// VerifiedSelf, which is the right projection for a login and exactly the wrong
+// one for a logout. Sharing it meant a successful logout left the status page
+// saying this account was online -- and so did "there was no session here",
+// which reported an empty line as a confirmed login.
+func (p *attempt) wentOffline(a *Authenticator, message string) Outcome {
+	return Outcome{
+		State:   StateSucceeded,
+		Message: message,
+		Observation: p.observation(a, domain.AuthOffline,
+			domain.ConnectivityPortalReachable, ""),
+	}
+}
+
+// unconfirmed is an action whose request was accepted and whose result could
+// not be established.
+//
+// Reported as a failure, because the caller asked for an outcome and did not
+// get one. What it must not do is claim either outcome: the session may be
+// gone, and saying it is still up would be as wrong as saying it is gone.
+func (p *attempt) unconfirmed(a *Authenticator, message, identity string) Outcome {
+	return Outcome{
+		State:   StateFailed,
+		Code:    domain.CodeDeadlineExceeded,
+		Message: message,
+		Observation: p.observation(a, domain.AuthUnknown,
+			domain.ConnectivityPortalReachable, identity),
+	}
+}
+
 func (p *attempt) failed(a *Authenticator, cause error, state domain.AuthState,
 	identity string) Outcome {
 
@@ -486,6 +634,22 @@ func (p *attempt) failed(a *Authenticator, cause error, state domain.AuthState,
 // cause out of Error() for exactly this reason: a transport failure can carry a
 // URL, and a login URL carries a checksum over the password. This string ends
 // up on the status page.
+// gatewayWords is what the portal said, for a message that needs to quote it.
+//
+// The portal's own text, marked as such by the sentence around it. It is never
+// this program's explanation: a gateway that answers "sign_error" has not
+// explained anything to a user, and presenting it as a diagnosis would be
+// putting words in its mouth.
+func gatewayWords(result auth.Result) string {
+	if result.GatewayMessage != "" {
+		return result.GatewayMessage
+	}
+	if result.GatewayCode != "" {
+		return result.GatewayCode
+	}
+	return "未提供原因"
+}
+
 func userMessage(cause error) string {
 	if typed, ok := errors.AsType[*domain.Error](cause); ok {
 		return typed.Message

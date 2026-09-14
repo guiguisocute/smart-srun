@@ -31,6 +31,10 @@ type Client struct {
 	resolver  *Resolver
 	transport *http.Transport
 	inner     *http.Client
+	// resolverErr is why this line has no resolver, kept so the diagnosis can be
+	// given at the moment a name actually has to be resolved rather than at
+	// construction, where it would also refuse requests that need no names.
+	resolverErr error
 
 	// onClose lets the pool's tests see that a retirement closed the client
 	// rather than merely forgetting it. Unexported and nil in production. The
@@ -42,12 +46,18 @@ type Client struct {
 
 // NewClient builds a client for one binding.
 //
-// The resolver is required rather than optional: a client that could fall back
-// to the system resolver would do so on exactly the line where that is wrong.
+// A line with no usable DNS still gets a client. It cannot resolve a name, and
+// it is not allowed to borrow anybody else's resolver to try -- but a gateway
+// configured as http://192.0.2.1 never needed one, and refusing to build the
+// client made a perfectly reachable portal unreachable over a capability the
+// request does not use. The failure is carried instead, and raised at the point
+// a name actually has to be resolved.
 func NewClient(binding domain.Binding) (*Client, error) {
 	resolver, err := NewResolver(binding)
 	if err != nil {
-		return nil, err
+		client := newClientWith(binding, NewDialer(binding), nil)
+		client.resolverErr = err
+		return client, nil
 	}
 	return newClientWith(binding, NewDialer(binding), resolver), nil
 }
@@ -102,6 +112,24 @@ func (c *Client) dialResolved(ctx context.Context, network, address string) (net
 	if err != nil {
 		return nil, domain.Errorf(domain.CodeInternal,
 			"无法解析目标地址").Wrap(err)
+	}
+
+	// A literal address is dialed as it stands. This is the case that must work
+	// on a line with no DNS: the request never needed a name resolved, so a
+	// missing resolver is not its problem.
+	if literal, isLiteral, literalErr := literalIPv4(host); isLiteral {
+		if literalErr != nil {
+			return nil, literalErr
+		}
+		return c.dialer.DialContext(ctx, network,
+			net.JoinHostPort(literal.String(), port))
+	}
+
+	if c.resolver == nil {
+		// A name, and nothing on this line can resolve it. The diagnosis is the
+		// one NewResolver produced, which says whether the line has no servers
+		// at all or only loopback ones -- two different things to fix.
+		return nil, c.resolverErr
 	}
 
 	addresses, err := c.resolver.LookupIPv4(ctx, host)

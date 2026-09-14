@@ -63,6 +63,25 @@ type Resolver struct {
 // response is to say so and ask for a resolver reachable on the line, rather
 // than to resolve through the default route and present the result as if it
 // had come from here.
+// literalIPv4 reports whether a host is already an address, and which one.
+//
+// One place decides what counts as a literal, because two callers need the
+// answer: the resolver, which must not query for something already numeric, and
+// the client, which must be able to reach such a gateway on a line that has no
+// usable DNS at all. The second bool separates "not a literal" from "a literal
+// this line cannot use".
+func literalIPv4(host string) (netip.Addr, bool, error) {
+	address, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		return netip.Addr{}, false, nil
+	}
+	if !address.Is4() {
+		return netip.Addr{}, true, domain.Errorf(domain.CodeDNSFailure,
+			"%s 不是 IPv4 地址，本线路只支持 IPv4", host)
+	}
+	return address, true, nil
+}
+
 func NewResolver(binding domain.Binding) (*Resolver, error) {
 	usable := make([]netip.Addr, 0, len(binding.DNSServers))
 	for _, server := range binding.DNSServers {
@@ -145,10 +164,9 @@ func (r *Resolver) takeDialFailure() error {
 // routinely configured by address, and sending that to a resolver would turn a
 // working configuration into a lookup that can fail.
 func (r *Resolver) LookupIPv4(ctx context.Context, host string) ([]netip.Addr, error) {
-	if address, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
-		if !address.Is4() {
-			return nil, domain.Errorf(domain.CodeDNSFailure,
-				"%s 不是 IPv4 地址，本线路只支持 IPv4", host)
+	if address, literal, err := literalIPv4(host); literal {
+		if err != nil {
+			return nil, err
 		}
 		return []netip.Addr{address}, nil
 	}

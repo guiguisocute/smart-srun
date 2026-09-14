@@ -213,7 +213,23 @@ const wirelessLine = "wireless"
 
 // lineOf is the coordinator's line resolver: a cheap lookup in the current
 // configuration, never a probe. It runs while a submission waits.
+//
+// The action's kind is asked first, and the account only afterwards. A hotspot
+// switch carries a HotspotID and usually no AccountID at all, so resolving the
+// account first sent it to "account:" while a campus wireless switch went to
+// "wireless" -- two keys for one radio, which lets the coordinator run both at
+// once. Nothing has been observed corrupting a real configuration, because the
+// wireless transaction does not exist yet; that is exactly why this has to be
+// right before M10 attaches the side effects to it.
+//
+// The scheduling key is not a substitute for the global wireless transaction
+// lock spec 04 requires. It keeps this process from dispatching two wireless
+// actions at once; the lock is what protects the radio from everything else.
 func (d *Daemon) lineOf(request application.Request) string {
+	if wirelessKind(request.Kind) {
+		return wirelessLine
+	}
+
 	cfg := d.config.Snapshot()
 	account, known := cfg.CampusAccountByID(request.AccountID)
 	switch {
@@ -222,10 +238,19 @@ func (d *Daemon) lineOf(request application.Request) string {
 		// it cannot serialise against an unrelated one on its way to failing.
 		return "account:" + request.AccountID
 	case account.IsWired():
+		// Wired accounts keep one key per interface. Serialising them onto the
+		// wireless key as well would throw away the parallelism that lets four
+		// lines authenticate at once, and they share no resource with the radio.
 		return "iface:" + account.WiredIface
 	default:
 		return wirelessLine
 	}
+}
+
+// wirelessKind reports that an action touches the radio whatever account it
+// names.
+func wirelessKind(kind application.Kind) bool {
+	return kind == application.KindSwitchHotspot
 }
 
 // onAction is the coordinator's observer. It runs on the coordinator's

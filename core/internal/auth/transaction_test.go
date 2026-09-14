@@ -154,10 +154,22 @@ func TestTheOnlineQueryDistinguishesSelfFromOther(t *testing.T) {
 			"2020123456@cmcc", domain.AuthVerifiedSelf},
 		{"somebody else", `{"user_name":"2020999999","online_ip":"10.0.0.77"}`,
 			"2020123456", domain.AuthVerifiedOther},
+		// Offline rather than Unknown, and the difference is the point. The
+		// gateway said nobody is here, which is evidence; Unknown is for having
+		// asked nothing. A logout may only report success against the first.
 		{"nobody", `{"error":"not_online_error"}`,
-			"2020123456", domain.AuthUnknown},
+			"2020123456", domain.AuthOffline},
 		{"an empty identity", `{"user_name":"","online_ip":""}`,
-			"2020123456", domain.AuthUnknown},
+			"2020123456", domain.AuthOffline},
+		// Two realms both stated and not the same account. Bare names agreeing
+		// is not enough: these are two carriers' subscribers who happen to share
+		// a student number.
+		{"a different realm", `{"user_name":"2020123456@ctcc","online_ip":"10.0.0.77"}`,
+			"2020123456@cmcc", domain.AuthVerifiedOther},
+		// The realm reported as its own field takes part the same way.
+		{"a realm in its own field",
+			`{"user_name":"2020123456","domain":"ctcc","online_ip":"10.0.0.77"}`,
+			"2020123456@cmcc", domain.AuthVerifiedOther},
 	}
 
 	for _, testCase := range cases {
@@ -197,10 +209,17 @@ func TestTwoDifferentAccountsNeverMatch(t *testing.T) {
 	}
 }
 
-// T06 -- the logout signature uses seconds, and the same value goes into the
-// URL. Signing with milliseconds produces a signature the gateway refuses
-// without saying why.
-func TestTheLogoutSignatureUsesSecondsAndMatchesTheURL(t *testing.T) {
+// T06 -- the signed logout goes to rad_user_dm, with seconds, and the same
+// value goes into the signature.
+//
+// The endpoint is half the contract and this test used to assert the other
+// half only. Spec 04 names rad_user_dm and the baseline posts there
+// (srun_auth.logout takes rad_user_dm_api); sending the signed form to
+// srun_portal means a gateway that implements this endpoint never receives the
+// unbind, so the session stays up while this program reports it gone. Signing
+// with milliseconds produces a signature the gateway refuses without saying
+// why, which is the other half.
+func TestTheSignedLogoutGoesToRadUserDMWithSeconds(t *testing.T) {
 	gateway := newFakeGateway(t)
 	transaction := transactionFor(t, gateway)
 
@@ -208,19 +227,34 @@ func TestTheLogoutSignatureUsesSecondsAndMatchesTheURL(t *testing.T) {
 		t.Fatalf("Logout: %v", err)
 	}
 
-	query := gateway.lastQuery(t, portalPath)
-	if got := query.Get("action"); got != "logout" {
-		t.Fatalf("action = %q", got)
+	for _, seen := range gateway.seen() {
+		if seen.path == portalPath {
+			t.Fatalf("the signed logout was sent to %s", portalPath)
+		}
 	}
+	query := gateway.lastQuery(t, logoutPath)
 	if got := query.Get("time"); got != "1700000000" {
 		t.Errorf("time = %q, want the fixed clock's seconds", got)
 	}
 	if got := query.Get("unbind"); got != "1" {
 		t.Errorf("unbind = %q, want 1", got)
 	}
+	if got := query.Get("username"); got != "2020123456" {
+		t.Errorf("username = %q", got)
+	}
 	want := srun.LogoutSign(1700000000, "2020123456", "10.0.0.77")
 	if query.Get("sign") != want {
 		t.Errorf("sign = %q, want %q", query.Get("sign"), want)
+	}
+	// The baseline's build_logout_params carries callback, time, unbind, ip,
+	// username and sign -- and nothing else. action and ac_id belong to the
+	// portal form of the request; carrying them here would be a third shape
+	// that neither the baseline nor the spec describes.
+	for _, unwanted := range []string{"action", "ac_id"} {
+		if query.Has(unwanted) {
+			t.Errorf("the signed logout carries %q, which belongs to the portal form",
+				unwanted)
+		}
 	}
 }
 

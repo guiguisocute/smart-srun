@@ -53,6 +53,15 @@ const (
 	// AuthRejected -- the gateway refused. A wrong password lives here, and it
 	// must not be retried in a loop.
 	AuthRejected AuthState = "Rejected"
+	// AuthOffline -- a query confirmed that nobody is authenticated on this
+	// line.
+	//
+	// Distinct from Unknown, and the distinction is the point. Unknown is "we
+	// have not established anything"; this is evidence, and it is what a logout
+	// has to reach before it may report success. Folding the two together makes
+	// a failed query look like a completed logout -- and makes the stale-session
+	// recovery believe the line is clear when it is not.
+	AuthOffline AuthState = "Offline"
 )
 
 // Connectivity is the third dimension: what can actually be reached.

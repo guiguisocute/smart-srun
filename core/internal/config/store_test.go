@@ -54,7 +54,7 @@ func TestWriteAtomicProducesAReadableFileWithTheRightMode(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	if err := writeAtomic(path, data, nil); err != nil {
+	if _, err := writeAtomic(path, data, nil); err != nil {
 		t.Fatalf("writeAtomic: %v", err)
 	}
 
@@ -104,15 +104,18 @@ func TestAFailureAtAnyStepLeavesThePreviousConfigurationIntact(t *testing.T) {
 	steps := []struct {
 		name  string
 		build func(*writeHooks)
+		// afterRename says the injected failure happens once the new bytes are
+		// already what a reader sees.
+		afterRename bool
 	}{
-		{"the write itself fails", func(h *writeHooks) { h.afterWrite = func() error { return injected } }},
-		{"the flush to disk fails", func(h *writeHooks) { h.afterSync = func() error { return injected } }},
+		{"the write itself fails", func(h *writeHooks) { h.afterWrite = func() error { return injected } }, false},
+		{"the flush to disk fails", func(h *writeHooks) { h.afterSync = func() error { return injected } }, false},
 		{"the process stops before the rename", func(h *writeHooks) {
 			h.beforeRename = func() error { return injected }
-		}},
+		}, false},
 		{"the directory sync fails after the rename", func(h *writeHooks) {
 			h.afterRename = func() error { return injected }
-		}},
+		}, true},
 	}
 
 	for _, step := range steps {
@@ -132,9 +135,17 @@ func TestAFailureAtAnyStepLeavesThePreviousConfigurationIntact(t *testing.T) {
 
 			hooks := &writeHooks{}
 			step.build(hooks)
-			writeErr := writeAtomic(path, data, hooks)
+			state, writeErr := writeAtomic(path, data, hooks)
 			if writeErr == nil {
 				t.Fatal("the injected failure was not reported")
+			}
+			// The commit state has to match where the failure was injected.
+			// Before the rename nothing is visible; after it, everything is,
+			// and saying otherwise is what let the repository disagree with its
+			// own file.
+			if state.visible() != step.afterRename {
+				t.Errorf("commit visible = %v, want %v for a failure at %s",
+					state.visible(), step.afterRename, step.name)
 			}
 
 			// Whatever is on disk has to be a whole configuration -- never a
@@ -214,7 +225,7 @@ func TestTheTargetIsNeverAPartiallyWrittenFile(t *testing.T) {
 		return errors.New("stop here")
 	}}
 
-	if err := writeAtomic(path, data, hooks); err == nil {
+	if _, err := writeAtomic(path, data, hooks); err == nil {
 		t.Fatal("expected the injected failure")
 	}
 	after, err := os.ReadFile(path)

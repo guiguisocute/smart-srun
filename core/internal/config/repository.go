@@ -132,17 +132,29 @@ func (r *Repository) Update(expectedRevision uint64, change Change) (domain.Conf
 	if err != nil {
 		return domain.Config{}, err
 	}
-	if err := writeAtomic(r.path, data, r.hooks); err != nil {
+	state, err := writeAtomic(r.path, data, r.hooks)
+	if state.visible() {
+		// The file now holds `next`, so the repository holds `next` -- whatever
+		// else went wrong. Keeping the old value here on an error was the split:
+		// the running daemon served a configuration that no longer existed on
+		// disk, a restart read a different one, and the next compare-and-swap
+		// judged against a revision the file had already moved past, so the
+		// save after this one could silently overwrite it.
+		//
+		// Cloned again on the way in: the change function was handed a pointer
+		// to `next`, and assigning the struct would leave the caller's slices
+		// and the stored ones sharing a backing array, so a change that kept
+		// its argument could still edit the stored configuration afterwards
+		// with no transaction and no revision bump.
+		r.current = CloneConfig(next)
+		r.persisted = true
+	}
+	if err != nil {
+		// Reported as a failure even when the bytes landed. The caller asked
+		// for a durable save and did not get one; what it must not be told is
+		// that nothing happened.
 		return domain.Config{}, err
 	}
-
-	// Cloned again on the way in. The change function was handed a pointer to
-	// `next`, and assigning the struct would leave the caller's slices and the
-	// stored ones sharing a backing array -- so a change that kept its argument
-	// could still edit the stored configuration afterwards, with no transaction
-	// and no revision bump.
-	r.current = CloneConfig(next)
-	r.persisted = true
 	return CloneConfig(next), nil
 }
 

@@ -25,6 +25,10 @@ const (
 	challengePath = "/cgi-bin/get_challenge"
 	portalPath    = "/cgi-bin/srun_portal"
 	onlinePath    = "/cgi-bin/rad_user_info"
+	// The signed logout has its own endpoint. Routing it off action=logout on
+	// the portal path is how the production code's wrong endpoint went unnoticed:
+	// the fake shared the mistake, so they agreed with each other.
+	logoutPath = "/cgi-bin/rad_user_dm"
 )
 
 type portal struct {
@@ -44,7 +48,18 @@ type portal struct {
 	logoutBody  string
 	onlineBody  string
 	onlineFails bool
+	// onlineAfter runs on each online query with the number of queries so far,
+	// so a test can make the second one behave differently from the first.
+	onlineAfter func(count int)
+	onlineCount int
+	// keepSessionAfterLogout models a gateway that accepts the unbind and does
+	// not act on it. A real one drops the session, and a fake that never did
+	// would let "logout reported success without checking" pass forever.
+	keepSessionAfterLogout bool
 }
+
+// offlineAnswer is what a gateway says when nobody is authenticated.
+const offlineAnswer = `{"error":"not_online_error"}`
 
 func newPortal(t *testing.T) *portal {
 	t.Helper()
@@ -63,17 +78,20 @@ func newPortal(t *testing.T) *portal {
 func (p *portal) serve(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	label := r.URL.Path
-	if r.URL.Query().Get("action") == "logout" {
-		label += "?logout"
-	}
 	p.requests = append(p.requests, label)
 
 	var body string
 	switch {
 	case r.URL.Path == challengePath:
 		body = `{"challenge":"` + p.challenge + `","client_ip":"` + p.clientIP + `"}`
-	case r.URL.Path == portalPath && r.URL.Query().Get("action") == "logout":
+	case r.URL.Path == logoutPath:
 		body = p.logoutBody
+		// A gateway that accepts an unbind drops the session, so the next
+		// online query says so. Without this the fake would answer "still
+		// online" forever and no logout could ever be confirmed.
+		if !p.keepSessionAfterLogout && strings.Contains(body, `"ok"`) {
+			p.onlineBody = offlineAnswer
+		}
 	case r.URL.Path == portalPath:
 		body = p.loginBody
 		if len(p.loginBodies) > 0 {
@@ -81,6 +99,10 @@ func (p *portal) serve(w http.ResponseWriter, r *http.Request) {
 			p.loginBodies = p.loginBodies[1:]
 		}
 	case r.URL.Path == onlinePath:
+		p.onlineCount++
+		if p.onlineAfter != nil {
+			p.onlineAfter(p.onlineCount)
+		}
 		if p.onlineFails {
 			p.mu.Unlock()
 			http.Error(w, "gateway is unhappy", http.StatusInternalServerError)
@@ -318,7 +340,7 @@ func TestAutomaticMaintenanceReportsAnotherIdentityAndDoesNotEndIt(t *testing.T)
 	if outcome.Code != domain.CodeOnlineIdentityMismatch {
 		t.Errorf("Code = %s, want OnlineIdentityMismatch", outcome.Code)
 	}
-	if n := p.count(portalPath + "?logout"); n != 0 {
+	if n := p.count(logoutPath); n != 0 {
 		t.Fatalf("automatic maintenance sent %d logout(s)", n)
 	}
 	if outcome.Observation == nil || outcome.Observation.Identity != "somebody-else" {
@@ -341,7 +363,7 @@ func TestAnExplicitLoginClearsThisLinesSessionExactlyOnce(t *testing.T) {
 	worker, _ := workerFor(t, p, &fakeBinder{})
 
 	outcome := runWorker(t, worker, KindLogin)
-	if n := p.count(portalPath + "?logout"); n != 1 {
+	if n := p.count(logoutPath); n != 1 {
 		t.Fatalf("an explicit login sent %d logouts, want exactly 1", n)
 	}
 	// It logged in again after clearing; whether that second login verifies is
@@ -366,7 +388,7 @@ func TestClearingIsNotRetriedWhenTheGatewayStillRefuses(t *testing.T) {
 	worker, _ := workerFor(t, p, &fakeBinder{})
 
 	outcome := runWorker(t, worker, KindLogin)
-	if n := p.count(portalPath + "?logout"); n != 1 {
+	if n := p.count(logoutPath); n != 1 {
 		t.Fatalf("sent %d logouts, want exactly 1 even though it did not help", n)
 	}
 	if outcome.State != StateFailed || outcome.Code != domain.CodeConflict {
@@ -526,7 +548,7 @@ func TestAFailedOnlineQueryIsNotProofOfBeingOffline(t *testing.T) {
 		t.Fatalf("outcome = %+v, want a failure rather than a claim of success",
 			outcome)
 	}
-	if n := p.count(portalPath + "?logout"); n != 0 {
+	if n := p.count(logoutPath); n != 0 {
 		t.Errorf("a logout was sent on the strength of a failed query")
 	}
 }
@@ -540,7 +562,7 @@ func TestAManualLogoutActsOnTheIdentityThisLineReports(t *testing.T) {
 	if outcome.State != StateSucceeded {
 		t.Fatalf("outcome = %+v", outcome)
 	}
-	if n := p.count(portalPath + "?logout"); n != 1 {
+	if n := p.count(logoutPath); n != 1 {
 		t.Errorf("sent %d logouts, want 1", n)
 	}
 }
@@ -555,7 +577,7 @@ func TestLoggingOutWhenNobodyIsOnlineSaysSo(t *testing.T) {
 	if outcome.State != StateSucceeded {
 		t.Fatalf("outcome = %+v", outcome)
 	}
-	if n := p.count(portalPath + "?logout"); n != 0 {
+	if n := p.count(logoutPath); n != 0 {
 		t.Errorf("sent %d logouts for a line with no session", n)
 	}
 }

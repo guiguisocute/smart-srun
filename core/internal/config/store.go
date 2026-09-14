@@ -115,7 +115,31 @@ func call(hook func() error) error {
 // property the fault-injection tests check: after a failure at any stage, the
 // file on disk parses and is either wholly the old configuration or wholly the
 // new one.
-func writeAtomic(path string, data []byte, hooks *writeHooks) error {
+//
+// The returned commit says how far it got, and the caller needs it. "The target
+// is untouched" stops being true at the rename: a failure after that point
+// leaves the new configuration visible to every reader while the error says the
+// save failed. A caller that reads only the error keeps its old value in memory
+// and disagrees with its own file.
+// commit says how far a write got, because "it failed" is not one state.
+//
+// The three are genuinely different to the caller: nothing changed, the change
+// is visible but its survival across a power cut is unconfirmed, or it is
+// visible and durable. Collapsing the middle one into the first is what split
+// the repository from its own file -- the user was told the save failed, the
+// running daemon kept the old values, and a restart read the new ones.
+type commit int
+
+const (
+	commitNone commit = iota
+	commitVisible
+	commitDurable
+)
+
+// visible reports that readers can already see the new bytes.
+func (c commit) visible() bool { return c >= commitVisible }
+
+func writeAtomic(path string, data []byte, hooks *writeHooks) (commit, error) {
 	if hooks == nil {
 		// Substituted rather than checked at each call site: reading
 		// hooks.afterWrite to pass it along would dereference the nil first.
@@ -123,13 +147,13 @@ func writeAtomic(path string, data []byte, hooks *writeHooks) error {
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, DirMode); err != nil {
-		return domain.Errorf(domain.CodeInvalidConfig,
+		return commitNone, domain.Errorf(domain.CodeInvalidConfig,
 			"无法创建配置目录 %s", dir).Wrap(err)
 	}
 
 	temp, err := os.CreateTemp(dir, tempPattern)
 	if err != nil {
-		return domain.Errorf(domain.CodeInvalidConfig,
+		return commitNone, domain.Errorf(domain.CodeInvalidConfig,
 			"无法在 %s 创建临时文件", dir).Wrap(err)
 	}
 	tempName := temp.Name()
@@ -145,40 +169,47 @@ func writeAtomic(path string, data []byte, hooks *writeHooks) error {
 	// CreateTemp already uses 0600; setting it explicitly means the guarantee
 	// does not depend on that staying true.
 	if err := temp.Chmod(FileMode); err != nil {
-		return domain.Errorf(domain.CodeInvalidConfig,
+		return commitNone, domain.Errorf(domain.CodeInvalidConfig,
 			"无法设置配置文件权限").Wrap(err)
 	}
 
 	if _, err := temp.Write(data); err != nil {
-		return domain.Errorf(domain.CodeInvalidConfig, "写入配置失败").Wrap(err)
+		return commitNone, domain.Errorf(domain.CodeInvalidConfig, "写入配置失败").Wrap(err)
 	}
 	if err := call(hooks.afterWrite); err != nil {
-		return domain.Errorf(domain.CodeInvalidConfig, "写入配置失败").Wrap(err)
+		return commitNone, domain.Errorf(domain.CodeInvalidConfig, "写入配置失败").Wrap(err)
 	}
 
 	if err := temp.Sync(); err != nil {
-		return domain.Errorf(domain.CodeInvalidConfig, "配置未能写入磁盘").Wrap(err)
+		return commitNone, domain.Errorf(domain.CodeInvalidConfig, "配置未能写入磁盘").Wrap(err)
 	}
 	if err := call(hooks.afterSync); err != nil {
-		return domain.Errorf(domain.CodeInvalidConfig, "配置未能写入磁盘").Wrap(err)
+		return commitNone, domain.Errorf(domain.CodeInvalidConfig, "配置未能写入磁盘").Wrap(err)
 	}
 	if err := temp.Close(); err != nil {
-		return domain.Errorf(domain.CodeInvalidConfig, "配置未能写入磁盘").Wrap(err)
+		return commitNone, domain.Errorf(domain.CodeInvalidConfig, "配置未能写入磁盘").Wrap(err)
 	}
 
 	if err := call(hooks.beforeRename); err != nil {
-		return domain.Errorf(domain.CodeInvalidConfig, "配置提交失败").Wrap(err)
+		return commitNone, domain.Errorf(domain.CodeInvalidConfig, "配置提交失败").Wrap(err)
 	}
 	if err := os.Rename(tempName, path); err != nil {
-		return domain.Errorf(domain.CodeInvalidConfig, "配置提交失败").Wrap(err)
+		return commitNone, domain.Errorf(domain.CodeInvalidConfig, "配置提交失败").Wrap(err)
 	}
 	committed = true
 
+	// Past this line the new configuration is what every reader sees, and no
+	// failure below takes that back. Reporting these as commitNone is what let
+	// the repository keep serving a configuration its own file no longer held.
 	if err := call(hooks.afterRename); err != nil {
-		return domain.Errorf(domain.CodeInvalidConfig, "配置提交失败").Wrap(err)
+		return commitVisible, domain.Errorf(domain.CodeInvalidConfig,
+			"配置已写入，但未能确认提交完成").Wrap(err)
 	}
-	// The rename has happened; from here the new configuration is what a reader
-	// sees. Failing to fsync the directory only risks losing the rename in a
-	// power loss, so it is reported rather than treated as "the write failed".
-	return syncDir(dir)
+	if err := syncDir(dir); err != nil {
+		// The rename is visible; only its survival across a power cut is
+		// unconfirmed. That is worth telling the user and is not a reason to
+		// pretend the save did not happen.
+		return commitVisible, err
+	}
+	return commitDurable, nil
 }

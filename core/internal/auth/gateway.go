@@ -24,6 +24,15 @@ const (
 	challengePath = "/cgi-bin/get_challenge"
 	portalPath    = "/cgi-bin/srun_portal"
 	onlinePath    = "/cgi-bin/rad_user_info"
+	// logoutPath is where a signed logout goes, and it is not the portal.
+	//
+	// Spec 04 names it, and the baseline posts there: srun_auth.logout() takes
+	// rad_user_dm_api, built from SchoolProfile.API_RAD_USER_DM. Sending the
+	// signed form to srun_portal instead means a gateway that implements this
+	// endpoint never receives the unbind, so the session stays up while this
+	// program reports it gone -- and the stale-session recovery that depends on
+	// the unbind silently does nothing.
+	logoutPath = "/cgi-bin/rad_user_dm"
 )
 
 // Gateway is where one account authenticates.
@@ -109,17 +118,19 @@ func (g Gateway) loginURL(p loginParams) string {
 // the two are different parameters with different units in the same protocol,
 // and signing with the wrong one produces a signature the gateway rejects
 // without saying why.
+// The parameters are the baseline's build_logout_params and no more: callback,
+// time, unbind, ip, username, sign. There is no action and no ac_id here --
+// those belong to the portal form of the request, and carrying them along would
+// be inventing a third shape that neither the baseline nor the spec describes.
 func (g Gateway) logoutURL(username, ip, sign string, seconds int64, callback string) string {
 	query := url.Values{}
 	query.Set("callback", callback)
-	query.Set("action", "logout")
-	query.Set("ac_id", g.ACID)
-	query.Set("ip", ip)
-	query.Set("username", username)
 	query.Set("time", strconv.FormatInt(seconds, 10))
 	query.Set("unbind", srunLogoutUnbind)
+	query.Set("ip", ip)
+	query.Set("username", username)
 	query.Set("sign", sign)
-	return g.BaseURL + portalPath + "?" + query.Encode()
+	return g.BaseURL + logoutPath + "?" + query.Encode()
 }
 
 // onlineURL asks who, if anyone, is authenticated on this line.
