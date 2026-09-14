@@ -113,34 +113,62 @@ func TestDomainHasNoIO(t *testing.T) {
 // that hold data, never the reverse. An adapter reaching back into the
 // application is how a "small exception" becomes a cycle.
 func TestDependencyDirection(t *testing.T) {
+	// deciders are the layers that make decisions. Nothing below them may
+	// depend on them, which is most of what the table below repeats.
+	deciders := []string{"internal/policy", "internal/application", "internal/observe"}
+	below := func(extra ...string) []string {
+		return append(append([]string{}, deciders...), extra...)
+	}
+
 	rules := map[string][]string{
-		"internal/domain": {"internal/config", "internal/protocol", "internal/control",
-			"internal/cli", "internal/openwrt", "internal/transport", "cmd"},
-		"internal/protocol": {"internal/config", "internal/control", "internal/cli",
-			"internal/openwrt", "internal/transport", "cmd"},
+		"internal/domain": below("internal/config", "internal/protocol",
+			"internal/control", "internal/cli", "internal/openwrt",
+			"internal/transport", "internal/auth", "internal/strategy", "cmd"),
+		"internal/protocol": below("internal/config", "internal/control",
+			"internal/cli", "internal/openwrt", "internal/transport", "cmd"),
 		// transport carries bytes out of one line. It takes a Binding as a
 		// value and knows nothing about where that came from, so it does not
 		// depend on the adapter that produced it -- which is what lets it be
 		// tested with a hand-made binding and no router.
-		"internal/transport": {"internal/config", "internal/control",
-			"internal/cli", "internal/openwrt", "cmd"},
+		"internal/transport": below("internal/config", "internal/control",
+			"internal/cli", "internal/openwrt", "internal/auth", "cmd"),
 		// auth performs one transaction over a line somebody else chose. It
 		// must not read configuration or answer RPCs, and it must not reach the
 		// adapter: which line to use is decided above it.
-		"internal/auth": {"internal/config", "internal/control", "internal/cli",
-			"internal/openwrt", "cmd"},
+		"internal/auth": below("internal/config", "internal/control",
+			"internal/cli", "internal/openwrt", "cmd"),
 		// strategy is declarative. It describes a school's parameters and
 		// extension points; it does not perform I/O of any kind.
-		"internal/strategy": {"internal/config", "internal/control",
-			"internal/cli", "internal/openwrt", "internal/transport", "cmd"},
+		"internal/strategy": below("internal/config", "internal/control",
+			"internal/cli", "internal/openwrt", "internal/transport", "cmd"),
 		// The adapter is a leaf. It reads the router and speaks domain; it does
 		// not read the user's configuration or answer RPCs. An adapter that
 		// reaches back into the layers that use it is how a "small exception"
 		// becomes a cycle, and it would also make every one of those layers
 		// need a router to test.
-		"internal/openwrt": {"internal/config", "internal/protocol",
-			"internal/control", "internal/cli", "cmd"},
-		"internal/config":  {"internal/control", "internal/cli", "internal/openwrt", "cmd"},
+		"internal/openwrt": below("internal/config", "internal/protocol",
+			"internal/control", "internal/cli", "cmd"),
+		"internal/config": below("internal/control", "internal/cli",
+			"internal/openwrt", "cmd"),
+		// policy is arithmetic over domain values and nothing else. Every
+		// scheduling question it answers has to be answerable without a router,
+		// a socket or a configuration file, which is what lets its tests run a
+		// hundred thousand failures and cross midnight in microseconds.
+		"internal/policy": {"internal/config", "internal/protocol",
+			"internal/control", "internal/cli", "internal/openwrt",
+			"internal/transport", "internal/auth", "internal/strategy",
+			"internal/application", "internal/observe", "cmd"},
+		// observe is a projection. It may name what policy decided, but it does
+		// not decide anything itself and it never reaches the network -- a
+		// status poll that probed would turn an idle browser tab into
+		// continuous authentication traffic.
+		"internal/observe": {"internal/config", "internal/protocol",
+			"internal/control", "internal/cli", "internal/openwrt",
+			"internal/transport", "internal/auth", "internal/application", "cmd"},
+		// application coordinates. It may use everything below it; what it may
+		// not do is reach up into the transports that call it.
+		"internal/application": {"internal/control", "internal/cli",
+			"internal/openwrt", "cmd"},
 		"internal/control": {"internal/cli", "cmd"},
 		"internal/cli":     {"cmd"},
 	}
@@ -308,9 +336,11 @@ func TestEveryCommittedFixtureIsUsed(t *testing.T) {
 // strategy that needed a request nobody anticipated is a reason to widen the
 // interface it is given, not to open a socket.
 func TestOnlyTheTransportBuildsHTTPClients(t *testing.T) {
-	// The transport package is where the one client lives.
+	// The transport package is where the one client lives. Everything else
+	// that could plausibly want a request of its own is listed here.
 	restricted := []string{"internal/auth", "internal/strategy",
-		"internal/discovery", "internal/presets", "internal/update"}
+		"internal/discovery", "internal/presets", "internal/update",
+		"internal/policy", "internal/observe", "internal/application"}
 
 	// Imports that mean "I am about to make my own way onto the network".
 	// net/http is allowed: a Request has to be built somewhere. net/netip is
@@ -366,6 +396,52 @@ func TestOnlyTheTransportBuildsHTTPClients(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no restricted packages found; this check would pass vacuously")
+	}
+}
+
+// The fake clock is a test tool, and it has to stay one.
+//
+// It exists so scheduling can be tested without waiting: a sixty-second cap and
+// a window that crosses midnight are both unreachable in a unit test on a real
+// clock. What it must never become is a way for production code to control
+// time, because then the thing being tested is no longer the thing that ships.
+// Keeping it in its own package makes the rule checkable rather than hopeful.
+func TestTheFakeClockIsTestOnly(t *testing.T) {
+	fake := modulePath + "/internal/policy/faketime"
+
+	for pkg, imports := range packageImports(t) {
+		if pkg == fake {
+			continue
+		}
+		if slices.Contains(imports, fake) {
+			t.Errorf("%s imports the fake clock outside a test; production code "+
+				"takes a policy.Clock and the daemon passes the real one", pkg)
+		}
+	}
+
+	// And something has to use it, or the rule above passes because the package
+	// is dead rather than because it is contained.
+	root := coreRoot(t)
+	users := 0
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(data), fake) {
+			users++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if users == 0 {
+		t.Error("no test imports the fake clock; either it is unused or this " +
+			"check is looking in the wrong place")
 	}
 }
 

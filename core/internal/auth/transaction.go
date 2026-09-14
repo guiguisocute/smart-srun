@@ -289,14 +289,15 @@ func (t *Transaction) get(ctx context.Context, target, what string) (json.RawMes
 		return nil, err
 	}
 
-	payload, kind, err := srun.ParseJSONP(body, transport.MaxAuthenticationBody)
+	// The kind is discarded here on purpose. Classifying the answer -- a portal
+	// page, an empty body, something unparseable -- belongs to the protocol
+	// layer, and it already returns the right code with it, including
+	// PortalHTMLResponse for an interception. Re-deriving that code from the
+	// kind was a second place deciding the same thing, and a mutation proved it
+	// decided nothing: removing it changed no behaviour at all. The kind
+	// becomes useful again when there is a log to count it in (M11).
+	payload, _, err := srun.ParseJSONP(body, transport.MaxAuthenticationBody)
 	if err != nil {
-		// The kind is the useful part: an HTML answer means a portal is
-		// intercepting, which is a different problem from a malformed reply.
-		if kind == srun.KindHTML {
-			return nil, domain.Errorf(domain.CodePortalHTMLResponse,
-				"认证网关返回了网页而不是%s，可能被门户拦截", what).Wrap(err)
-		}
 		return nil, err
 	}
 	return payload, nil
