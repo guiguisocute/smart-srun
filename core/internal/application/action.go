@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/observe"
 	"github.com/matthewlu070111/smart-srun/core/internal/policy"
 )
 
@@ -222,6 +223,14 @@ type Outcome struct {
 	State   State
 	Message string
 	Code    domain.ErrorCode
+
+	// Observation is what the attempt learned about the line, when it learned
+	// anything. It travels back with the result rather than being written by
+	// the worker directly: spec 02 makes the coordinator the one place that
+	// decides whether a worker's answer is still current, and a worker writing
+	// the shared projection itself would be deciding that for itself -- which
+	// is the second writer this whole design exists to avoid.
+	Observation *observe.Observation
 }
 
 // Runner performs one action.

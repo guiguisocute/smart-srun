@@ -128,6 +128,18 @@ func (c *Coordinator) onFinish(done completion) {
 		action.Message = outcome.Message
 		action.Code = outcome.Code
 	}
+
+	// What the attempt learned travels whatever became of the action. A
+	// cancelled login still found out whether the line had an address and whose
+	// session was on it, and throwing that away because the user clicked stop
+	// leaves the status page showing something older and less true. Whether the
+	// observation is still current is observe's decision -- it holds the
+	// revision, generation and sequence rules -- and deciding it a second time
+	// here is how two answers to one question start to differ.
+	if done.outcome.Observation != nil {
+		c.record(*done.outcome.Observation)
+	}
+
 	c.retire(action)
 	c.publish(action)
 }

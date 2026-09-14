@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/observe"
 	"github.com/matthewlu070111/smart-srun/core/internal/policy"
 )
 
@@ -55,6 +56,16 @@ type Options struct {
 	// and must not call back into the coordinator.
 	Observer func(Action)
 
+	// Record receives what a finished attempt learned about its line. The
+	// daemon points it at the observe store.
+	//
+	// It runs on the coordinator's goroutine, for the same reason Observer
+	// does: a worker calling the store directly from its own goroutine would
+	// be a second writer, and the ordering guarantee the store enforces would
+	// be enforced against results that arrived in whatever order the scheduler
+	// produced.
+	Record func(observe.Observation)
+
 	// Parallel caps simultaneously running actions. Spec 02 fixes it at four
 	// lines' worth of I/O.
 	Parallel      int
@@ -75,6 +86,7 @@ type Coordinator struct {
 	runner        Runner
 	lines         func(Request) string
 	observer      func(Action)
+	record        func(observe.Observation)
 	parallel      int
 	queueLimit    int
 	history       int
@@ -147,12 +159,17 @@ func New(options Options) *Coordinator {
 	if observer == nil {
 		observer = func(Action) {}
 	}
+	record := options.Record
+	if record == nil {
+		record = func(observe.Observation) {}
+	}
 
 	c := &Coordinator{
 		clock:         clock,
 		runner:        options.Runner,
 		lines:         options.Lines,
 		observer:      observer,
+		record:        record,
 		parallel:      orDefaultInt(options.Parallel, policy.MaxConcurrentLines),
 		queueLimit:    orDefaultInt(options.QueueLimit, QueueLimit),
 		history:       orDefaultInt(options.History, TerminalHistory),
