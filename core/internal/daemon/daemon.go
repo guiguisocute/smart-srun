@@ -126,7 +126,29 @@ func Run(ctx context.Context, options Options) error {
 	// through, and a test supplies its own through Options.
 	runner := options.Runner
 	if runner == nil {
-		runner = newDeviceRunner(repository, pool, clock)
+		// Written out rather than passed straight through: a nil
+		// *deviceWireless in an interface is not a nil interface, and the check
+		// for "this build cannot change a radio" is exactly where that
+		// distinction would be lost.
+		var radio application.Wireless
+		device, err := newDeviceWirelessFor(paths, repository, clock)
+		if err != nil {
+			// Reported, not fatal. A service that refused to start because it
+			// could not prepare a wireless staging directory would stop
+			// authenticating a wired line for a reason that has nothing to do
+			// with it. Without a radio, a switch is refused outright.
+			onError(err)
+		} else {
+			radio = device
+			// Before anything is scheduled. A change the last run applied and
+			// never confirmed is either still meaningful or has to be undone,
+			// and spec 04 will not have that decided while a switch is already
+			// running against the same radio.
+			if err := device.RecoverInterrupted(ctx); err != nil {
+				onError(err)
+			}
+		}
+		runner = newDeviceRunner(repository, pool, clock, radio)
 	}
 
 	observer := options.Observer

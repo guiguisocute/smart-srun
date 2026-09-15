@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"os"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/application"
 	"github.com/matthewlu070111/smart-srun/core/internal/auth"
@@ -9,6 +10,7 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/openwrt"
 	"github.com/matthewlu070111/smart-srun/core/internal/policy"
 	"github.com/matthewlu070111/smart-srun/core/internal/transport"
+	"github.com/matthewlu070111/smart-srun/core/internal/wireless"
 )
 
 // This file is the assembly the rest of the program is arranged to avoid doing.
@@ -62,19 +64,54 @@ func (l pooledLines) Retire(accountID string, generation uint64) int {
 
 // newDeviceRunner assembles the worker that actually authenticates.
 //
-// Wireless is left nil on purpose. This build reads a radio -- it can scan, and
-// it can see what the client is associated with -- but it does not write one:
-// spec 07 puts the wireless transaction in M10 and forbids modifying a real
-// radio until that card passes. A switch is therefore refused with
-// UnsupportedCapability rather than half-performed, which is the same choice
-// M08 made about actions with no worker behind them.
+// Wireless is supplied when a store could be built for it, and left nil when
+// one could not. Nil is not a degraded mode that half-works: a switch is
+// refused with UnsupportedCapability rather than half-performed, which is the
+// same choice M08 made about actions with no worker behind them, and it is what
+// a build running somewhere with no writable runtime directory should do.
 func newDeviceRunner(settings application.Settings, pool *transport.Pool,
-	clock policy.Clock) application.Runner {
+	clock policy.Clock, radio application.Wireless) application.Runner {
 
 	return application.NewAuthenticator(application.AuthenticatorOptions{
 		Binder:   deviceBinder{adapter: openwrt.NewAdapter(openwrt.Runner{})},
 		Lines:    pooledLines{pool: pool},
 		Settings: settings,
 		Clock:    clock,
+		Wireless: radio,
 	})
+}
+
+// newDeviceWirelessFor builds the wireless half, or explains why it could not.
+//
+// The adapter and the store share one Runner so that the timeouts and the
+// search path are decided once. The staging directory is created here rather
+// than lazily: a change that discovered it could not stage half way through
+// would have already refused somebody's switch for a reason that had nothing to
+// do with wireless.
+func newDeviceWirelessFor(paths Paths, settings application.Settings,
+	clock policy.Clock) (*deviceWireless, error) {
+
+	runner := openwrt.Runner{}
+	store, err := wireless.NewUCIStore(runner, wireless.StoreOptions{
+		Staging: paths.WirelessStaging(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(paths.WirelessStaging(), wireless.DirMode); err != nil {
+		return nil, domain.Errorf(domain.CodeInternal,
+			"无法创建无线暂存目录 %s", paths.WirelessStaging()).Wrap(err)
+	}
+	if err := os.MkdirAll(paths.Recovery(), wireless.DirMode); err != nil {
+		return nil, domain.Errorf(domain.CodeInternal,
+			"无法创建恢复目录 %s", paths.Recovery()).Wrap(err)
+	}
+
+	return newDeviceWireless(wirelessOptions{
+		Adapter:  openwrt.NewAdapter(runner),
+		Store:    store,
+		Paths:    wireless.Paths{Dir: paths.Recovery()},
+		Settings: settings,
+		Clock:    clock,
+	}), nil
 }

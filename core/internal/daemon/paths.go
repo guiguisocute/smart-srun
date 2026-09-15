@@ -63,3 +63,13 @@ func (p Paths) UserPresets() string { return filepath.Join(p.Config, "user-prese
 // interrupted wireless transaction, an interrupted install. It is under Config
 // rather than Runtime for exactly that reason.
 func (p Paths) Recovery() string { return filepath.Join(p.Config, "recovery") }
+
+// WirelessStaging is where a wireless change is built before it is published.
+//
+// Under Runtime, and deliberately not under Recovery: it is a scratch copy of
+// /etc/config/wireless that only means anything during one transaction, and a
+// reboot wiping it is the correct outcome. The journal that does have to
+// survive is the other one.
+func (p Paths) WirelessStaging() string {
+	return filepath.Join(p.Runtime, "wireless-staging")
+}
