@@ -64,11 +64,21 @@ func (p Phase) Terminal() bool {
 	}
 }
 
-// Key names one UCI option.
+// Key names one UCI option, or a section itself.
+//
+// An empty Option means the section rather than something in it, whose value is
+// its type: `wireless.jxnu_sta_radio1=wifi-iface`. That has to be expressible,
+// because the client section this program manages may not exist yet and uci
+// will not set an option in a section that is not there -- so creating it is
+// part of the change, and anything that is part of the change has to be in the
+// journal that undoes it.
 type Key struct {
 	Section string
 	Option  string
 }
+
+// IsSection reports that this key names a section rather than an option in one.
+func (k Key) IsSection() bool { return k.Option == "" }
 
 // Entry is one option this transaction changed.
 //
@@ -170,7 +180,15 @@ func (p Paths) journal() string { return filepath.Join(p.Dir, "wireless-journal.
 func (p Paths) backup() string  { return filepath.Join(p.Dir, "wireless-backup.json") }
 
 // keyString is the map key for a Key, since JSON objects need string keys.
-func keyString(key Key) string { return key.Section + "." + key.Option }
+//
+// A section key is its bare name, which is also how uci writes it. Section and
+// option names cannot contain a dot, so the two forms cannot collide.
+func keyString(key Key) string {
+	if key.IsSection() {
+		return key.Section
+	}
+	return key.Section + "." + key.Option
+}
 
 // writePrivate writes a file atomically, privately, and durably.
 //

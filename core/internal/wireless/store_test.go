@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 	"github.com/matthewlu070111/smart-srun/core/internal/openwrt"
@@ -92,10 +93,17 @@ func (f *fakeUCI) Run(_ context.Context, program string, args ...string) (
 
 	case "set", "delete":
 		line := rest[1] + "\n"
+		pkg, name, _ := strings.Cut(rest[1], ".")
 		if command == "delete" {
+			// uci exits 1 for a delete it cannot find, quiet flag or not.
+			// Measured on a real device; the fake said "fine" and so hid the
+			// fact that every open network's plan -- which deletes `key` from
+			// a section that may never have had one -- would have failed.
+			if !f.holds(config, delta, pkg, name) {
+				return openwrt.Result{}, &openwrt.ExitError{Program: "uci", Code: 1}
+			}
 			line = "-" + rest[1] + "\n"
 		}
-		pkg, _, _ := strings.Cut(rest[1], ".")
 		f.append(filepath.Join(delta, pkg), line)
 		return openwrt.Result{}, nil
 
@@ -121,6 +129,34 @@ func splitFlags(args []string) (map[string]string, []string) {
 		}
 	}
 	return flags, nil
+}
+
+// holds reports whether the package currently has a section or option, taking
+// the pending delta into account the way uci does.
+func (f *fakeUCI) holds(config, delta, pkg, name string) bool {
+	live, err := os.ReadFile(filepath.Join(config, pkg))
+	if err != nil {
+		return false
+	}
+	lines := splitLines(string(live))
+	staged, _ := os.ReadFile(filepath.Join(delta, pkg))
+	for _, change := range splitLines(string(staged)) {
+		if key, _, isSet := strings.Cut(change, "="); isSet {
+			lines = replaceOrAppend(lines, key, change)
+		} else {
+			removed := strings.TrimPrefix(change, "-")
+			lines = slices.DeleteFunc(lines, func(line string) bool {
+				key, _, _ := strings.Cut(line, "=")
+				return key == removed || strings.HasPrefix(key, removed+".")
+			})
+		}
+	}
+	for _, line := range lines {
+		if key, _, _ := strings.Cut(line, "="); key == pkg+"."+name {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakeUCI) append(path, line string) {
@@ -167,7 +203,10 @@ func (f *fakeUCI) commit(config, delta, pkg string) {
 		name = strings.TrimPrefix(change, "-")
 		lines = slices.DeleteFunc(lines, func(line string) bool {
 			key, _, _ := strings.Cut(line, "=")
-			return key == name
+			// Deleting a section takes its options with it, which is what uci
+			// does and what makes rolling back a section this transaction
+			// created a single operation.
+			return key == name || strings.HasPrefix(key, name+".")
 		})
 	}
 
@@ -896,6 +935,178 @@ func TestAnIdenticalCandidateIsNotRepublished(t *testing.T) {
 	}
 	if got := fixture.liveText(t); got != liveWireless {
 		t.Errorf("the configuration changed:\n%s", got)
+	}
+}
+
+// A section this program has to create is part of the change, and comes back
+// out again.
+//
+// uci will not set an option in a section that does not exist, and the client
+// section this manages usually does not: it is the thing being created. So the
+// creation is in the plan, in the journal, and in the rollback -- an undo that
+// left an empty section behind would leave netifd a client with no network to
+// join.
+func TestASectionCanBeCreatedAndUndone(t *testing.T) {
+	fixture := newFixture(t)
+	where := paths(t)
+	station := Key{Section: "jxnu_sta_radio1"}
+	plan := Plan{
+		TaskID: "task-9", Package: "wireless", ConfigRevision: 3,
+		ConfirmWithin: 15 * time.Minute,
+		Changes: []Change{
+			{Key: station, Text: "wifi-iface"},
+			{Key: Key{Section: station.Section, Option: "ssid"}, Text: "jxnu_stu"},
+			{Key: Key{Section: station.Section, Option: "mode"}, Text: "sta"},
+		},
+	}
+
+	transaction, err := Begin(t.Context(), fixture.store, where, plan, fixedClock(epoch))
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := transaction.Apply(t.Context(), plan.Changes); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	live := fixture.liveText(t)
+	for _, want := range []string{
+		"wireless.jxnu_sta_radio1=wifi-iface",
+		"wireless.jxnu_sta_radio1.ssid=jxnu_stu",
+	} {
+		if !strings.Contains(live, want) {
+			t.Fatalf("missing %q after the change:\n%s", want, live)
+		}
+	}
+
+	outcome, err := transaction.Rollback(t.Context())
+	if err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if outcome.Phase != PhaseRolledBack {
+		t.Fatalf("phase = %s, want rolled back", outcome.Phase)
+	}
+	if got := fixture.liveText(t); strings.Contains(got, "jxnu_sta_radio1") {
+		t.Errorf("the section this transaction created survived its undo:\n%s", got)
+	}
+}
+
+// The section is created before its options are set, and removed after they
+// are cleared.
+//
+// A plan listing them the other way round would have uci refuse: there is
+// nothing to set an option in, and nothing to clear one out of. The order is
+// the store's to get right because the rollback builds its changes from a
+// journal whose order is the plan's, reversed in meaning but not in sequence.
+func TestSectionsAreCreatedFirstAndRemovedLast(t *testing.T) {
+	option := Change{Key: Key{Section: "sta9", Option: "ssid"}, Text: "x"}
+	create := Change{Key: Key{Section: "sta9"}, Text: "wifi-iface"}
+	remove := Change{Key: Key{Section: "sta9"}, Delete: true}
+
+	got := ordered([]Change{option, remove, create})
+	if len(got) != 3 {
+		t.Fatalf("ordered dropped a change: %+v", got)
+	}
+	if !got[0].Key.IsSection() || got[0].Delete {
+		t.Errorf("first = %+v, want the creation", got[0])
+	}
+	if got[1].Key.IsSection() {
+		t.Errorf("second = %+v, want the option", got[1])
+	}
+	if !got[2].Key.IsSection() || !got[2].Delete {
+		t.Errorf("last = %+v, want the removal", got[2])
+	}
+}
+
+// Deleting a section takes its options with it, in the staged commands as well
+// as in the file.
+func TestRemovingASectionRemovesWhatWasInIt(t *testing.T) {
+	fixture := newFixture(t)
+	if err := fixture.store.Stage(t.Context(), "wireless",
+		[]Change{{Key: Key{Section: "sta0"}, Delete: true}}); err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if err := fixture.store.Commit(t.Context(), "wireless"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	live := fixture.liveText(t)
+	if strings.Contains(live, "sta0") {
+		t.Errorf("the section or its options survived:\n%s", live)
+	}
+	// And the household's access point is untouched, which is the whole point
+	// of naming one section rather than rewriting the package.
+	if !strings.Contains(live, "wireless.ap0.ssid='HomeNet'") {
+		t.Errorf("the home access point was removed too:\n%s", live)
+	}
+}
+
+// Removing an option that was never there is the state already holding, not a
+// failure.
+//
+// uci exits 1 for a delete it cannot find, with or without -q. An open network
+// has no passphrase, so its plan deletes `key` from a section that may never
+// have had one -- which means treating that exit as a failure would make every
+// open network fail to stage. Skipped rather than attempted-and-forgiven, so a
+// delete that really does fail still fails.
+func TestDeletingAnOptionThatWasNeverThereIsNotAFailure(t *testing.T) {
+	fixture := newFixture(t)
+	// sta0 in the fixture has ssid and encryption, and no key.
+	open := []Change{
+		{Key: ssid, Text: "jxnu_open"},
+		{Key: key, Delete: true},
+		{Key: Key{Section: "sta0", Option: "bssid"}, Delete: true},
+	}
+
+	if err := fixture.store.Stage(t.Context(), "wireless", open); err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if err := fixture.store.Commit(t.Context(), "wireless"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	live := fixture.liveText(t)
+	if !strings.Contains(live, "wireless.sta0.ssid=jxnu_open") {
+		t.Errorf("the change was not applied:\n%s", live)
+	}
+	if strings.Contains(live, "wireless.sta0.key") {
+		t.Errorf("a key appeared from nowhere:\n%s", live)
+	}
+}
+
+// And an option that is there really is removed.
+//
+// The pair matters: a store that skipped every deletion would pass the test
+// above and quietly leave the previous network's passphrase in the client
+// section.
+func TestDeletingAnOptionThatIsThereRemovesIt(t *testing.T) {
+	fixture := newFixture(t)
+	if err := fixture.store.Stage(t.Context(), "wireless",
+		[]Change{{Key: enc, Delete: true}}); err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if err := fixture.store.Commit(t.Context(), "wireless"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	if live := fixture.liveText(t); strings.Contains(live, "wireless.sta0.encryption") {
+		t.Errorf("the option survived its deletion:\n%s", live)
+	}
+}
+
+// Reading a section reports its type, and whether it is there at all.
+func TestReadingASectionReportsItsType(t *testing.T) {
+	fixture := newFixture(t)
+
+	values, err := fixture.store.Read(t.Context(), "wireless", []Key{
+		{Section: "sta0"}, {Section: "not_there"},
+	})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if want := (Value{Text: "wifi-iface", Present: true}); values[Key{Section: "sta0"}] != want {
+		t.Errorf("sta0 = %+v, want %+v", values[Key{Section: "sta0"}], want)
+	}
+	if values[Key{Section: "not_there"}].Present {
+		t.Error("a section that does not exist was reported present")
 	}
 }
 

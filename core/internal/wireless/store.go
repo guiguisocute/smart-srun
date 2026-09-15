@@ -130,6 +130,13 @@ func (s *UCIStore) Read(ctx context.Context, pkg string, keys []Key) (map[Key]Va
 			values[key] = Value{}
 			continue
 		}
+		if key.IsSection() {
+			// A section's value is its type. Present means it exists, which is
+			// what tells "create it" apart from "change what is in it" -- and
+			// on the way back, "delete it" from "put its options back".
+			values[key] = Value{Text: section.Type, Present: true}
+			continue
+		}
 		option, present := section.Lookup(key.Option)
 		if !present {
 			values[key] = Value{}
@@ -198,11 +205,29 @@ func (s *UCIStore) Stage(ctx context.Context, pkg string, changes []Change) erro
 		return err
 	}
 
-	for _, change := range changes {
+	// What is in the copy before anything is written to it, so a deletion of
+	// something that is not there can be skipped rather than attempted.
+	//
+	// uci exits 1 for `delete` on a key it cannot find, with or without -q --
+	// measured, not assumed. Treating a non-zero exit from delete as "probably
+	// just missing" would swallow real failures, and attempting it anyway fails
+	// the whole change: an open network's plan deletes `key`, and a section
+	// that never had one is the ordinary case. Asking first is the version that
+	// is both precise and correct.
+	existing, err := s.existingKeys(ctx, delta, pkg)
+	if err != nil {
+		return err
+	}
+
+	for _, change := range ordered(changes) {
 		if err := checkKey(change.Key); err != nil {
 			return err
 		}
-		name := pkg + "." + change.Key.Section + "." + change.Key.Option
+		name := pkg + "." + keyString(change.Key)
+		if change.Delete && !existing[keyString(change.Key)] {
+			// Already the state this change asks for.
+			continue
+		}
 		args := []string{"-q", "-c", s.staging, "-t", delta, "set", name + "=" + change.Text}
 		if change.Delete {
 			args = []string{"-q", "-c", s.staging, "-t", delta, "delete", name}
@@ -305,6 +330,29 @@ func (s *UCIStore) Reload(ctx context.Context) error {
 			"重载网络配置失败").Wrap(err)
 	}
 	return nil
+}
+
+// existingKeys is every section and option the staged copy already holds.
+//
+// Read from the staging directory rather than the live one: they are identical
+// at this point -- the copy was just made -- and asking the copy means this
+// answer stays true for the commands that follow it even if the live file moves
+// underneath. Commit checks that separately, and refuses.
+func (s *UCIStore) existingKeys(ctx context.Context, delta, pkg string) (
+	map[string]bool, error) {
+
+	config, err := s.show(ctx, s.staging, delta, pkg)
+	if err != nil {
+		return nil, err
+	}
+	keys := map[string]bool{}
+	for _, section := range config.Sections() {
+		keys[section.Name] = true
+		for _, option := range section.OptionNames() {
+			keys[section.Name+"."+option] = true
+		}
+	}
+	return keys, nil
 }
 
 func (s *UCIStore) show(ctx context.Context, configDir, deltaDir, pkg string) (
@@ -418,7 +466,42 @@ func checkKey(key Key) error {
 	if err := checkName(key.Section, "配置节"); err != nil {
 		return err
 	}
+	if key.IsSection() {
+		// An empty option is the section itself, which is a name this store
+		// writes on purpose rather than a name it failed to receive.
+		return nil
+	}
 	return checkName(key.Option, "配置项")
+}
+
+// ordered puts uci's own sequencing rule where it belongs: in the store.
+//
+// A section has to exist before anything can be set in it, and has to still
+// exist while its options are being removed. Callers building a plan get that
+// right by accident or not at all, and the rollback builds its changes from a
+// journal whose order is the plan's -- so a transaction that created a section
+// would try to delete it first and then set options in what is no longer there.
+//
+// Three groups, stable within each: create the sections, change the options,
+// then remove the sections.
+func ordered(changes []Change) []Change {
+	sorted := make([]Change, 0, len(changes))
+	for _, change := range changes {
+		if change.Key.IsSection() && !change.Delete {
+			sorted = append(sorted, change)
+		}
+	}
+	for _, change := range changes {
+		if !change.Key.IsSection() {
+			sorted = append(sorted, change)
+		}
+	}
+	for _, change := range changes {
+		if change.Key.IsSection() && change.Delete {
+			sorted = append(sorted, change)
+		}
+	}
+	return sorted
 }
 
 // clearDir removes a directory's entries without removing the directory, so
