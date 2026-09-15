@@ -280,6 +280,24 @@ func rollback(ctx context.Context, store Store, paths Paths, journal *Journal,
 		return Outcome{Phase: journal.Phase}, nil
 	}
 
+	// Nothing has been published yet, so there is nothing to undo and nothing
+	// to compare against.
+	//
+	// Apply stages into an isolated directory and only reaches `applied` before
+	// it commits, so a journal still saying planned or backed_up describes a
+	// live configuration that was never touched. Running the conflict check on
+	// one finds every option holding its original value, decides that is not
+	// what this transaction wrote -- which is true and irrelevant -- and
+	// reports the lot as somebody else's edit needing a person to look at. On a
+	// router where nothing happened.
+	//
+	// The way to get here is not an injected failure. It is a power cut between
+	// Begin writing the journal and Apply staging anything.
+	if journal.Phase == PhasePlanned || journal.Phase == PhaseBackedUp {
+		journal.Phase = PhaseRolledBack
+		return Outcome{Phase: PhaseRolledBack}, paths.Clear()
+	}
+
 	journal.Phase = PhaseRollingBack
 	if err := paths.SaveJournal(journal); err != nil {
 		return Outcome{}, err
@@ -424,8 +442,17 @@ func Recover(ctx context.Context, store Store, paths Paths,
 		// being examined at every startup forever.
 		return Outcome{Phase: journal.Phase}, true, paths.Clear()
 
-	case journal.Phase == PhasePlanned:
+	case journal.Phase == PhasePlanned || journal.Phase == PhaseBackedUp:
 		// Nothing was written. Only the record exists.
+		//
+		// Before the revision check, and that order is the point. The revision
+		// rule exists because the account save that goes with an applied change
+		// succeeded, so the user has been told it worked -- but a change that
+		// never reached the configuration cannot have been reported as
+		// anything. Leaving it for a person would also leave the journal on
+		// disk, and Begin refuses to start while one is there: a power cut in
+		// the wrong second would block every future wireless change until
+		// somebody found the file and deleted it.
 		return Outcome{Phase: PhaseRolledBack}, true, paths.Clear()
 
 	case journal.ConfigRevision != currentRevision:

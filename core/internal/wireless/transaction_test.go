@@ -230,6 +230,115 @@ func TestAFailureBeforeTheCommitLeavesTheLiveConfigurationAlone(t *testing.T) {
 	}
 }
 
+// And undoing that failure is a tidy-up, not a conflict report.
+//
+// A transaction that has only been backed up has written nothing live, so
+// every option still holds the value it held before. Checking those against
+// what this transaction *would* have written finds them all different, which is
+// the conflict test's answer to a question nobody asked -- and it comes back as
+// "somebody else changed these, a person has to look", on a router where
+// nothing happened at all.
+//
+// The likely way to reach it is not an injected failure but a power cut: the
+// journal is on disk from Begin, the process dies before Apply, and the next
+// start recovers a change that was never made.
+func TestUndoingAChangeThatWasNeverAppliedIsNotAConflict(t *testing.T) {
+	for name, undo := range map[string]func(*testing.T, *fakeStore, Paths) Outcome{
+		"rolled back in the same process": func(t *testing.T, store *fakeStore,
+			where Paths) Outcome {
+
+			plan := campusPlan()
+			transaction, err := Begin(t.Context(), store, where, plan, fixedClock(epoch))
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			store.failStage = errors.New("injected staging failure")
+			if err := transaction.Apply(t.Context(), plan.Changes); err == nil {
+				t.Fatal("the injected staging failure was not reported")
+			}
+			outcome, err := transaction.Rollback(t.Context())
+			if err != nil {
+				t.Fatalf("Rollback: %v", err)
+			}
+			return outcome
+		},
+		"recovered after a restart": func(t *testing.T, store *fakeStore,
+			where Paths) Outcome {
+
+			plan := campusPlan()
+			if _, err := Begin(t.Context(), store, where, plan, fixedClock(epoch)); err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			// Nothing else. The journal is on disk at backed_up and the process
+			// is gone.
+			outcome, acted, err := Recover(t.Context(), store, where,
+				plan.ConfigRevision, fixedClock(epoch))
+			if err != nil {
+				t.Fatalf("Recover: %v", err)
+			}
+			if !acted {
+				t.Fatal("Recover found no journal to act on")
+			}
+			return outcome
+		},
+	} {
+		store := homeStore()
+		where := paths(t)
+		outcome := undo(t, store, where)
+
+		if len(outcome.Conflicts) != 0 {
+			t.Errorf("%s: %d options reported as somebody else's change, on a "+
+				"transaction that never wrote one: %v",
+				name, len(outcome.Conflicts), outcome.Conflicts)
+		}
+		if outcome.Phase != PhaseRolledBack {
+			t.Errorf("%s: phase = %s, want rolled back", name, outcome.Phase)
+		}
+		if got := store.values[ssid].Text; got != "old-network" {
+			t.Errorf("%s: ssid = %q, want it untouched", name, got)
+		}
+		// And the journal is gone, so the next start does not examine it again.
+		if _, present, err := where.LoadJournal(); err != nil || present {
+			t.Errorf("%s: the journal survived a clean undo (present=%v, err=%v)",
+				name, present, err)
+		}
+	}
+}
+
+// The same when the configuration moved on in the meantime.
+//
+// The revision rule holds a change back from being undone because the account
+// save that went with it succeeded and the user was told so. A change that
+// never reached the configuration was never reported as anything, so the rule
+// does not apply -- and applying it anyway leaves the journal on disk, which
+// Begin refuses to start on top of. A power cut in the wrong second would then
+// block every future wireless change until somebody found the file.
+func TestARecordOfAChangeThatNeverHappenedIsClearedEvenAfterAConfigChange(t *testing.T) {
+	store := homeStore()
+	where := paths(t)
+	plan := campusPlan()
+	if _, err := Begin(t.Context(), store, where, plan, fixedClock(epoch)); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	outcome, acted, err := Recover(t.Context(), store, where,
+		plan.ConfigRevision+1, fixedClock(epoch))
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if !acted || outcome.Phase != PhaseRolledBack {
+		t.Fatalf("outcome = %+v, acted = %v", outcome, acted)
+	}
+	if _, present, _ := where.LoadJournal(); present {
+		t.Error("the journal was left behind, and Begin will refuse to start on it")
+	}
+
+	// And the proof that it is not merely deleted: a new transaction can start.
+	if _, err := Begin(t.Context(), store, where, plan, fixedClock(epoch)); err != nil {
+		t.Errorf("a later change was blocked by a record of one that never happened: %v", err)
+	}
+}
+
 // Rolling back restores what this transaction wrote, and removes what it added.
 func TestRollbackRestoresWhatWasThereAndRemovesWhatWasNot(t *testing.T) {
 	where := paths(t)
