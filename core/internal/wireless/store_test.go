@@ -138,8 +138,14 @@ func (f *fakeUCI) append(path, line string) {
 	}
 }
 
-// commit folds the delta into the package file and clears it, which is what
+// commit folds the delta into the package file and empties it, which is what
 // uci commit does.
+//
+// Empties rather than removes: measured on a real device, the delta file is
+// still there afterwards, truncated to zero bytes. It makes no difference to
+// the store -- Stage clears the directory and PendingChanges reads no changes
+// out of an empty file either way -- but a fake that removed it would be
+// asserting something about uci that is not true.
 func (f *fakeUCI) commit(config, delta, pkg string) {
 	f.t.Helper()
 	staged, err := os.ReadFile(filepath.Join(delta, pkg))
@@ -172,7 +178,7 @@ func (f *fakeUCI) commit(config, delta, pkg string) {
 	if err := os.WriteFile(filepath.Join(config, pkg), []byte(text), 0o600); err != nil {
 		f.t.Fatalf("commit: %v", err)
 	}
-	if err := os.Remove(filepath.Join(delta, pkg)); err != nil {
+	if err := os.WriteFile(filepath.Join(delta, pkg), nil, 0o600); err != nil {
 		f.t.Fatalf("clear the delta: %v", err)
 	}
 }
@@ -434,9 +440,15 @@ func TestThePublishedFileKeepsTheModeItHad(t *testing.T) {
 	}
 }
 
-// Absent and empty are different things to uci, and the rollback depends on the
-// difference: restoring an absent option means deleting it, not blanking it.
-func TestReadDistinguishesAbsentFromEmpty(t *testing.T) {
+// An option that is not there, and one uci shows as empty, both read as absent.
+//
+// The second half is measured rather than assumed. A hand-written
+// `option blank ”` is not listed by `uci show`, not returned by `uci get`, and
+// `uci delete` on it answers "Entry not found" -- uci has no empty option at
+// all. Reporting one as present would put a value in the journal that no later
+// uci call could restore or remove, and the rollback would then read the
+// absence uci caused as somebody else's edit.
+func TestReadReportsAnEmptyOptionAsAbsent(t *testing.T) {
 	fixture := newFixture(t)
 	if err := os.WriteFile(fixture.live,
 		[]byte(liveWireless+"wireless.sta0.bssid=''\n"), 0o600); err != nil {
@@ -455,8 +467,42 @@ func TestReadDistinguishesAbsentFromEmpty(t *testing.T) {
 	if values[key].Present {
 		t.Errorf("an option that is not in the file was reported present: %+v", values[key])
 	}
-	if want := (Value{Text: "", Present: true}); values[bssid] != want {
-		t.Errorf("bssid = %+v, want present and empty", values[bssid])
+	if values[bssid].Present {
+		t.Errorf("bssid = %+v; an option uci shows as empty is one uci cannot act on",
+			values[bssid])
+	}
+}
+
+// A change that writes the empty string is refused rather than silently doing
+// nothing.
+//
+// `uci set x.y.z=` writes no option at all. Accepted, it would leave the
+// journal saying the option holds "" while the option is absent -- and the
+// rollback reads that absence as somebody else's removal and reports a
+// conflict, for an option nobody touched. An open network is exactly this
+// case: no passphrase means key="".
+func TestWritingAnEmptyValueIsRefused(t *testing.T) {
+	fixture := newFixture(t)
+	open := []Change{{Key: ssid, Text: "jxnu_open"}, {Key: key, Text: ""}}
+
+	err := fixture.store.Stage(t.Context(), "wireless", open)
+	if code, _ := domain.CodeOf(err); code != domain.CodeInvalidArgument {
+		t.Fatalf("Stage = %v (code %s), want InvalidArgument", err, code)
+	}
+	if !strings.Contains(err.Error(), "sta0.key") {
+		t.Errorf("the refusal does not say which option: %v", err)
+	}
+	if fixture.uci.ran("set") {
+		t.Error("options were staged before the empty one was noticed")
+	}
+
+	// And the transaction refuses to start at all, so no journal is written
+	// against a plan that could not be undone.
+	plan := campusPlan()
+	plan.Changes = open
+	if _, err := Begin(t.Context(), fixture.store, paths(t), plan,
+		fixedClock(epoch)); err == nil {
+		t.Error("Begin accepted a plan with an unwritable value")
 	}
 }
 

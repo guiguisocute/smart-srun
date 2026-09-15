@@ -16,7 +16,9 @@ import (
 // guarantee. Making it inexpressible is stronger than remembering not to.
 type Store interface {
 	// Read returns the current value of each key, and whether it was present at
-	// all. An absent option and an empty one are different things to uci.
+	// all. A present value is never empty: uci has no option holding the empty
+	// string, so an implementation that reported one would be describing a
+	// state no later call could restore or remove.
 	Read(ctx context.Context, pkg string, keys []Key) (map[Key]Value, error)
 	// Stage writes the changes somewhere they are not yet live. The adapter
 	// does this in an isolated UCI directory, so a failure between here and
@@ -40,10 +42,16 @@ type Value struct {
 // Change is one option this transaction wants to write.
 type Change struct {
 	Key Key
-	// Text is the new value. Ignored when Delete is set.
+	// Text is the new value, and must not be empty unless Delete is set. uci
+	// has no such thing as an option holding the empty string: it does not
+	// write one, does not report one, and cannot delete one. Measured on a
+	// real device, 2026-09-15 -- see evidence/uci-behaviour-router2.
+	//
+	// Left expressible, "set this to nothing" would be accepted, do nothing,
+	// and leave the journal claiming a value that was never written. See
+	// Begin, which refuses it.
 	Text string
-	// Delete removes the option instead of setting it. Distinct from setting
-	// an empty string, which uci treats as writing nothing at all.
+	// Delete removes the option instead of setting it.
 	Delete bool
 }
 
@@ -110,6 +118,9 @@ func Begin(ctx context.Context, store Store, paths Paths, plan Plan,
 	if len(plan.Changes) == 0 {
 		return nil, domain.Errorf(domain.CodeInvalidArgument,
 			"无线事务没有要写入的内容")
+	}
+	if err := checkWritable(plan.Changes); err != nil {
+		return nil, err
 	}
 
 	if _, present, err := paths.LoadJournal(); err != nil {
@@ -348,6 +359,29 @@ func rollback(ctx context.Context, store Store, paths Paths, journal *Journal,
 		return outcome, err
 	}
 	return outcome, nil
+}
+
+// checkWritable refuses a change uci would accept and then not perform.
+//
+// `uci set x.y.z=` writes nothing at all: the option ends up absent, while the
+// journal records it as present holding the empty string. The rollback then
+// reads an absent option where it expected its own value, decides somebody
+// else removed it, and reports a conflict -- for an option nobody touched and
+// that needed no undoing. The path is not hypothetical: an open network has no
+// passphrase, so the plan for one carries key="".
+//
+// Refused rather than translated into a deletion. Translating would write the
+// right thing and record the wrong one, which is the same false conflict with
+// the cause hidden one layer deeper.
+func checkWritable(changes []Change) error {
+	for _, change := range changes {
+		if !change.Delete && change.Text == "" {
+			return domain.Errorf(domain.CodeInvalidArgument,
+				"%s.%s 要写入空值；uci 没有空选项这种东西，请改用删除",
+				change.Key.Section, change.Key.Option)
+		}
+	}
+	return nil
 }
 
 // stillOurs reports that an option still holds what this transaction wrote.

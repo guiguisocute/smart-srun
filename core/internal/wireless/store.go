@@ -49,6 +49,15 @@ const networkInit = "/etc/init.d/network"
 // anywhere before the publish leave the running configuration untouched, and
 // the check is what makes publishing a whole file equivalent to applying only
 // this transaction's options.
+//
+// One consequence worth knowing before it surprises somebody: committing any
+// change makes uci rewrite the whole package file in its own canonical form,
+// which drops comments. Untouched sections, options and values survive
+// exactly; only comments and blank-line layout do not. That is uci's, not this
+// program's -- a `uci set` straight against /etc/config does the same, and so
+// does LuCI -- but the file it happens to is the user's, so it is said here
+// rather than discovered later. A package with no effective change is left
+// alone entirely.
 type UCIStore struct {
 	runner commandRunner
 	// staging is this store's own uci root: a copy of the package being
@@ -134,6 +143,16 @@ func (s *UCIStore) Read(ctx context.Context, pkg string, keys []Key) (map[Key]Va
 			return nil, domain.Errorf(domain.CodeConflict,
 				"%s.%s 是列表项，本次改动不处理列表", key.Section, key.Option)
 		}
+		if option.Text == "" {
+			// uci has no empty option. Measured on a real device: a hand-written
+			// `option blank ''` is not listed by show, not returned by get, and
+			// `delete` on it answers "Entry not found". Reporting it as present
+			// would put a value in the journal that no later uci call could
+			// restore or remove, and the rollback would read the absence it
+			// caused as somebody else's edit.
+			values[key] = Value{}
+			continue
+		}
 		values[key] = Value{Text: option.Text, Present: true}
 	}
 	return values, nil
@@ -151,6 +170,11 @@ func (s *UCIStore) Stage(ctx context.Context, pkg string, changes []Change) erro
 	if len(changes) == 0 {
 		return domain.Errorf(domain.CodeInvalidArgument,
 			"没有要暂存的改动")
+	}
+	// Again here, not only in Begin: the rollback builds its own changes from
+	// the backup and never passes through a plan.
+	if err := checkWritable(changes); err != nil {
+		return err
 	}
 
 	delta := filepath.Join(s.staging, "delta")
