@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -811,6 +812,323 @@ func TestAFailedReloadIsReportedAndStillCountsAsApplied(t *testing.T) {
 	}
 	if outcome.Phase != PhaseRolledBack {
 		t.Errorf("phase = %s, want rolled_back", outcome.Phase)
+	}
+}
+
+// A rollback that finished its writes and then died is finished, not a
+// conflict.
+//
+// rollback writes `rolling_back` to disk before it touches anything, and only
+// assigns `rolled_back` in memory on the way out -- so the window between the
+// last store write and Clear() succeeding leaves a journal saying rolling_back
+// over options that already hold their old values. Two ordinary ways in: Clear
+// failing on a full or failing flash, and a power cut, which is likelier here
+// than it sounds because the step before it is `/etc/init.d/network reload`.
+//
+// Resuming it then compares each option against what this transaction *wrote*,
+// finds the old value instead, and calls every one of them somebody else's
+// edit. The journal stays on disk and Begin refuses to start on top of it, so
+// every later wireless change is blocked until a person deletes the file.
+func TestAResumedRollbackWhoseWritesAlreadyLandedIsDone(t *testing.T) {
+	store := homeStore()
+	where := paths(t)
+	applied(t, store, where)
+
+	// The writes landed: every option is back at its "before" value. This is
+	// what the store looks like the instant before Clear() would have run.
+	store.values[ssid] = Value{Text: "old-network", Present: true}
+	store.values[enc] = Value{Text: "none", Present: true}
+	delete(store.values, key)
+
+	journal, _, err := where.LoadJournal()
+	if err != nil {
+		t.Fatalf("journal: %v", err)
+	}
+	journal.Phase = PhaseRollingBack
+	if err := where.SaveJournal(journal); err != nil {
+		t.Fatalf("SaveJournal: %v", err)
+	}
+
+	outcome, acted, err := Recover(t.Context(), store, where, 7, fixedClock(epoch))
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if !acted {
+		t.Fatal("Recover found no journal")
+	}
+	if len(outcome.Conflicts) != 0 {
+		t.Errorf("%d options reported as somebody else's change, on a rollback "+
+			"that had already put them back: %v", len(outcome.Conflicts),
+			outcome.Conflicts)
+	}
+	if outcome.Phase != PhaseRolledBack {
+		t.Errorf("phase = %s, want rolled back", outcome.Phase)
+	}
+	if _, present, _ := where.LoadJournal(); present {
+		t.Error("the journal was left behind, and Begin will refuse to start on it")
+	}
+}
+
+// A commit that failed wrote nothing, so undoing it is a tidy-up too.
+//
+// The journal reaches `applied` before the commit on purpose -- that is what
+// makes a crash between them recoverable -- which means `applied` does not
+// promise the values were published. When the commit then fails, the options
+// still hold their old values, and the same comparison calls all of them
+// conflicts.
+func TestUndoingAFailedCommitIsNotAConflict(t *testing.T) {
+	store := homeStore()
+	where := paths(t)
+	store.failCommit = errors.New("injected commit failure")
+
+	plan := campusPlan()
+	transaction, err := Begin(t.Context(), store, where, plan, fixedClock(epoch))
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := transaction.Apply(t.Context(), plan.Changes); err == nil {
+		t.Fatal("the injected commit failure was not reported")
+	}
+	store.failCommit = nil
+
+	outcome, err := transaction.Rollback(t.Context())
+	if err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if len(outcome.Conflicts) != 0 {
+		t.Errorf("%d conflicts after a commit that published nothing: %v",
+			len(outcome.Conflicts), outcome.Conflicts)
+	}
+	if outcome.Phase != PhaseRolledBack {
+		t.Errorf("phase = %s, want rolled back", outcome.Phase)
+	}
+}
+
+// A confirmed change stays confirmed even if clearing its record fails.
+//
+// Confirm assigns `committed` in memory and then deletes both files; the phase
+// never reaches the disk. Clear removes the backup first, so a failure between
+// the two leaves a journal still saying awaiting_confirm with no backup beside
+// it -- and the next start reads that as a change it cannot undo and reports
+// recovery required, for a change the user was already told had worked. Spec 04
+// is explicit that a success the user has been shown must not be rolled back
+// behind their back.
+func TestAConfirmedChangeSurvivesAFailureToClearItsRecord(t *testing.T) {
+	store := homeStore()
+	where := paths(t)
+	transaction := applied(t, store, where)
+	if err := transaction.AwaitConfirm(); err != nil {
+		t.Fatalf("AwaitConfirm: %v", err)
+	}
+
+	// Make the deletion fail. A non-empty directory where the backup file was:
+	// os.Remove answers ENOTEMPTY for it whatever the process's uid, which a
+	// permission bit would not -- some of the containers this is built in run
+	// the tests as root, where 0000 stops nothing.
+	//
+	// Clear removes the backup first, so it stops there and never reaches the
+	// journal. Whatever the journal says at that point is what the next start
+	// will read.
+	if err := os.Remove(where.backup()); err != nil {
+		t.Fatalf("remove the backup: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(where.backup(), "occupied"), 0o700); err != nil {
+		t.Fatalf("block the backup path: %v", err)
+	}
+
+	if err := transaction.Confirm(); err == nil {
+		t.Fatal("Confirm reported success while its record could not be deleted")
+	}
+
+	journal, present, err := where.LoadJournal()
+	if err != nil {
+		t.Fatalf("journal: %v", err)
+	}
+	if !present {
+		t.Fatal("the journal is gone, so this test is checking nothing")
+	}
+	if journal.Phase != PhaseCommitted {
+		t.Fatalf("the journal says %s; a confirmed change has to be recorded as "+
+			"committed before its record is deleted, or the next start reads it "+
+			"as one to undo", journal.Phase)
+	}
+
+	// Which is the point: the next start leaves it alone.
+	if !journal.Phase.Terminal() {
+		t.Error("committed is not terminal, so Recover would try to undo it")
+	}
+}
+
+// A journal left by a transaction that finished does not block the next one.
+//
+// Begin refuses while a journal is on disk, which is right for one still in
+// flight: its "before" values would become the new transaction's "after". A
+// committed or rolled_back journal is what a failed Clear leaves behind, and
+// refusing on it blocks every wireless change until somebody restarts the
+// service. The one that still refuses is recovery_required -- that one is
+// waiting for a person, and starting over it would bury what they have to look
+// at.
+func TestAFinishedTransactionsLeftoverJournalDoesNotBlockTheNextOne(t *testing.T) {
+	for phase, wantStart := range map[Phase]bool{
+		PhaseCommitted:        true,
+		PhaseRolledBack:       true,
+		PhaseRecoveryRequired: false,
+		PhaseAwaitingConfirm:  false,
+		PhaseRollingBack:      false,
+	} {
+		store := homeStore()
+		where := paths(t)
+		if err := where.SaveJournal(&Journal{
+			Version: JournalVersion, TaskID: "old", Phase: phase,
+			Package: "wireless", Salt: "abcd", StartedAt: epoch,
+		}); err != nil {
+			t.Fatalf("%s: SaveJournal: %v", phase, err)
+		}
+
+		_, err := Begin(t.Context(), store, where, campusPlan(), fixedClock(epoch))
+		if wantStart {
+			if err != nil {
+				t.Errorf("%s: a finished transaction's leftovers blocked a new "+
+					"change: %v", phase, err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("%s: a new change started over an unfinished one", phase)
+		}
+	}
+}
+
+// Clearing a finished transaction's leftovers takes its passphrase copy with
+// them.
+//
+// A committed journal with a backup still beside it is what a half-completed
+// Confirm leaves: Clear removes the backup first, so the pair can only be in
+// that state if it failed on the journal -- or, as here, the other way about.
+// The backup holds a wireless passphrase in clear, and spec 04 says it must not
+// outlive the change it existed for.
+//
+// Begin overwrites both files on its way to backed_up, so the only window where
+// this is visible is a Begin that refuses after noticing the leftovers -- which
+// is exactly the case where nothing else will tidy up either.
+func TestStartingOverRemovesThePreviousTransactionsPassphraseCopy(t *testing.T) {
+	store := homeStore()
+	where := paths(t)
+	if err := where.SaveBackup(&Backup{
+		TaskID: "old", Values: map[string]string{"sta0.key": passphrase},
+	}); err != nil {
+		t.Fatalf("SaveBackup: %v", err)
+	}
+	if err := where.SaveJournal(&Journal{
+		Version: JournalVersion, TaskID: "old", Phase: PhaseCommitted,
+		Package: "wireless", Salt: "abcd", StartedAt: epoch,
+	}); err != nil {
+		t.Fatalf("SaveJournal: %v", err)
+	}
+
+	// Somebody else is mid-edit, so this Begin refuses after it has dealt with
+	// the leftovers and before it writes anything of its own.
+	store.pending = []string{"wireless.ap0.ssid='SomethingElse'"}
+	if _, err := Begin(t.Context(), store, where, campusPlan(),
+		fixedClock(epoch)); err == nil {
+		t.Fatal("Begin started on top of somebody else's uncommitted changes")
+	}
+
+	if _, present, _ := where.LoadBackup(); present {
+		t.Error("the previous transaction's backup survived, passphrase and all")
+	}
+	if _, present, _ := where.LoadJournal(); present {
+		t.Error("the previous transaction's journal survived")
+	}
+}
+
+// And the phase a refusal names is the one on disk.
+//
+// "The last change is not finished" tells somebody to go and look without
+// saying where. Whether it stopped waiting for a confirmation or needs a person
+// are different situations with different next steps.
+func TestARefusalNamesWhyTheLastChangeIsStillOpen(t *testing.T) {
+	store := homeStore()
+	where := paths(t)
+	if err := where.SaveJournal(&Journal{
+		Version: JournalVersion, TaskID: "old", Phase: PhaseRecoveryRequired,
+		Package: "wireless", Salt: "abcd", StartedAt: epoch,
+	}); err != nil {
+		t.Fatalf("SaveJournal: %v", err)
+	}
+
+	_, err := Begin(t.Context(), store, where, campusPlan(), fixedClock(epoch))
+	if code, _ := domain.CodeOf(err); code != domain.CodeRecoveryRequired {
+		t.Fatalf("Begin = %v (code %s), want RecoveryRequired", err, code)
+	}
+
+	// And the record is still there. Refusing is only half of it: the whole
+	// point of recovery_required is that somebody has to look at what was left
+	// alone, and a refusal that tidied the evidence away on its way out would
+	// leave them nothing to look at.
+	journal, present, err := where.LoadJournal()
+	if err != nil {
+		t.Fatalf("journal: %v", err)
+	}
+	if !present || journal.Phase != PhaseRecoveryRequired {
+		t.Errorf("the record a person has to read was removed by the refusal "+
+			"(present=%v)", present)
+	}
+}
+
+// A change that was never applied needs no backup to undo.
+//
+// Nothing was written, so there is nothing to restore and the file holding the
+// old values is beside the point. That matters because the backup is the one
+// that holds a passphrase in clear: spec 04 says it must not outlive the change
+// it exists for, so it is the file most likely to be gone -- deleted early, or
+// missing from a restored configuration. Reading its absence as "this cannot be
+// undone" would report recovery required for a change that never happened.
+// Both entry points, because they take different routes to the same answer:
+// Recover decides it before it calls rollback, and Rollback has to decide it
+// inside. A test that only drove Recover would leave the half inside rollback
+// uncovered -- which it did, until this grew its second case.
+func TestUndoingAChangeThatWasNeverAppliedNeedsNoBackup(t *testing.T) {
+	for name, undo := range map[string]func(*testing.T, *fakeStore, Paths, *Transaction) (Outcome, error){
+		"recovered after a restart": func(t *testing.T, store *fakeStore,
+			where Paths, _ *Transaction) (Outcome, error) {
+
+			outcome, acted, err := Recover(t.Context(), store, where, 7,
+				fixedClock(epoch))
+			if !acted && err == nil {
+				t.Fatal("Recover found no journal to act on")
+			}
+			return outcome, err
+		},
+		"rolled back in the same process": func(t *testing.T, _ *fakeStore,
+			_ Paths, transaction *Transaction) (Outcome, error) {
+
+			return transaction.Rollback(t.Context())
+		},
+	} {
+		store := homeStore()
+		where := paths(t)
+		transaction, err := Begin(t.Context(), store, where, campusPlan(),
+			fixedClock(epoch))
+		if err != nil {
+			t.Fatalf("%s: Begin: %v", name, err)
+		}
+		if err := os.Remove(where.backup()); err != nil {
+			t.Fatalf("%s: remove the backup: %v", name, err)
+		}
+
+		outcome, err := undo(t, store, where, transaction)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if outcome.Phase != PhaseRolledBack {
+			t.Errorf("%s: phase = %s, want a clean tidy-up", name, outcome.Phase)
+		}
+		if _, present, _ := where.LoadJournal(); present {
+			t.Errorf("%s: the journal was left behind, and Begin will refuse to "+
+				"start on it", name)
+		}
 	}
 }
 

@@ -123,11 +123,33 @@ func Begin(ctx context.Context, store Store, paths Paths, plan Plan,
 		return nil, err
 	}
 
-	if _, present, err := paths.LoadJournal(); err != nil {
+	// A journal left behind by a transaction that finished is cleaned up rather
+	// than treated as one still in flight.
+	//
+	// The refusal exists to stop this building on an unfinished change, whose
+	// "before" values would become this one's "after". A committed or
+	// rolled_back journal is finished by definition and holds nothing to lose:
+	// it is what a failed Clear leaves, and refusing on it would block every
+	// wireless change until somebody restarted the service. recovery_required
+	// is different and still refuses -- that one is waiting for a person.
+	previous, present, err := paths.LoadJournal()
+	if err != nil {
 		return nil, err
-	} else if present {
-		return nil, domain.Errorf(domain.CodeConflict,
-			"上一次无线改动还没有收尾，先处理它再开始新的")
+	}
+	if present {
+		switch previous.Phase {
+		case PhaseCommitted, PhaseRolledBack:
+			if err := paths.Clear(); err != nil {
+				return nil, err
+			}
+		case PhaseRecoveryRequired:
+			return nil, domain.Errorf(domain.CodeRecoveryRequired,
+				"上一次无线改动有需要人工确认的项，处理完再开始新的")
+		default:
+			return nil, domain.Errorf(domain.CodeConflict,
+				"上一次无线改动停在 %s，还没有收尾，先处理它再开始新的",
+				previous.Phase)
+		}
 	}
 
 	pending, err := store.PendingChanges(ctx, plan.Package)
@@ -250,7 +272,21 @@ func (t *Transaction) Confirm() error {
 		return domain.Errorf(domain.CodeConflict,
 			"无线事务处于 %s，没有可以确认的改动", t.journal.Phase)
 	}
-	t.journal.Phase = PhaseCommitted
+	// Committed reaches the disk before either file is deleted.
+	//
+	// Assigning it in memory and going straight to Clear leaves the phase
+	// nowhere if the deletion fails -- and Clear removes the backup first, so
+	// what it leaves is a journal still saying awaiting_confirm with no backup
+	// beside it. The next start reads that as a change it cannot undo and
+	// reports recovery required, for a change the user was already told had
+	// worked. Spec 04 is explicit that a success somebody has been shown must
+	// not be unwound behind them.
+	//
+	// Committed is terminal, so once it is on disk a failed Clear is harmless:
+	// recovery clears it and does nothing else.
+	if err := t.setPhase(PhaseCommitted); err != nil {
+		return err
+	}
 	return t.paths.Clear()
 }
 
@@ -329,6 +365,20 @@ func rollback(ctx context.Context, store Store, paths Paths, journal *Journal,
 	outcome := Outcome{}
 	var restore []Change
 	for _, entry := range journal.Entries {
+		if alreadyBefore(journal, entry, current[entry.Key]) {
+			// Nothing to do, and specifically not a conflict. Two ordinary ways
+			// to arrive here: a rollback whose writes landed and then failed to
+			// clear its journal, and an Apply whose commit failed -- the journal
+			// reaches `applied` before the commit on purpose, so `applied` does
+			// not promise anything was published.
+			//
+			// Asked first, because the option genuinely no longer holds what
+			// this transaction wrote, so stillOurs answers no and means it. The
+			// question it is answering is just not the one that matters when
+			// the value is already where the undo would put it.
+			outcome.Restored = append(outcome.Restored, entry.Key)
+			continue
+		}
 		if !stillOurs(journal, entry, current[entry.Key]) {
 			outcome.Conflicts = append(outcome.Conflicts, entry.Key)
 			continue
@@ -373,10 +423,39 @@ func rollback(ctx context.Context, store Store, paths Paths, journal *Journal,
 
 	outcome.Phase = PhaseRolledBack
 	journal.Phase = PhaseRolledBack
+	// Deliberately not saved before Clear, unlike Confirm.
+	//
+	// It was, briefly, and no test could be made to fail for removing it --
+	// which is this project's definition of dead code, so it went. The reason
+	// it is dead is alreadyBefore: if Clear fails here, the journal on disk
+	// still says rolling_back, and the next start reads options that already
+	// hold their old values, finds every entry already where the undo would put
+	// it, and finishes cleanly. Writing rolled_back first would only reach the
+	// same place by a shorter route.
+	//
+	// Confirm is different and does save first, because there is no equivalent
+	// of alreadyBefore for it: nothing about the live configuration
+	// distinguishes a confirmed change from one still awaiting confirmation.
 	if err := paths.Clear(); err != nil {
 		return outcome, err
 	}
 	return outcome, nil
+}
+
+// alreadyBefore reports that an option is already where the undo would put it.
+//
+// Compared against the journal's hash of the old value rather than the backup's
+// copy of it, so this still answers when the backup is gone -- and for the same
+// reason the journal holds hashes at all: one of these values is a passphrase.
+//
+// This does not weaken the conflict rule. If somebody else really did change an
+// option to exactly the value this transaction found there, restoring it is a
+// no-op and calling that a conflict would ask a person to look at nothing.
+func alreadyBefore(journal *Journal, entry Entry, value Value) bool {
+	if !entry.BeforePresent {
+		return !value.Present
+	}
+	return value.Present && journal.Hash(value.Text) == entry.BeforeHash
 }
 
 // checkWritable refuses a change uci would accept and then not perform.
