@@ -149,9 +149,12 @@ func newRecordingStore() *recordingStore {
 	return &recordingStore{values: map[wireless.Key]wireless.Value{}}
 }
 
-func (s *recordingStore) Read(_ context.Context, _ string, keys []wireless.Key) (
+func (s *recordingStore) Read(ctx context.Context, _ string, keys []wireless.Key) (
 	map[wireless.Key]wireless.Value, error) {
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make(map[wireless.Key]wireless.Value, len(keys))
@@ -161,7 +164,10 @@ func (s *recordingStore) Read(_ context.Context, _ string, keys []wireless.Key) 
 	return out, nil
 }
 
-func (s *recordingStore) Stage(_ context.Context, _ string, changes []wireless.Change) error {
+func (s *recordingStore) Stage(ctx context.Context, _ string, changes []wireless.Change) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.onStage != nil {
 		s.onStage()
 	}
@@ -181,7 +187,10 @@ func (s *recordingStore) Stage(_ context.Context, _ string, changes []wireless.C
 	return nil
 }
 
-func (s *recordingStore) Commit(context.Context, string) error {
+func (s *recordingStore) Commit(ctx context.Context, _ string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.commits++
@@ -192,11 +201,20 @@ func (s *recordingStore) PendingChanges(context.Context, string) ([]string, erro
 	return nil, nil
 }
 
-func (s *recordingStore) Reload(context.Context) error {
+func (s *recordingStore) Reload(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reloads++
 	return nil
+}
+
+func (s *recordingStore) batches() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.staged)
 }
 
 func (s *recordingStore) lastStaged() []wireless.Change {
@@ -735,6 +753,58 @@ func TestEachChangeGetsItsOwnTaskIdentity(t *testing.T) {
 	if fixture.radio.tasks != 3 {
 		t.Errorf("tasks = %d after three changes", fixture.radio.tasks)
 	}
+}
+
+// A cancelled switch still gets to undo itself.
+//
+// It cannot do that on the context that was just cancelled, and leaving it
+// unwound is not "safe but untidy": Begin refuses to start while a journal is
+// on disk, so the next wireless change would be blocked until a restart. The
+// undo therefore runs on a bounded context of its own.
+func TestACancelledChangeStillRollsItselfBack(t *testing.T) {
+	fixture := newWirelessFixture(t)
+	fixture.settled()
+	// Associated, but no address, so the wait does not finish on its own.
+	fixture.device.answer(wwanDown, "ubus", "call", "network.interface.wwan", "status")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- fixture.radio.Apply(ctx, campusPlan()) }()
+
+	// Let the change be applied and the wait begin, then stop it.
+	waitFor(t, func() bool { return fixture.store.batches() >= 1 })
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a cancelled switch was reported as done")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Apply did not finish after its context was cancelled")
+	}
+
+	if fixture.store.batches() < 2 {
+		t.Fatalf("%d batches staged; the change was left in place",
+			fixture.store.batches())
+	}
+	// And the proof that it matters: the next change can start.
+	fixture.device.answer(wwanUp, "ubus", "call", "network.interface.wwan", "status")
+	if err := fixture.radio.Apply(t.Context(), campusPlan()); err != nil {
+		t.Errorf("a later change was blocked by the cancelled one: %v", err)
+	}
+}
+
+func waitFor(t *testing.T, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if done() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("the condition never held")
 }
 
 // A plan with no radio or no network is refused rather than written.

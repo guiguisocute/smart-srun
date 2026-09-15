@@ -106,6 +106,23 @@ func (w *deviceWireless) RecoverInterrupted(ctx context.Context) error {
 		len(outcome.Conflicts))
 }
 
+// UndoBudget is how long the rollback gets when the change's own context is
+// already dead.
+//
+// Under the coordinator's ten-second shutdown grace on purpose. The undo runs
+// on a context of its own -- a switch the user cancelled cannot unwind itself
+// with a context that was cancelled, and leaving it unwound means leaving a
+// journal on disk that Begin refuses to start on top of, so the next wireless
+// change is blocked until a restart. That is the failure this budget exists to
+// avoid.
+//
+// Bounded rather than generous because the other side of it is a service stop:
+// an undo that outlasted the grace would be reported as a worker that ignored
+// its cancellation. Running out of budget is survivable and already tested --
+// the journal says rolling_back and the next start resumes it -- while hanging
+// the stop is not.
+const UndoBudget = 8 * time.Second
+
 // undo rolls the change back and reports which of the two failures the caller
 // is looking at.
 //
@@ -114,6 +131,12 @@ func (w *deviceWireless) RecoverInterrupted(ctx context.Context) error {
 // for whoever has to fix it, and the second must not hide the first.
 func (w *deviceWireless) undo(ctx context.Context, transaction *wireless.Transaction,
 	cause error) error {
+
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), UndoBudget)
+		defer cancel()
+	}
 
 	outcome, err := transaction.Rollback(ctx)
 	if err != nil {
