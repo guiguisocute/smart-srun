@@ -255,6 +255,19 @@ func (s *UCIStore) Stage(ctx context.Context, pkg string, changes []Change) erro
 // Refusing on a change underneath is spec 04's "校验原配置仍未变": somebody
 // else's edit between the copy and the publish would be overwritten by a file
 // that never contained it.
+//
+// The candidate is dropped when the publish succeeds, and only then. A Commit
+// that published nothing leaves everything as Stage left it, so calling it
+// again is a retry of the same operation rather than a second one -- and the
+// alternative is a store that answers "nothing was staged" to a caller whose
+// last staging is sitting right there, which describes the wrong problem.
+//
+// Half of that is covered by a test and half is not, so: the refusals above the
+// publish are reachable and locked by TestACommitThatPublishedNothingCanBeRetried.
+// replaceFile failing is not reachable from a test without giving this store a
+// filesystem seam it otherwise has no use for, and a seam added for one test is
+// production surface forever. It is written the same way because it is the same
+// rule, not because the untested half was measured.
 func (s *UCIStore) Commit(ctx context.Context, pkg string) error {
 	if err := checkName(pkg, "配置包"); err != nil {
 		return err
@@ -283,14 +296,18 @@ func (s *UCIStore) Commit(ctx context.Context, pkg string) error {
 		return domain.Errorf(domain.CodeInternal,
 			"无法读取 %s 的候选配置", pkg).Wrap(err)
 	}
-	delete(s.staged, pkg)
 	if bytes.Equal(candidate, before) {
 		// uci accepted every option and none of them changed anything. Writing
 		// the identical file would still bump the mtime and make a later "was
 		// this touched" answer wrongly.
+		delete(s.staged, pkg)
 		return nil
 	}
-	return replaceFile(live, candidate)
+	if err := replaceFile(live, candidate); err != nil {
+		return err
+	}
+	delete(s.staged, pkg)
+	return nil
 }
 
 // PendingChanges reports the system's own uncommitted changes.

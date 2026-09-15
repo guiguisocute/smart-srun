@@ -422,6 +422,67 @@ func TestCommitWithoutStageIsRefused(t *testing.T) {
 	}
 }
 
+// A Commit that published nothing can be tried again.
+//
+// The candidate belongs to the Stage that built it, not to the first Commit
+// that looked at it. A refusal leaves the live file exactly as Stage found it,
+// so the next call is a retry of one operation rather than a second one -- and
+// a store that forgot the candidate on the way out would answer "nothing was
+// staged" to a caller whose staging is sitting right there, which sends
+// somebody looking for the wrong problem.
+//
+// Driven through the conflict refusal because that one is reachable: the live
+// file moves, Commit refuses, the file moves back, and the same candidate
+// publishes. replaceFile failing is the other half of the same rule and cannot
+// be reached without giving the store a filesystem seam.
+func TestACommitThatPublishedNothingCanBeRetried(t *testing.T) {
+	fixture := newFixture(t)
+	if err := fixture.store.Stage(t.Context(), "wireless", campusChanges); err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+
+	// Somebody else edits the package between the staging and the publish.
+	elsewhere := liveWireless + "wireless.ap0.channel='11'\n"
+	if err := os.WriteFile(fixture.live, []byte(elsewhere), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	err := fixture.store.Commit(t.Context(), "wireless")
+	if code, _ := domain.CodeOf(err); code != domain.CodeConflict {
+		t.Fatalf("Commit = %v (code %s), want a conflict", err, code)
+	}
+
+	// They put it back. The candidate is still the right one to publish.
+	if err := os.WriteFile(fixture.live, []byte(liveWireless), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := fixture.store.Commit(t.Context(), "wireless"); err != nil {
+		t.Fatalf("the retry was refused: %v", err)
+	}
+	if live := fixture.liveText(t); !strings.Contains(live, "wireless.sta0.ssid=jxnu_stu") {
+		t.Errorf("the retry published nothing:\n%s", live)
+	}
+}
+
+// And once it has published, the candidate is spent.
+//
+// The pair matters: a store that never dropped it would let a candidate built
+// against one state be published again much later against another, which is
+// the thing the before/after comparison exists to prevent.
+func TestAPublishedCandidateIsNotPublishedTwice(t *testing.T) {
+	fixture := newFixture(t)
+	if err := fixture.store.Stage(t.Context(), "wireless", campusChanges); err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if err := fixture.store.Commit(t.Context(), "wireless"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	err := fixture.store.Commit(t.Context(), "wireless")
+	if code, _ := domain.CodeOf(err); code != domain.CodeInternal {
+		t.Fatalf("the second Commit = %v (code %s), want Internal", err, code)
+	}
+}
+
 // A delta left by an interrupted attempt is not replayed into this one.
 //
 // uci commit applies everything in the delta directory, not everything this
