@@ -1,0 +1,424 @@
+package wireless
+
+import (
+	"context"
+	"time"
+
+	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+)
+
+// Store is the UCI a transaction reads and writes.
+//
+// Consumer-defined here, and deliberately narrow. Every method names a package
+// and the exact options it touches, because a store that could write "the
+// wireless configuration" is a store that could write the home access point --
+// and spec 04 forbids that in a way no amount of care at the call site can
+// guarantee. Making it inexpressible is stronger than remembering not to.
+type Store interface {
+	// Read returns the current value of each key, and whether it was present at
+	// all. An absent option and an empty one are different things to uci.
+	Read(ctx context.Context, pkg string, keys []Key) (map[Key]Value, error)
+	// Stage writes the changes somewhere they are not yet live. The adapter
+	// does this in an isolated UCI directory, so a failure between here and
+	// Commit leaves the running configuration untouched.
+	Stage(ctx context.Context, pkg string, changes []Change) error
+	// Commit makes the staged changes live.
+	Commit(ctx context.Context, pkg string) error
+	// PendingChanges reports uncommitted changes that are already there. Spec
+	// 04 refuses to start on top of somebody else's half-finished edit.
+	PendingChanges(ctx context.Context, pkg string) ([]string, error)
+	// Reload makes the live configuration take effect on the radio.
+	Reload(ctx context.Context) error
+}
+
+// Value is one option as the store found it.
+type Value struct {
+	Text    string
+	Present bool
+}
+
+// Change is one option this transaction wants to write.
+type Change struct {
+	Key Key
+	// Text is the new value. Ignored when Delete is set.
+	Text string
+	// Delete removes the option instead of setting it. Distinct from setting
+	// an empty string, which uci treats as writing nothing at all.
+	Delete bool
+}
+
+// Plan is a transaction before it has touched anything.
+type Plan struct {
+	TaskID  string
+	Package string
+	Changes []Change
+	// ConfigRevision is the configuration this change belongs to, so recovery
+	// can tell a journal that describes the current world from one that does
+	// not.
+	ConfigRevision uint64
+	// ConfirmWithin is how long the change has to be confirmed. Spec 04 gives
+	// the wizard fifteen minutes; past it an unconfirmed change is rolled back
+	// rather than left on a network nobody reported reaching.
+	ConfirmWithin time.Duration
+}
+
+// Outcome is what a rollback or a recovery did, option by option.
+//
+// Per option rather than one verdict, because spec 04 requires the result to
+// say which items were restored and which conflicted. "Recovery required" with
+// no detail tells a person there is a problem and nothing about where.
+type Outcome struct {
+	Phase    Phase
+	Restored []Key
+	// Conflicts are options somebody else changed after this transaction wrote
+	// them. They are left exactly as found.
+	Conflicts []Key
+	// Missing are options the backup has no value for, which means they were
+	// absent before and have been deleted again.
+	Removed []Key
+}
+
+// Transaction is one wireless change, from planned to committed or undone.
+type Transaction struct {
+	store   Store
+	paths   Paths
+	now     func() time.Time
+	journal *Journal
+}
+
+// Begin records the plan and returns a transaction that has touched nothing.
+//
+// Refusing to start is a real outcome here. An existing journal means a
+// previous change was never finished, and starting a second one on top would
+// make the first unrecoverable -- its "before" values would be this one's
+// "after". Uncommitted UCI changes mean somebody else is mid-edit, and spec 04
+// refuses to build on that.
+func Begin(ctx context.Context, store Store, paths Paths, plan Plan,
+	now func() time.Time) (*Transaction, error) {
+
+	if now == nil {
+		now = time.Now
+	}
+	if plan.TaskID == "" {
+		return nil, domain.Errorf(domain.CodeInvalidArgument,
+			"无线事务需要一个任务 ID")
+	}
+	if plan.Package == "" {
+		return nil, domain.Errorf(domain.CodeInvalidArgument,
+			"无线事务需要指明配置包")
+	}
+	if len(plan.Changes) == 0 {
+		return nil, domain.Errorf(domain.CodeInvalidArgument,
+			"无线事务没有要写入的内容")
+	}
+
+	if _, present, err := paths.LoadJournal(); err != nil {
+		return nil, err
+	} else if present {
+		return nil, domain.Errorf(domain.CodeConflict,
+			"上一次无线改动还没有收尾，先处理它再开始新的")
+	}
+
+	pending, err := store.PendingChanges(ctx, plan.Package)
+	if err != nil {
+		return nil, err
+	}
+	if len(pending) > 0 {
+		return nil, domain.Errorf(domain.CodeConflict,
+			"%s 里有 %d 项未应用的改动，不在别人改了一半的配置上继续",
+			plan.Package, len(pending))
+	}
+
+	salt, err := newSalt()
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make([]Key, 0, len(plan.Changes))
+	for _, change := range plan.Changes {
+		keys = append(keys, change.Key)
+	}
+	before, err := store.Read(ctx, plan.Package, keys)
+	if err != nil {
+		return nil, err
+	}
+
+	started := now()
+	journal := &Journal{
+		Version:        JournalVersion,
+		TaskID:         plan.TaskID,
+		Phase:          PhasePlanned,
+		Package:        plan.Package,
+		ConfigRevision: plan.ConfigRevision,
+		Salt:           salt,
+		StartedAt:      started,
+		ExpiresAt:      started.Add(plan.ConfirmWithin),
+	}
+
+	backup := &Backup{TaskID: plan.TaskID, Values: map[string]string{}}
+	for _, change := range plan.Changes {
+		previous := before[change.Key]
+		entry := Entry{
+			Key:           change.Key,
+			BeforePresent: previous.Present,
+			AfterDeleted:  change.Delete,
+		}
+		if previous.Present {
+			entry.BeforeHash = journal.Hash(previous.Text)
+			backup.Values[keyString(change.Key)] = previous.Text
+		}
+		if !change.Delete {
+			entry.AfterHash = journal.Hash(change.Text)
+		}
+		journal.Entries = append(journal.Entries, entry)
+	}
+
+	// The backup goes down before the journal names the phase it belongs to.
+	// The other order leaves a window where the journal says values are
+	// recoverable and the file holding them is not there yet.
+	if err := paths.SaveBackup(backup); err != nil {
+		return nil, err
+	}
+	journal.Phase = PhaseBackedUp
+	if err := paths.SaveJournal(journal); err != nil {
+		return nil, err
+	}
+
+	return &Transaction{store: store, paths: paths, now: now, journal: journal},
+		nil
+}
+
+// Phase is where this transaction has got to.
+func (t *Transaction) Phase() Phase { return t.journal.Phase }
+
+// TaskID identifies it.
+func (t *Transaction) TaskID() string { return t.journal.TaskID }
+
+// Apply stages the change, commits it and reloads the radio.
+//
+// The journal reaches applied *before* the commit, not after. Recording it
+// afterwards would leave the one window that matters unrecoverable: a crash
+// between the commit and the write would leave the new values live and nothing
+// on disk saying they were ever this transaction's to undo.
+func (t *Transaction) Apply(ctx context.Context, changes []Change) error {
+	if t.journal.Phase != PhaseBackedUp {
+		return domain.Errorf(domain.CodeConflict,
+			"无线事务处于 %s，不能再应用一次", t.journal.Phase)
+	}
+	if err := t.store.Stage(ctx, t.journal.Package, changes); err != nil {
+		return err
+	}
+	if err := t.setPhase(PhaseApplied); err != nil {
+		return err
+	}
+	if err := t.store.Commit(ctx, t.journal.Package); err != nil {
+		return err
+	}
+	return t.store.Reload(ctx)
+}
+
+// AwaitConfirm marks the change live and waiting to be confirmed.
+func (t *Transaction) AwaitConfirm() error {
+	if t.journal.Phase != PhaseApplied {
+		return domain.Errorf(domain.CodeConflict,
+			"无线事务处于 %s，还没有可以等待确认的改动", t.journal.Phase)
+	}
+	return t.setPhase(PhaseAwaitingConfirm)
+}
+
+// Confirm accepts the change and deletes the record of how to undo it.
+//
+// Idempotent, because spec 04 requires it: a confirmation that arrives twice --
+// a retried RPC, a user pressing the button again -- must not become an error
+// the second time, and must not leave a passphrase copy behind either.
+func (t *Transaction) Confirm() error {
+	if t.journal.Phase == PhaseCommitted {
+		return t.paths.Clear()
+	}
+	if t.journal.Phase != PhaseApplied && t.journal.Phase != PhaseAwaitingConfirm {
+		return domain.Errorf(domain.CodeConflict,
+			"无线事务处于 %s，没有可以确认的改动", t.journal.Phase)
+	}
+	t.journal.Phase = PhaseCommitted
+	return t.paths.Clear()
+}
+
+// Rollback undoes what this transaction wrote, and only that.
+func (t *Transaction) Rollback(ctx context.Context) (Outcome, error) {
+	return rollback(ctx, t.store, t.paths, t.journal, t.now)
+}
+
+func (t *Transaction) setPhase(phase Phase) error {
+	t.journal.Phase = phase
+	return t.paths.SaveJournal(t.journal)
+}
+
+// rollback restores every option whose current value is still the one this
+// transaction wrote.
+//
+// This is the rule the whole package is arranged around. Writing the old
+// configuration back unconditionally would undo whatever happened in between,
+// and "in between" includes the user editing the home access point from LuCI
+// while this was running. An option somebody else has since changed is left
+// exactly as found and reported as a conflict, because the alternative is this
+// program quietly reverting somebody's work.
+func rollback(ctx context.Context, store Store, paths Paths, journal *Journal,
+	now func() time.Time) (Outcome, error) {
+
+	if journal.Phase.Terminal() {
+		return Outcome{Phase: journal.Phase}, nil
+	}
+
+	journal.Phase = PhaseRollingBack
+	if err := paths.SaveJournal(journal); err != nil {
+		return Outcome{}, err
+	}
+
+	backup, present, err := paths.LoadBackup()
+	if err != nil {
+		return Outcome{}, err
+	}
+	if !present {
+		// The journal says there is something to undo and the values needed to
+		// undo it are gone. Guessing is worse than saying so.
+		journal.Phase = PhaseRecoveryRequired
+		_ = paths.SaveJournal(journal)
+		return Outcome{Phase: PhaseRecoveryRequired}, domain.Errorf(
+			domain.CodeRecoveryRequired,
+			"无线事务 %s 的备份文件不存在，无法自动还原", journal.TaskID)
+	}
+
+	keys := make([]Key, 0, len(journal.Entries))
+	for _, entry := range journal.Entries {
+		keys = append(keys, entry.Key)
+	}
+	current, err := store.Read(ctx, journal.Package, keys)
+	if err != nil {
+		return Outcome{}, err
+	}
+
+	outcome := Outcome{}
+	var restore []Change
+	for _, entry := range journal.Entries {
+		if !stillOurs(journal, entry, current[entry.Key]) {
+			outcome.Conflicts = append(outcome.Conflicts, entry.Key)
+			continue
+		}
+		if entry.BeforePresent {
+			restore = append(restore, Change{
+				Key:  entry.Key,
+				Text: backup.Values[keyString(entry.Key)],
+			})
+			outcome.Restored = append(outcome.Restored, entry.Key)
+			continue
+		}
+		// It was not there before, so putting it back means removing it.
+		restore = append(restore, Change{Key: entry.Key, Delete: true})
+		outcome.Removed = append(outcome.Removed, entry.Key)
+	}
+
+	if len(restore) > 0 {
+		if err := store.Stage(ctx, journal.Package, restore); err != nil {
+			return Outcome{}, err
+		}
+		if err := store.Commit(ctx, journal.Package); err != nil {
+			return Outcome{}, err
+		}
+		if err := store.Reload(ctx); err != nil {
+			return Outcome{}, err
+		}
+	}
+
+	if len(outcome.Conflicts) > 0 {
+		// Partially undone, and the part that was not is somebody else's. The
+		// journal stays on disk: a person has to look at it.
+		outcome.Phase = PhaseRecoveryRequired
+		journal.Phase = PhaseRecoveryRequired
+		if err := paths.SaveJournal(journal); err != nil {
+			return outcome, err
+		}
+		return outcome, domain.Errorf(domain.CodeRecoveryRequired,
+			"无线事务 %s 有 %d 项已被其他地方修改，未予还原；需要人工确认",
+			journal.TaskID, len(outcome.Conflicts))
+	}
+
+	outcome.Phase = PhaseRolledBack
+	journal.Phase = PhaseRolledBack
+	if err := paths.Clear(); err != nil {
+		return outcome, err
+	}
+	return outcome, nil
+}
+
+// stillOurs reports that an option still holds what this transaction wrote.
+func stillOurs(journal *Journal, entry Entry, value Value) bool {
+	if entry.AfterDeleted {
+		// We deleted it; it is still ours as long as nobody has put it back.
+		return !value.Present
+	}
+	if !value.Present {
+		// We wrote a value and it is gone. Somebody removed it.
+		return false
+	}
+	return journal.Hash(value.Text) == entry.AfterHash
+}
+
+// Recover finishes whatever a previous run left open.
+//
+// Called at startup. Spec 04 is specific about the two ways this goes wrong:
+// rolling back a change the user was already told had succeeded, and leaving a
+// router on an unconfirmed network forever. The configuration revision is what
+// tells them apart -- a journal from the configuration that is still current
+// describes a change that is still meaningful.
+func Recover(ctx context.Context, store Store, paths Paths,
+	currentRevision uint64, now func() time.Time) (Outcome, bool, error) {
+
+	if now == nil {
+		now = time.Now
+	}
+	journal, present, err := paths.LoadJournal()
+	if err != nil {
+		return Outcome{}, present, err
+	}
+	if !present {
+		return Outcome{}, false, nil
+	}
+
+	switch {
+	case journal.Phase.Terminal():
+		// Nothing to do. Clearing it here is what stops a finished transaction
+		// being examined at every startup forever.
+		return Outcome{Phase: journal.Phase}, true, paths.Clear()
+
+	case journal.Phase == PhasePlanned:
+		// Nothing was written. Only the record exists.
+		return Outcome{Phase: PhaseRolledBack}, true, paths.Clear()
+
+	case journal.ConfigRevision != currentRevision:
+		// The configuration moved on. The account save that goes with this
+		// change succeeded, so the user has been told it worked -- spec 04
+		// forbids rolling that back unconditionally. It is left for a person.
+		journal.Phase = PhaseRecoveryRequired
+		if err := paths.SaveJournal(journal); err != nil {
+			return Outcome{}, true, err
+		}
+		return Outcome{Phase: PhaseRecoveryRequired}, true, domain.Errorf(
+			domain.CodeRecoveryRequired,
+			"无线事务 %s 属于配置版本 %d，当前是 %d；不擅自回滚一个用户可能已经被告知成功的改动",
+			journal.TaskID, journal.ConfigRevision, currentRevision)
+
+	case journal.Phase == PhaseAwaitingConfirm && now().Before(journal.ExpiresAt):
+		// Still within the window. Whoever is waiting may still confirm it.
+		return Outcome{Phase: journal.Phase}, true, nil
+	}
+
+	// backed_up, applied, rolling_back, or an expired awaiting_confirm: undo it.
+	return rollbackAndReport(ctx, store, paths, journal, now)
+}
+
+func rollbackAndReport(ctx context.Context, store Store, paths Paths,
+	journal *Journal, now func() time.Time) (Outcome, bool, error) {
+
+	outcome, err := rollback(ctx, store, paths, journal, now)
+	return outcome, true, err
+}

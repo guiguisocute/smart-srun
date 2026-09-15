@@ -1,9 +1,11 @@
 package application
 
 import (
+	"context"
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/auth"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
@@ -242,6 +244,150 @@ func TestALineThatMovesRetiresWhatWasBoundToTheOldAddress(t *testing.T) {
 	}
 	if lines.closed == 0 {
 		t.Error("the client bound to the old address was not retired")
+	}
+}
+
+// A result that arrives in the same instant as the stop does not overwrite the
+// interruption.
+//
+// Run's select has <-ctx.Done() and <-c.finish as siblings, and Go picks
+// uniformly between ready cases, so which branch runs when a stop and a
+// worker's result become ready together is a coin toss. Taking the result first
+// recorded a force-stopped action as whatever the worker happened to return --
+// spec 02 needs interrupted to stay distinguishable from failed, or a restart
+// replays something the user stopped on purpose.
+//
+// Driven by calling shutdown directly rather than by racing the loop: the
+// branch cannot be forced from outside, and a test that ran the scenario and
+// hoped would be the coin toss it is meant to be checking. Both shapes are
+// exercised -- with a pending result and without.
+func TestAResultArrivingWithTheStopCannotUndoTheInterruption(t *testing.T) {
+	for name, withPending := range map[string]bool{
+		"the stop won the select":   false,
+		"the result won the select": true,
+	} {
+		coordinator := New(Options{
+			Runner: refusingRunner{},
+			Lines:  func(Request) string { return "" },
+		})
+		action := &Action{
+			ID:      "a1",
+			Request: Request{Kind: KindLogin, AccountID: "c1", IdempotencyKey: "k"},
+			State:   StateRunning,
+		}
+		coordinator.index["a1"] = action
+		coordinator.running["a1"] = &run{cancel: func() {}}
+
+		var pending *completion
+		if withPending {
+			pending = &completion{id: "a1", outcome: Outcome{
+				State: StateSucceeded, Message: "太晚了"}}
+		}
+		if err := coordinator.shutdown(pending); err != nil {
+			t.Fatalf("%s: shutdown: %v", name, err)
+		}
+
+		if action.State != StateInterrupted {
+			t.Errorf("%s: state = %s, want interrupted", name, action.State)
+		}
+		if action.Message == "太晚了" {
+			t.Errorf("%s: the worker's message replaced the interruption's", name)
+		}
+	}
+}
+
+// And the result is still accounted for, not just prevented from winning.
+//
+// Dropping it instead of applying it late passes both of the tests above: the
+// action is already interrupted, so nothing about its state changes either way.
+// What does change is the count of actions still running -- which is what the
+// stop timeout reports. An action that returned its result and a worker that
+// ignored its cancellation would then be reported as the same thing, and the
+// number in that message is the only evidence a person has about which.
+func TestTheStopReportsOnlyTheActionsThatReallyHungOn(t *testing.T) {
+	coordinator := New(Options{
+		Runner:        refusingRunner{},
+		Lines:         func(Request) string { return "" },
+		ShutdownGrace: 20 * time.Millisecond,
+	})
+	for _, id := range []string{"a1", "a2"} {
+		coordinator.index[id] = &Action{
+			ID: id, State: StateRunning, StartedAt: time.Now()}
+		coordinator.running[id] = &run{cancel: func() {}}
+	}
+
+	// a2's worker is the one ignoring its cancellation, so the grace expires.
+	release := make(chan struct{})
+	defer close(release)
+	coordinator.workers.Add(1)
+	go func() {
+		defer coordinator.workers.Done()
+		<-release
+	}()
+
+	// a1's worker has already returned, in the same instant as the stop.
+	err := coordinator.shutdown(&completion{id: "a1",
+		outcome: Outcome{State: StateSucceeded, Message: "太晚了"}})
+	if err == nil {
+		t.Fatal("a worker that ignored its cancellation was not reported")
+	}
+	if !strings.Contains(err.Error(), "1 个动作") {
+		t.Errorf("the stop reported %q; a1 had already returned its result", err)
+	}
+}
+
+// refusingRunner is never called; New only requires a Runner to exist.
+type refusingRunner struct{}
+
+func (refusingRunner) Run(context.Context, Action, func(Phase)) Outcome {
+	panic("the runner should not be called")
+}
+
+// And the same guarantee through Run itself, where the branch is chosen.
+//
+// The test above drives shutdown directly, which cannot show that Run routes a
+// result arriving with the stop into it. Racing a real worker does not show it
+// either, and the first version of this test proved it: stopping a running
+// action makes ctx.Done ready immediately and the worker's result ready only
+// microseconds later, by which time the loop has almost always taken the stop
+// and gone. That test passed with the guard removed, which is worth more than
+// it passing with the guard in.
+//
+// So the two cases are made ready together rather than raced. The result is put
+// in the buffered finish channel and the context is cancelled before Run is
+// entered, so the very first select sees two permanently-ready cases -- and Go
+// chooses uniformly among those. One round proves nothing; fifty make the wrong
+// branch a certainty.
+func TestRunRoutesAResultArrivingWithTheStopIntoTheShutdown(t *testing.T) {
+	for round := range 50 {
+		coordinator := New(Options{
+			Runner: refusingRunner{},
+			Lines:  func(Request) string { return "" },
+		})
+		action := &Action{
+			ID:      "a1",
+			Request: Request{Kind: KindLogin, AccountID: "c1", IdempotencyKey: "k"},
+			State:   StateRunning,
+			// Recent, so the loop's first expire does not call it overdue and
+			// fail it for a reason this test is not about.
+			StartedAt: time.Now(),
+		}
+		coordinator.index["a1"] = action
+		coordinator.running["a1"] = &run{cancel: func() {}}
+		coordinator.finish <- completion{id: "a1", outcome: Outcome{
+			State: StateSucceeded, Message: "太晚了"}}
+
+		ctx, stop := context.WithCancel(context.Background())
+		stop()
+		if err := coordinator.Run(ctx); err != nil {
+			t.Fatalf("round %d: run: %v", round, err)
+		}
+
+		if action.State != StateInterrupted {
+			t.Fatalf("round %d: state = %s, want interrupted -- the loop gave the "+
+				"worker's verdict to an action the stop had already taken",
+				round, action.State)
+		}
 	}
 }
 

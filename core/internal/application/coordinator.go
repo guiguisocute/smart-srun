@@ -231,10 +231,23 @@ func (c *Coordinator) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			stopTimer(timer)
-			return c.shutdown()
+			return c.shutdown(nil)
 		case job := <-c.calls:
 			job()
 		case done := <-c.finish:
+			if ctx.Err() != nil {
+				// The stop and this result became ready in the same instant and
+				// the select took this one; Go chooses uniformly between ready
+				// cases, so which branch runs is a coin toss. Applying the
+				// worker's verdict here would record a force-stopped action as
+				// whatever it happened to return -- and spec 02 needs
+				// interrupted to stay distinguishable from failed, or a restart
+				// replays something the user stopped on purpose. Handing the
+				// result to shutdown means it is applied after the interruption
+				// is recorded, where onFinish leaves a terminal state alone.
+				stopTimer(timer)
+				return c.shutdown(&done)
+			}
 			c.onFinish(done)
 		case report := <-c.phases:
 			c.onPhase(report)
@@ -255,7 +268,10 @@ func stopTimer(timer policy.Timer) {
 // Queued actions become interrupted rather than failed: spec 02 forbids
 // replaying an action the user force-stopped, and telling the two apart at
 // restart is how that is obeyed.
-func (c *Coordinator) shutdown() error {
+// pending is a completion that arrived in the same instant as the stop. It is
+// applied only after everything has been marked interrupted, so the worker's
+// verdict files the action and frees its line without changing its state.
+func (c *Coordinator) shutdown(pending *completion) error {
 	now := c.clock.Now()
 	for _, action := range c.queue {
 		action.transition(StateInterrupted, now)
@@ -270,6 +286,10 @@ func (c *Coordinator) shutdown() error {
 			action.Message = "服务停止，动作被中断"
 			c.publish(action)
 		}
+	}
+
+	if pending != nil {
+		c.onFinish(*pending)
 	}
 
 	stopped := make(chan struct{})

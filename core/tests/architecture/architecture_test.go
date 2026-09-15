@@ -117,7 +117,8 @@ func TestDependencyDirection(t *testing.T) {
 	// them. Nothing below them may depend on them, which is most of what the
 	// table below repeats.
 	deciders := []string{"internal/policy", "internal/application",
-		"internal/observe", "internal/daemon", "internal/wifi"}
+		"internal/observe", "internal/daemon", "internal/wifi",
+		"internal/wireless"}
 	below := func(extra ...string) []string {
 		return append(append([]string{}, deciders...), extra...)
 	}
@@ -160,7 +161,7 @@ func TestDependencyDirection(t *testing.T) {
 			"internal/control", "internal/cli", "internal/openwrt",
 			"internal/transport", "internal/auth", "internal/strategy",
 			"internal/application", "internal/observe", "internal/daemon",
-			"internal/wifi", "cmd"},
+			"internal/wifi", "internal/wireless", "cmd"},
 		// wifi is the same kind of package as policy, for the other half of the
 		// scheduling problem: which access point, rather than when. It decides
 		// from values only, so its tests run on a machine with no wireless
@@ -171,7 +172,15 @@ func TestDependencyDirection(t *testing.T) {
 			"internal/control", "internal/cli", "internal/openwrt",
 			"internal/transport", "internal/auth", "internal/strategy",
 			"internal/application", "internal/observe", "internal/daemon",
-			"internal/policy", "cmd"},
+			"internal/policy", "internal/wireless", "cmd"},
+		// wireless performs the one change this program makes to a device it does
+		// not own. It may read the adapter and ask wifi what to join, and it may
+		// not reach the layers that schedule it: a transaction that could submit
+		// an action could start itself, and the global lock spec 04 requires
+		// would have nothing to protect.
+		"internal/wireless": below("internal/config", "internal/protocol",
+			"internal/control", "internal/cli", "internal/transport",
+			"internal/auth", "internal/strategy", "cmd"),
 		// observe is a projection. It may name what policy decided, but it does
 		// not decide anything itself and it never reaches the network -- a
 		// status poll that probed would turn an idle browser tab into
@@ -182,8 +191,12 @@ func TestDependencyDirection(t *testing.T) {
 			"internal/daemon", "internal/wifi", "cmd"},
 		// application coordinates. It may use everything below it; what it may
 		// not do is reach up into the transports that call it.
+		// application declares the Wireless interface it needs and does not
+		// import the package that implements it, for the same reason it does not
+		// import openwrt: the assembly belongs to daemon, and a coordinator that
+		// could reach the transaction could not be tested without one.
 		"internal/application": {"internal/control", "internal/cli",
-			"internal/openwrt", "internal/daemon", "cmd"},
+			"internal/openwrt", "internal/wireless", "internal/daemon", "cmd"},
 		"internal/control": {"internal/cli", "internal/daemon", "cmd"},
 		// daemon assembles the running service. It is allowed to know about
 		// everything below it -- that is its job -- and nothing about the
@@ -361,7 +374,7 @@ func TestOnlyTheTransportBuildsHTTPClients(t *testing.T) {
 	restricted := []string{"internal/auth", "internal/strategy",
 		"internal/discovery", "internal/presets", "internal/update",
 		"internal/policy", "internal/observe", "internal/application",
-		"internal/wifi"}
+		"internal/wifi", "internal/wireless"}
 
 	// Imports that mean "I am about to make my own way onto the network".
 	// net/http is allowed: a Request has to be built somewhere. net/netip is
