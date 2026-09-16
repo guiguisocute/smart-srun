@@ -216,9 +216,10 @@ func Run(ctx context.Context, options Options) error {
 		service.markDirty()
 	}
 	service.actions = application.New(application.Options{
-		Clock:  clock,
-		Runner: runner,
-		Lines:  service.lineOf,
+		Clock:    clock,
+		Runner:   runner,
+		Lines:    service.lineOf,
+		Finalize: service.finishSwitch,
 		Check: func(request application.Request) error {
 			if request.CheckRevision && request.ConfigRevision != repository.Revision() {
 				return domain.Errorf(domain.CodeConflict, "配置已变化，请刷新后重试")

@@ -50,7 +50,11 @@ func (w *deviceWireless) Apply(ctx context.Context, plan application.WirelessPla
 	if err != nil {
 		return err
 	}
+	return w.applyChanges(ctx, changes, func() error { return w.awaitLine(ctx, plan) })
+}
 
+// applyChanges is shared by joining and retiring an uplink. The caller holds mu.
+func (w *deviceWireless) applyChanges(ctx context.Context, changes []wireless.Change, verify func() error) error {
 	w.tasks++
 	transaction, err := wireless.Begin(ctx, w.store, w.paths, wireless.Plan{
 		TaskID:         fmt.Sprintf("wl-%d-%d", w.clock.Now().Unix(), w.tasks),
@@ -73,7 +77,7 @@ func (w *deviceWireless) Apply(ctx context.Context, plan application.WirelessPla
 		return w.undo(ctx, transaction, err)
 	}
 
-	if err := w.awaitLine(ctx, plan); err != nil {
+	if err := verify(); err != nil {
 		return w.undo(ctx, transaction, err)
 	}
 	return transaction.Confirm()

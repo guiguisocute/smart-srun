@@ -42,6 +42,47 @@ type Wireless interface {
 	// Apply moves the managed client and waits for the result to be usable --
 	// associated, with an address.
 	Apply(ctx context.Context, plan WirelessPlan) error
+	// Retire disables only owned station uplinks after a wired target is ready.
+	Retire(ctx context.Context) error
+}
+
+func (a *Authenticator) switchCampus(ctx context.Context, action Action, report func(Phase)) Outcome {
+	if a.wireless == nil {
+		return failure(domain.Errorf(domain.CodeUnsupportedCapability, "无法管理无线出口，未执行校园网切换"))
+	}
+	outcome := a.authenticate(ctx, action, report)
+	if outcome.State != StateSucceeded {
+		return outcome
+	}
+	cfg := a.settings.Snapshot()
+	account, known := cfg.CampusAccountByID(action.Request.AccountID)
+	if known && account.IsWired() {
+		a.mu.Lock()
+		before := a.seen[account.ID]
+		a.mu.Unlock()
+		report(PhaseSwitch)
+		if err := a.wireless.Retire(ctx); err != nil {
+			outcome.State = StateFailed
+			outcome.Code = domain.CodeRecoveryRequired
+			outcome.Message = "有线账号已认证，但旧无线出口未能确认退出：" + userMessage(err)
+		}
+		// Applying wireless UCI can reload netifd. Do not carry a successful
+		// authentication across a DHCP/device change caused by that reload.
+		now, err := a.observeLine(ctx, account.ID, account.WiredIface)
+		if err != nil || !sameLine(before, now) {
+			outcome.State, outcome.Code = StateFailed, domain.CodeBindingChanged
+			outcome.Message = "无线出口处理后有线绑定发生变化或无法确认，需要重新检查连接"
+			if observation := outcome.Observation; observation != nil {
+				observation.Auth, observation.Connectivity = domain.AuthUnknown, domain.ConnectivityUnknown
+				if err != nil {
+					observation.Link = domain.LinkMissing
+				} else {
+					observation.Generation = now.Generation
+				}
+			}
+		}
+	}
+	return outcome
 }
 
 // destination is one end of a switch: where the radio should be, and how to
@@ -240,6 +281,11 @@ func (a *Authenticator) ensureWirelessLine(ctx context.Context, action Action,
 	if !known || account.IsWired() {
 		return Outcome{}, false
 	}
+	if action.Request.Kind == KindMaintain {
+		if outcome, stop := a.deferOnHotspot(ctx, cfg, account); stop {
+			return outcome, true
+		}
+	}
 	dest, err := campusDestination(account)
 	if err != nil {
 		return failure(err), true
@@ -249,6 +295,38 @@ func (a *Authenticator) ensureWirelessLine(ctx context.Context, action Action,
 		outcome.Message = "无法连接到" + dest.what + " " + dest.label + "：" +
 			outcome.Message
 		return outcome, true
+	}
+	return Outcome{}, false
+}
+
+// deferOnHotspot observes the actual association instead of saving a temporary
+// enabled=false into user configuration. This also works after a daemon restart:
+// a fresh worker must not move a working hotspot back to the old campus SSID.
+// Explicit user actions can still return to campus. Wired WANs are independent.
+func (a *Authenticator) deferOnHotspot(ctx context.Context, cfg domain.Config,
+	account domain.CampusAccount) (Outcome, bool) {
+
+	seen := map[string]wifi.Association{}
+	for _, hotspot := range cfg.HotspotProfiles {
+		if hotspot.Radio == "" || hotspot.SSID == "" ||
+			(hotspot.Radio == account.Radio && hotspot.SSID == account.SSID) {
+			continue
+		}
+		observed, read := seen[hotspot.Radio]
+		if !read {
+			var err error
+			observed, err = a.wireless.Association(ctx, hotspot.Radio)
+			if err != nil {
+				// Unknown is not permission to reconfigure a possibly working uplink.
+				return failure(err), true
+			}
+			seen[hotspot.Radio] = observed
+		}
+		if observed.Joined() && observed.SSID == hotspot.SSID {
+			return Outcome{State: StateFailed, Code: domain.CodeBusy,
+				Message:             "当前连接为已配置热点，自动校园认证已暂停",
+				MaintenanceDeferred: true}, true
+		}
 	}
 	return Outcome{}, false
 }

@@ -49,6 +49,9 @@ type Options struct {
 	// Check runs on the loop before a new request is queued. It rejects work
 	// prepared against a configuration that has since changed.
 	Check func(Request) error
+	// Finalize commits local effects of a successful worker on the loop, before
+	// publishing success. It must not call back into the coordinator.
+	Finalize func(Action, Outcome) Outcome
 
 	// Observer is called whenever an action changes state or phase, with the
 	// action as it now stands. It is the seam the structured event log will
@@ -89,6 +92,7 @@ type Coordinator struct {
 	runner        Runner
 	lines         func(Request) string
 	check         func(Request) error
+	finalize      func(Action, Outcome) Outcome
 	observer      func(Action)
 	record        func(observe.Observation)
 	parallel      int
@@ -173,6 +177,7 @@ func New(options Options) *Coordinator {
 		runner:        options.Runner,
 		lines:         options.Lines,
 		check:         options.Check,
+		finalize:      options.Finalize,
 		observer:      observer,
 		record:        record,
 		parallel:      orDefaultInt(options.Parallel, policy.MaxConcurrentLines),

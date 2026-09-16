@@ -62,7 +62,7 @@ func runOnline(ctx context.Context, client onlineClient, args []string, stdin io
 		}
 		settings, _ := json.Marshal(map[string]bool{"enabled": args[0] == "enable"})
 		return printCall(ctx, client, "config.apply", daemon.ConfigApplyParams{ExpectedRevision: &cfg.Revision, Settings: settings}, stdout, stderr)
-	case "login", "logout", "relogin":
+	case "login", "logout", "relogin", "switch":
 		return onlineAction(ctx, client, args, stdout, stderr)
 	default:
 		return onlineError(stderr, domain.Errorf(domain.CodeInvalidArgument, "未知在线命令"))
@@ -214,9 +214,23 @@ func onlineError(stderr *os.File, err error) int {
 }
 
 func onlineAction(ctx context.Context, client onlineClient, args []string, stdout, stderr *os.File) int {
+	usage := "用法：srunnet login|logout|relogin [账号ID] 或 switch campus|hotspot [ID] [--json] [--no-wait] [--ignore-quiet]"
+	kinds := map[string]application.Kind{"login": application.KindLogin, "logout": application.KindLogout, "relogin": application.KindRelogin}
+	kind := kinds[args[0]]
+	remaining := args[1:]
+	if args[0] == "switch" {
+		if len(remaining) == 0 || (remaining[0] != "campus" && remaining[0] != "hotspot") {
+			return onlineError(stderr, domain.Errorf(domain.CodeInvalidArgument, "%s", usage))
+		}
+		kind = application.KindSwitchCampus
+		if remaining[0] == "hotspot" {
+			kind = application.KindSwitchHotspot
+		}
+		remaining = remaining[1:]
+	}
 	asJSON, noWait, ignoreQuiet := false, false, false
 	id := ""
-	for _, arg := range args[1:] {
+	for _, arg := range remaining {
 		switch arg {
 		case "--json":
 			asJSON = true
@@ -226,7 +240,7 @@ func onlineAction(ctx context.Context, client onlineClient, args []string, stdou
 			ignoreQuiet = true
 		default:
 			if strings.HasPrefix(arg, "-") || id != "" {
-				return onlineError(stderr, domain.Errorf(domain.CodeInvalidArgument, "用法：srunnet login|logout|relogin [账号ID] [--json] [--no-wait] [--ignore-quiet]"))
+				return onlineError(stderr, domain.Errorf(domain.CodeInvalidArgument, "%s", usage))
 			}
 			id = arg
 		}
@@ -242,19 +256,27 @@ func onlineAction(ctx context.Context, client onlineClient, args []string, stdou
 	}
 	if id == "" {
 		id = cfg.Selection.ActiveCampusID
+		if kind == application.KindSwitchCampus {
+			id = cfg.Selection.DefaultCampusID
+		} else if kind == application.KindSwitchHotspot {
+			id = cfg.Selection.DefaultHotspotID
+		}
 	}
 	if id == "" {
-		return onlineError(stderr, domain.Errorf(domain.CodeInvalidConfig, "尚未配置校园账号，请先添加账号"))
+		return onlineError(stderr, domain.Errorf(domain.CodeInvalidConfig, "尚未配置所需账号或热点，请先添加"))
 	}
-	kinds := map[string]application.Kind{"login": application.KindLogin, "logout": application.KindLogout, "relogin": application.KindRelogin}
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {
 		return onlineError(stderr, err)
 	}
-	raw, err := client.call(ctx, "action.submit", daemon.SubmitParams{
-		Kind: string(kinds[args[0]]), AccountID: id, IgnoreQuiet: ignoreQuiet,
+	params := daemon.SubmitParams{
+		Kind: string(kind), AccountID: id, IgnoreQuiet: ignoreQuiet,
 		IdempotencyKey: "cli-" + hex.EncodeToString(random[:]), ExpectedRevision: &cfg.Revision,
-	})
+	}
+	if kind == application.KindSwitchHotspot {
+		params.AccountID, params.HotspotID = "", id
+	}
+	raw, err := client.call(ctx, "action.submit", params)
 	if err != nil {
 		return onlineError(stderr, err)
 	}

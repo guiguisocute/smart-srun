@@ -113,9 +113,20 @@ func NewAuthenticator(options AuthenticatorOptions) *Authenticator {
 // Run performs one action.
 func (a *Authenticator) Run(ctx context.Context, action Action,
 	report func(Phase)) Outcome {
+	if kind := action.Request.Kind; kind == KindLogin || kind == KindRelogin || kind == KindMaintain || kind == KindSwitchCampus {
+		cfg := a.settings.Snapshot()
+		if _, known := cfg.CampusAccountByID(action.Request.AccountID); !known {
+			return failure(domain.Errorf(domain.CodeNotFound, "账号 %s 不存在", action.Request.AccountID))
+		}
+		if !action.Request.IgnoreQuiet && policy.EvaluateQuiet(cfg.Quiet, a.clock.Now()).Active {
+			return failure(domain.Errorf(domain.CodeBusy, "当前为静默时段，未修改线路或发起认证；手动操作可选择仅本次忽略静默"))
+		}
+	}
 	switch action.Request.Kind {
-	case KindLogin, KindRelogin, KindMaintain, KindSwitchCampus:
+	case KindLogin, KindRelogin, KindMaintain:
 		return a.authenticate(ctx, action, report)
+	case KindSwitchCampus:
+		return a.switchCampus(ctx, action, report)
 	case KindLogout, KindForcedLogout:
 		return a.logout(ctx, action, report)
 	case KindSwitchHotspot:
@@ -335,6 +346,20 @@ func (a *Authenticator) clearAndRetry(ctx context.Context,
 // logout ends this account's own session on its own line.
 func (a *Authenticator) logout(ctx context.Context, action Action,
 	report func(Phase)) Outcome {
+	// A quiet-hours sweep must not contact a campus portal over a hotspot that
+	// now occupies the wireless interface. No association changes on logout.
+	if action.Request.Kind == KindForcedLogout && a.wireless != nil {
+		cfg := a.settings.Snapshot()
+		if account, ok := cfg.CampusAccountByID(action.Request.AccountID); ok && !account.IsWired() {
+			observed, err := a.wireless.Association(ctx, account.Radio)
+			if err != nil {
+				return failure(err)
+			}
+			if !observed.Joined() || observed.SSID != account.SSID {
+				return failure(domain.Errorf(domain.CodeBindingUnavailable, "当前无线连接不是该校园账号的线路，未发送退出请求"))
+			}
+		}
+	}
 
 	prepared, outcome := a.prepare(ctx, action, report)
 	if prepared == nil {

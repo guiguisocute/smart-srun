@@ -352,6 +352,10 @@ func (m *Maintainer) apply(action Action, now time.Time) {
 		return
 	}
 	state.inFlight = ""
+	if action.MaintenanceDeferred {
+		state.dueAt = now.Add(checkInterval(&cfg))
+		return
+	}
 
 	switch action.State {
 	case StateSucceeded:

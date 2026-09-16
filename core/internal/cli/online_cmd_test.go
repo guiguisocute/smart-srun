@@ -147,6 +147,9 @@ func TestCLIBadInputAndReadsNeverStartTheService(t *testing.T) {
 		{[]string{"config", "account", "add"}, `{"expected_revision":0,"account":{"id":"c1"}}`, ExitInvalidInput},
 		{[]string{"config", "account", "edit"}, `{"expected_revision":0,"account":{"user_id":"student"}}`, ExitInvalidInput},
 		{[]string{"login", "--password", "secret"}, "", ExitInvalidInput},
+		{[]string{"switch"}, "", ExitInvalidInput},
+		{[]string{"switch", "unknown"}, "", ExitInvalidInput},
+		{[]string{"switch", "hotspot", "h1", "h2"}, "", ExitInvalidInput},
 	} {
 		code, _, _ := capture(t, func(out, errOut *os.File) int {
 			return runOnline(t.Context(), client, tc.args, strings.NewReader(tc.input), out, errOut)
@@ -157,6 +160,47 @@ func TestCLIBadInputAndReadsNeverStartTheService(t *testing.T) {
 	}
 	if starts != 0 {
 		t.Fatalf("reads or malformed writes started service %d times", starts)
+	}
+}
+
+func TestCLISwitchUsesSelectedFamilyAndPersistsOnlyActiveChoice(t *testing.T) {
+	client, requests := onlineDaemon(t)
+	inputs := []struct{ method, raw string }{
+		{"campus.upsert", `{"expected_revision":0,"account":{"user_id":"first","wired_iface":"wan"}}`},
+		{"campus.upsert", `{"expected_revision":1,"account":{"user_id":"second","wired_iface":"wan"}}`},
+		{"hotspot.upsert", `{"expected_revision":2,"profile":{"ssid":"phone","radio":"radio0","encryption":"none"}}`},
+	}
+	for _, input := range inputs {
+		if _, err := client.call(t.Context(), input.method, json.RawMessage(input.raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		args             []string
+		kind             application.Kind
+		account, hotspot string
+	}{
+		{[]string{"switch", "campus", "c2", "--json"}, application.KindSwitchCampus, "c2", ""},
+		{[]string{"switch", "hotspot", "--json"}, application.KindSwitchHotspot, "", "h1"},
+		{[]string{"switch", "campus", "--json"}, application.KindSwitchCampus, "c1", ""},
+	} {
+		code, out, errOut := capture(t, func(stdout, stderr *os.File) int {
+			return runOnline(t.Context(), client, tc.args, strings.NewReader(""), stdout, stderr)
+		})
+		if code != ExitOK || !json.Valid([]byte(out)) {
+			t.Fatalf("%v: %d %s", tc.args, code, errOut)
+		}
+		request := <-requests
+		if request.Kind != tc.kind || request.AccountID != tc.account || request.HotspotID != tc.hotspot {
+			t.Fatalf("wrong switch: %+v", request)
+		}
+		cfg, err := readOnlineConfig(t.Context(), client)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Selection.DefaultCampusID != "c1" || (tc.account != "" && cfg.Selection.ActiveCampusID != tc.account) {
+			t.Fatal("incorrect persisted selection")
+		}
 	}
 }
 

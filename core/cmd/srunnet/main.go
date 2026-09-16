@@ -42,7 +42,7 @@ func run(ctx context.Context, args []string, stdout, stderr *os.File) int {
 			return cli.RunOnline(ctx, args, os.Stdin, stdout, stderr)
 		}
 		return cli.RunConfig(args[1:], stdout, stderr)
-	case "login", "logout", "relogin", "enable", "disable":
+	case "login", "logout", "relogin", "switch", "enable", "disable":
 		return cli.RunOnline(ctx, args, os.Stdin, stdout, stderr)
 	case "daemon":
 		return cli.RunDaemon(ctx, args[1:], stdout, stderr)
@@ -71,6 +71,8 @@ func usage(out *os.File) {
   status [--json]          显示状态；不会启动服务
   login|logout|relogin [ID] [--json] [--no-wait] [--ignore-quiet]
                            省略 ID 使用当前校园账号；默认等到动作结束
+  switch campus|hotspot [ID] [--json] [--no-wait] [--ignore-quiet]
+                           省略 ID 使用对应默认项；成功后保存当前选择
   enable|disable           保存自动认证开关（JSON 结果）
   service ensure-running   启动本项目服务并等待就绪（最多 5 秒）
   service stop             取消进行中的动作并停止本项目服务

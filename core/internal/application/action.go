@@ -61,6 +61,8 @@ var kinds = []Kind{KindLogin, KindLogout, KindRelogin, KindSwitchCampus,
 
 func (k Kind) Valid() bool { return slices.Contains(kinds, k) }
 
+func (k Kind) switches() bool { return k == KindSwitchCampus || k == KindSwitchHotspot }
+
 // Priority is where this kind sits in spec 04's order.
 func (k Kind) Priority() policy.Priority {
 	switch k {
@@ -212,6 +214,9 @@ type Action struct {
 	// an older sequence belongs to a worker that was cancelled and finished
 	// anyway; it is dropped rather than applied.
 	Sequence uint64
+	// MaintenanceDeferred means the current uplink intentionally is a hotspot;
+	// this is a pause, not a failed password attempt that spends retry budget.
+	MaintenanceDeferred bool
 
 	// ordinal is submission order. It breaks ties in the queue, where the id
 	// string cannot: "a10" sorts before "a2".
@@ -241,9 +246,10 @@ func (a *Action) transition(next State, at time.Time) bool {
 type Outcome struct {
 	// State must be StateSucceeded or StateFailed. Anything else is a Runner
 	// that decided the action's fate on its own; the coordinator owns that.
-	State   State
-	Message string
-	Code    domain.ErrorCode
+	State               State
+	Message             string
+	Code                domain.ErrorCode
+	MaintenanceDeferred bool
 
 	// Observation is what the attempt learned about the line, when it learned
 	// anything. It travels back with the result rather than being written by

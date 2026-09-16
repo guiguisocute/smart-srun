@@ -23,8 +23,21 @@ type fakeWireless struct {
 	// switch and a failed way back are produced independently.
 	failApplyFor map[string]error
 
-	scans   int
-	applied []WirelessPlan
+	scans     int
+	applied   []WirelessPlan
+	retired   int
+	retireErr error
+	onRetire  func()
+}
+
+func (w *fakeWireless) Retire(context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.retired++
+	if w.onRetire != nil {
+		w.onRetire()
+	}
+	return w.retireErr
 }
 
 func (w *fakeWireless) Association(context.Context, string) (wifi.Association, error) {

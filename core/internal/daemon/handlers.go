@@ -169,10 +169,10 @@ func (d *Daemon) actionSubmit(ctx context.Context, raw json.RawMessage) (any, er
 			"动作 %q 由调度器自行发起，不接受外部提交", params.Kind)
 	}
 	revision := d.config.Revision()
-	if params.ExpectedRevision != nil && *params.ExpectedRevision != revision {
-		return nil, domain.Errorf(domain.CodeConflict,
-			"配置已变化（当前版本 %d，请求基于 %d），请刷新后重试",
-			d.config.Revision(), *params.ExpectedRevision)
+	if params.ExpectedRevision != nil {
+		// The coordinator checks deduplication before revision. A retry of a
+		// successful switch still refers to its original, pre-switch revision.
+		revision = *params.ExpectedRevision
 	}
 
 	receipt, err := d.actions.Submit(ctx, application.Request{

@@ -129,9 +129,14 @@ func (c *Coordinator) onFinish(done completion) {
 			outcome = Outcome{State: StateFailed, Code: domain.CodeInternal,
 				Message: "工作单元返回了无法解释的结果"}
 		}
+		if outcome.State == StateSucceeded && c.finalize != nil {
+			outcome = c.finalize(*action, outcome)
+		}
+		done.outcome = outcome
 		action.transition(outcome.State, now)
 		action.Message = outcome.Message
 		action.Code = outcome.Code
+		action.MaintenanceDeferred = outcome.MaintenanceDeferred
 	}
 
 	// What the attempt learned travels whatever became of the action. A
@@ -204,6 +209,18 @@ func (c *Coordinator) dispatch(ctx context.Context) {
 		if action == nil {
 			return
 		}
+		// A switch can commit a new selection while other requests are queued.
+		// Recheck before I/O, not only when the old page submitted the request.
+		if c.check != nil {
+			if err := c.check(action.Request); err != nil {
+				action.transition(StateFailed, c.clock.Now())
+				action.Code, _ = domain.CodeOf(err)
+				action.Message = userMessage(err)
+				c.retire(action)
+				c.publish(action)
+				continue
+			}
+		}
 		c.startAction(ctx, action)
 	}
 }
@@ -211,6 +228,11 @@ func (c *Coordinator) dispatch(ctx context.Context) {
 // takeRunnable removes and returns the queued action that should run next, or
 // nil when every candidate's line is occupied.
 func (c *Coordinator) takeRunnable() *Action {
+	for id := range c.running {
+		if c.index[id].Request.Kind.switches() {
+			return nil
+		}
+	}
 	chosen := -1
 	for index, action := range c.queue {
 		// The cache is global even when callers choose different uplinks.
@@ -218,7 +240,7 @@ func (c *Coordinator) takeRunnable() *Action {
 		if action.Request.Kind == KindPresetsRefresh && c.refreshRunning() {
 			continue
 		}
-		if action.Line != "" {
+		if action.Line != "" && !action.Request.Kind.switches() {
 			if _, busy := c.busyLines[action.Line]; busy {
 				continue
 			}
@@ -231,6 +253,11 @@ func (c *Coordinator) takeRunnable() *Action {
 		return nil
 	}
 	action := c.queue[chosen]
+	// Drain existing workers before a switch. A pending high-priority switch
+	// also stops new maintenance from continually filling those slots.
+	if action.Request.Kind.switches() && len(c.running) != 0 {
+		return nil
+	}
 	c.queue = append(c.queue[:chosen], c.queue[chosen+1:]...)
 	return action
 }
