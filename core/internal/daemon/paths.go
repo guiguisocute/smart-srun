@@ -33,6 +33,9 @@ type Paths struct {
 	Runtime string
 	// Config is /etc/smart-srun: 0700, flash, the user's own data.
 	Config string
+	// Optional resource overrides; zero values use the device contract paths.
+	BuiltinPresets string
+	PresetsCache   string
 }
 
 func DefaultPaths() Paths {
@@ -58,6 +61,20 @@ func (p Paths) UpdateStatus() string {
 
 func (p Paths) ConfigFile() string  { return filepath.Join(p.Config, "config.json") }
 func (p Paths) UserPresets() string { return filepath.Join(p.Config, "user-presets.json") }
+
+func (p Paths) PresetFile() string {
+	if p.BuiltinPresets != "" {
+		return p.BuiltinPresets
+	}
+	return "/usr/share/smart-srun/school-presets.json"
+}
+
+func (p Paths) PresetCacheFile() string {
+	if p.PresetsCache != "" {
+		return p.PresetsCache
+	}
+	return "/tmp/smart-srun/presets-cache.json"
+}
 
 // Recovery holds the minimal journals that must survive a reboot -- an
 // interrupted wireless transaction, an interrupted install. It is under Config

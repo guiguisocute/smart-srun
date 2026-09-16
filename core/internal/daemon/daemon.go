@@ -34,6 +34,9 @@ type Options struct {
 	// to this device's adapter and connection pool. A test supplies its own so
 	// that the lifecycle can be exercised without a router.
 	Runner application.Runner
+	// PresetRefresh overrides the bound refresh worker for lifecycle tests.
+	// Nil builds the real adapter/transport path, independent of authentication.
+	PresetRefresh application.Runner
 
 	// PublicPresets reads the current merged public catalogue, including drafts.
 	// Nil uses the installed built-in file and the tmpfs cache. Reading this
@@ -178,6 +181,16 @@ func Run(ctx context.Context, options Options) error {
 		dirty:         make(chan struct{}, 1),
 	}
 	service.store.SetRevision(repository.Revision())
+	refresh := options.PresetRefresh
+	if refresh == nil {
+		refresh = application.PresetRefresher{
+			Resolve: openwrt.NewAdapter(openwrt.Runner{}).ResolveBinding,
+			Open:    openPresetFetcher,
+			Cache:   presets.NewCache(paths.PresetCacheFile()),
+			Sources: append([]string(nil), presets.DefaultSources...), Now: clock.Now,
+		}
+	}
+	runner = presetRoutingRunner{actions: runner, refresh: refresh}
 
 	// The maintenance loop is built before the coordinator and submits through
 	// a closure, because each needs the other: the loop submits actions, and
@@ -282,6 +295,12 @@ const wirelessLine = "wireless"
 // lock spec 04 requires. It keeps this process from dispatching two wireless
 // actions at once; the lock is what protects the radio from everything else.
 func (d *Daemon) lineOf(request application.Request) string {
+	if request.Kind == application.KindPresetsRefresh {
+		if request.Interface == d.config.Snapshot().STAIface {
+			return wirelessLine
+		}
+		return "iface:" + request.Interface
+	}
 	if wirelessKind(request.Kind) {
 		return wirelessLine
 	}

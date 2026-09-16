@@ -42,6 +42,7 @@ type ActionView struct {
 	ID        string           `json:"id"`
 	Kind      string           `json:"kind"`
 	AccountID string           `json:"account_id,omitempty"`
+	Interface string           `json:"iface,omitempty"`
 	State     string           `json:"state"`
 	Phase     string           `json:"phase,omitempty"`
 	Message   string           `json:"message,omitempty"`
@@ -73,6 +74,7 @@ func ViewOf(action application.Action) ActionView {
 		ID:        action.ID,
 		Kind:      string(action.Request.Kind),
 		AccountID: action.Request.AccountID,
+		Interface: action.Request.Interface,
 		State:     string(action.State),
 		Phase:     string(action.Phase),
 		Message:   action.Message,

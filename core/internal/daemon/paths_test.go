@@ -20,26 +20,30 @@ func TestTheRuntimeAndConfigPathsAreTheOnesTheContractFixes(t *testing.T) {
 	paths := DefaultPaths()
 
 	cases := map[string]string{
-		"runtime":       paths.Runtime,
-		"socket":        paths.Socket(),
-		"lock":          paths.Lock(),
-		"state":         paths.State(),
-		"update status": paths.UpdateStatus(),
-		"config dir":    paths.Config,
-		"config file":   paths.ConfigFile(),
-		"user presets":  paths.UserPresets(),
-		"recovery":      paths.Recovery(),
+		"runtime":         paths.Runtime,
+		"socket":          paths.Socket(),
+		"lock":            paths.Lock(),
+		"state":           paths.State(),
+		"update status":   paths.UpdateStatus(),
+		"config dir":      paths.Config,
+		"config file":     paths.ConfigFile(),
+		"user presets":    paths.UserPresets(),
+		"recovery":        paths.Recovery(),
+		"builtin presets": paths.PresetFile(),
+		"preset cache":    paths.PresetCacheFile(),
 	}
 	want := map[string]string{
-		"runtime":       "/var/run/smart-srun",
-		"socket":        "/var/run/smart-srun/control.sock",
-		"lock":          "/var/run/smart-srun/daemon.lock",
-		"state":         "/var/run/smart-srun/state.json",
-		"update status": "/var/run/smart-srun/update-status.json",
-		"config dir":    "/etc/smart-srun",
-		"config file":   "/etc/smart-srun/config.json",
-		"user presets":  "/etc/smart-srun/user-presets.json",
-		"recovery":      "/etc/smart-srun/recovery",
+		"runtime":         "/var/run/smart-srun",
+		"socket":          "/var/run/smart-srun/control.sock",
+		"lock":            "/var/run/smart-srun/daemon.lock",
+		"state":           "/var/run/smart-srun/state.json",
+		"update status":   "/var/run/smart-srun/update-status.json",
+		"config dir":      "/etc/smart-srun",
+		"config file":     "/etc/smart-srun/config.json",
+		"user presets":    "/etc/smart-srun/user-presets.json",
+		"recovery":        "/etc/smart-srun/recovery",
+		"builtin presets": "/usr/share/smart-srun/school-presets.json",
+		"preset cache":    "/tmp/smart-srun/presets-cache.json",
 	}
 	for name, got := range cases {
 		if got != filepath.FromSlash(want[name]) {

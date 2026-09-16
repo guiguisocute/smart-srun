@@ -22,11 +22,11 @@ const (
 // The real setsockopt, not the injected stand-in.
 //
 // What this can show on an ordinary host is the refusal path. The success path
-// cannot be demonstrated over loopback: measured on Linux 6.6, SO_BINDTODEVICE
-// to "lo" succeeds even unprivileged, and a connection to 127.0.0.1 pinned to
-// lo then never completes -- it times out. So a loopback test of "the binding
-// worked" would be testing a quirk, and a test that expected EPERM would be
-// asserting a privilege rule this kernel does not apply.
+// needs a device matching the test host's routing. On WSL mirrored networking,
+// TCP to 127.0.0.1 goes through loopback0; binding lo succeeds but times out.
+// That is not a general Linux loopback limitation. The daemon's preset tests
+// exercise real bound HTTP on the appropriate loopback device. A test expecting
+// EPERM would also be asserting a privilege rule this kernel does not apply.
 //
 // The positive proof -- that a pinned socket leaves by that device and no
 // other -- needs two real devices and a peer on each, which is what the network

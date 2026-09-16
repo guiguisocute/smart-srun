@@ -25,6 +25,8 @@ func (d *Daemon) register(registry *control.Registry) {
 	registry.Register("config.validate", d.configValidate)
 	registry.Register("user_presets.get", d.userPresetsGet)
 	registry.Register("user_presets.set", d.userPresetsSet)
+	registry.Register("presets.list", d.presetsList)
+	registry.Register("presets.refresh", d.presetsRefresh)
 	registry.Register("action.submit", d.actionSubmit)
 	registry.Register("action.get", d.actionGet)
 	registry.Register("action.cancel", d.actionCancel)
@@ -140,8 +142,9 @@ type SubmitResult struct {
 // could submit them would be able to queue maintenance work that the
 // maintenance loop did not decide to do, and to fake a quiet-hours sweep.
 var schedulerOnly = map[application.Kind]bool{
-	application.KindMaintain:     true,
-	application.KindForcedLogout: true,
+	application.KindMaintain:       true,
+	application.KindForcedLogout:   true,
+	application.KindPresetsRefresh: true, // submitted through presets.refresh
 }
 
 func (d *Daemon) actionSubmit(ctx context.Context, raw json.RawMessage) (any, error) {

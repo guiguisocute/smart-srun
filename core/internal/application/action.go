@@ -18,6 +18,7 @@ import (
 	"context"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
@@ -51,16 +52,20 @@ const (
 	KindMaintain Kind = "maintain"
 	// KindForcedLogout is one account's share of the quiet-hours sweep.
 	KindForcedLogout Kind = "forced_logout"
+	// KindPresetsRefresh reads a selected line without authenticating an account.
+	KindPresetsRefresh Kind = "presets_refresh"
 )
 
 var kinds = []Kind{KindLogin, KindLogout, KindRelogin, KindSwitchCampus,
-	KindSwitchHotspot, KindMaintain, KindForcedLogout}
+	KindSwitchHotspot, KindMaintain, KindForcedLogout, KindPresetsRefresh}
 
 func (k Kind) Valid() bool { return slices.Contains(kinds, k) }
 
 // Priority is where this kind sits in spec 04's order.
 func (k Kind) Priority() policy.Priority {
 	switch k {
+	case KindPresetsRefresh:
+		return policy.PriorityPeriodic
 	case KindMaintain:
 		return policy.PriorityMaintenance
 	case KindForcedLogout:
@@ -73,7 +78,7 @@ func (k Kind) Priority() policy.Priority {
 // Manual reports whether a user asked for this directly. Manual actions still
 // run while automatic authentication is switched off.
 func (k Kind) Manual() bool {
-	return k != KindMaintain && k != KindForcedLogout
+	return k != KindMaintain && k != KindForcedLogout && k != KindPresetsRefresh
 }
 
 // State is the action lifecycle from spec 04. The four terminal states are
@@ -116,6 +121,7 @@ const (
 	PhaseVerify      Phase = "verify"
 	PhaseLogout      Phase = "logout"
 	PhaseSwitch      Phase = "switch"
+	PhaseFetch       Phase = "fetch"
 )
 
 // Request is one submission.
@@ -124,6 +130,8 @@ type Request struct {
 	AccountID string
 	// HotspotID is only meaningful for KindSwitchHotspot.
 	HotspotID string
+	// Interface is an explicit uplink for account-free catalogue refreshes.
+	Interface string
 	// IdempotencyKey is supplied by the caller -- the LuCI click id, or the CLI
 	// invocation. Resubmitting the same key returns the same action instead of
 	// starting a second one, which is what makes a double-click harmless.
@@ -146,7 +154,7 @@ func (r Request) fingerprint() string {
 	if r.IgnoreQuiet {
 		quiet = "1"
 	}
-	return string(r.Kind) + "\x00" + r.AccountID + "\x00" + r.HotspotID + "\x00" + quiet
+	return string(r.Kind) + "\x00" + r.AccountID + "\x00" + r.HotspotID + "\x00" + quiet + "\x00" + r.Interface
 }
 
 // Validate refuses a request the coordinator could not act on.
@@ -154,7 +162,17 @@ func (r Request) Validate() error {
 	if !r.Kind.Valid() {
 		return domain.Errorf(domain.CodeInvalidArgument, "未知的动作类型：%q", string(r.Kind))
 	}
-	if r.AccountID == "" && r.Kind != KindSwitchHotspot {
+	if r.Kind == KindPresetsRefresh {
+		if r.Interface == "" || len(r.Interface) > 64 || strings.ContainsAny(r.Interface, "\x00\r\n\t /\\") {
+			return domain.Errorf(domain.CodeInvalidArgument, "刷新预设需要明确的有效线路 iface")
+		}
+		if r.AccountID != "" || r.HotspotID != "" || r.IgnoreQuiet {
+			return domain.Errorf(domain.CodeInvalidArgument, "刷新预设不接受账号、热点或静默覆盖参数")
+		}
+	} else if r.Interface != "" {
+		return domain.Errorf(domain.CodeInvalidArgument, "此动作不接受 iface")
+	}
+	if r.AccountID == "" && r.Kind != KindSwitchHotspot && r.Kind != KindPresetsRefresh {
 		return domain.Errorf(domain.CodeInvalidArgument, "动作 %s 需要指定账号", string(r.Kind))
 	}
 	if r.Kind == KindSwitchHotspot && r.HotspotID == "" {

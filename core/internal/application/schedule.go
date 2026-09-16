@@ -208,6 +208,11 @@ func (c *Coordinator) dispatch(ctx context.Context) {
 func (c *Coordinator) takeRunnable() *Action {
 	chosen := -1
 	for index, action := range c.queue {
+		// The cache is global even when callers choose different uplinks.
+		// Keep the slot until a cancelled worker actually exits, like its line.
+		if action.Request.Kind == KindPresetsRefresh && c.refreshRunning() {
+			continue
+		}
 		if action.Line != "" {
 			if _, busy := c.busyLines[action.Line]; busy {
 				continue
@@ -223,6 +228,15 @@ func (c *Coordinator) takeRunnable() *Action {
 	action := c.queue[chosen]
 	c.queue = append(c.queue[:chosen], c.queue[chosen+1:]...)
 	return action
+}
+
+func (c *Coordinator) refreshRunning() bool {
+	for id := range c.running {
+		if c.index[id].Request.Kind == KindPresetsRefresh {
+			return true
+		}
+	}
+	return false
 }
 
 // runsFirst is the queue order: priority, then arrival, then submission order.

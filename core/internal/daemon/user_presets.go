@@ -75,7 +75,7 @@ func (d *Daemon) readPublicPresets() ([]presets.School, error) {
 	}
 	// M15 installs this file. A missing package resource must be diagnosed;
 	// treating it as an empty catalogue would silently disable collision checks.
-	file, err := os.Open("/usr/share/smart-srun/school-presets.json")
+	file, err := os.Open(d.paths.PresetFile())
 	if err != nil {
 		return nil, domain.Errorf(domain.CodeInternal, "无法读取内置学校预设").Wrap(err)
 	}
@@ -88,7 +88,7 @@ func (d *Daemon) readPublicPresets() ([]presets.School, error) {
 	if err != nil {
 		return nil, err
 	}
-	schools, err := presets.Offline(builtin, presets.NewCache(""))
+	schools, err := presets.Offline(builtin, presets.NewCache(d.paths.PresetCacheFile()))
 	if err != nil {
 		d.onError(err)
 	}
