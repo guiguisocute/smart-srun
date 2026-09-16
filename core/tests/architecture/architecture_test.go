@@ -126,6 +126,15 @@ func TestDependencyDirection(t *testing.T) {
 	rules := map[string][]string{
 		"internal/domain": below("internal/config", "internal/protocol",
 			"internal/control", "internal/cli", "internal/openwrt",
+			"internal/transport", "internal/auth", "internal/strategy",
+			"internal/presets", "cmd"),
+		// presets decodes a published document into values and decides nothing
+		// else. It may speak domain and nothing above it: a catalogue reader
+		// that could reach the transport would fetch on its own, and then the
+		// rules about which source wins and when a cache may be replaced would
+		// need a network to test.
+		"internal/presets": below("internal/config", "internal/protocol",
+			"internal/control", "internal/cli", "internal/openwrt",
 			"internal/transport", "internal/auth", "internal/strategy", "cmd"),
 		"internal/protocol": below("internal/config", "internal/control",
 			"internal/cli", "internal/openwrt", "internal/transport", "cmd"),
@@ -375,6 +384,9 @@ func TestOnlyTheTransportBuildsHTTPClients(t *testing.T) {
 		"internal/discovery", "internal/presets", "internal/update",
 		"internal/policy", "internal/observe", "internal/application",
 		"internal/wifi", "internal/wireless"}
+	// presets was already named here before the package existed, which is what
+	// that list is for -- it names the packages that must never make their own
+	// way onto the network, whether or not they have been written yet.
 
 	// Imports that mean "I am about to make my own way onto the network".
 	// net/http is allowed: a Request has to be built somewhere. net/netip is
