@@ -114,6 +114,9 @@ func (r *Repository) Update(expectedRevision uint64, change Change) (domain.Conf
 			expectedRevision, r.current.Revision)
 	}
 
+	if r.current.Revision == ^uint64(0) {
+		return domain.Config{}, domain.Errorf(domain.CodeConflict, "配置版本已达上限，无法继续保存")
+	}
 	next := CloneConfig(r.current)
 	if err := change(&next); err != nil {
 		return domain.Config{}, err

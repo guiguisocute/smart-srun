@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/daemon"
 	"github.com/matthewlu070111/smart-srun/core/internal/openwrt"
@@ -20,9 +21,13 @@ func RunDaemon(ctx context.Context, args []string, stdout, stderr *os.File) int 
 		return ExitInvalidInput
 	}
 
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	capabilities := openwrt.Detect(probeCtx, openwrt.Runner{})
+	cancel()
 	err := daemon.Run(ctx, daemon.Options{
-		Paths:   daemon.DefaultPaths(),
-		Version: Version,
+		Paths:        daemon.DefaultPaths(),
+		Version:      Version,
+		Capabilities: capabilities,
 		// Faults with nobody to return them to go to stderr, which procd
 		// captures. The structured event log replaces this in M11.
 		OnError: func(err error) { fmt.Fprintf(stderr, "srunnet: %v\n", err) },

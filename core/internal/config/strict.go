@@ -29,10 +29,14 @@ const maxDepth = 24
 //
 // Paths in the errors are the dotted form the UI shows next to a field.
 func scanStrict(data []byte) error {
+	return scanNullable(data, nil)
+}
+
+func scanNullable(data []byte, nullable map[string]bool) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 
-	scanner := &strictScanner{decoder: decoder}
+	scanner := &strictScanner{decoder: decoder, nullable: nullable}
 	token, err := decoder.Token()
 	if err != nil {
 		return domain.Errorf(domain.CodeInvalidConfig, "配置不是有效的 JSON：%v", err).Wrap(err)
@@ -53,8 +57,9 @@ func scanStrict(data []byte) error {
 }
 
 type strictScanner struct {
-	decoder *json.Decoder
-	path    []string
+	decoder  *json.Decoder
+	path     []string
+	nullable map[string]bool
 }
 
 func (s *strictScanner) location() string {
@@ -153,6 +158,9 @@ func (s *strictScanner) value(depth int) error {
 			return s.fail("意外的 %q", typed)
 		}
 	case nil:
+		if s.nullable[s.location()] {
+			return nil
+		}
 		return s.fail("不接受 null；缺省请省略该字段，清空请写空字符串")
 	default:
 		return nil

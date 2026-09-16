@@ -21,53 +21,53 @@ type CampusPatch struct {
 	// ID selects the account to edit. Empty means create a new one; the
 	// repository assigns the identifier, because an identity the client chose
 	// could collide with one added since the page was opened.
-	ID string
+	ID string `json:"id,omitempty"`
 
-	Label          *string
-	UserID         *string
-	Password       *string
-	Operator       *string
-	OperatorSuffix *string
-	AccessMode     *string
-	BaseURL        *string
-	ACID           *string
-	PresetID       *string
+	Label          *string `json:"label,omitempty"`
+	UserID         *string `json:"user_id,omitempty"`
+	Password       *string `json:"password,omitempty"`
+	Operator       *string `json:"operator,omitempty"`
+	OperatorSuffix *string `json:"operator_suffix,omitempty"`
+	AccessMode     *string `json:"access_mode,omitempty"`
+	BaseURL        *string `json:"base_url,omitempty"`
+	ACID           *string `json:"ac_id,omitempty"`
+	PresetID       *string `json:"preset_id,omitempty"`
 
 	// Wired half.
-	WiredIface  *string
-	AuthEnabled *bool
+	WiredIface  *string `json:"wired_iface,omitempty"`
+	AuthEnabled *bool   `json:"auth_enabled,omitempty"`
 
 	// Wireless half.
-	SSID        *string
-	Radio       *string
-	Encryption  *string
-	Key         *string
-	APSelection *string
-	BSSID       *string
+	SSID        *string `json:"ssid,omitempty"`
+	Radio       *string `json:"radio,omitempty"`
+	Encryption  *string `json:"encryption,omitempty"`
+	Key         *string `json:"key,omitempty"`
+	APSelection *string `json:"ap_selection,omitempty"`
+	BSSID       *string `json:"bssid,omitempty"`
 
-	Login *LoginPatch
+	Login *LoginPatch `json:"login,omitempty"`
 }
 
 // LoginPatch is a partial per-account protocol override.
 type LoginPatch struct {
-	N           *string
-	Type        *string
-	Enc         *string
-	InfoPrefix  *string
-	DoubleStack **bool
-	OS          *string
-	Name        *string
+	N           *string `json:"n,omitempty"`
+	Type        *string `json:"type,omitempty"`
+	Enc         *string `json:"enc,omitempty"`
+	InfoPrefix  *string `json:"info_prefix,omitempty"`
+	DoubleStack **bool  `json:"double_stack,omitempty"`
+	OS          *string `json:"os,omitempty"`
+	Name        *string `json:"name,omitempty"`
 }
 
 // HotspotPatch is a partial hotspot profile.
 type HotspotPatch struct {
-	ID string
+	ID string `json:"id,omitempty"`
 
-	Label      *string
-	SSID       *string
-	Encryption *string
-	Key        *string
-	Radio      *string
+	Label      *string `json:"label,omitempty"`
+	SSID       *string `json:"ssid,omitempty"`
+	Encryption *string `json:"encryption,omitempty"`
+	Key        *string `json:"key,omitempty"`
+	Radio      *string `json:"radio,omitempty"`
 }
 
 // Settings is the half of the configuration the settings page owns.
@@ -77,23 +77,23 @@ type HotspotPatch struct {
 // saving an unrelated checkbox overwrite an account -- or, worse, submit an
 // empty password field and clear a credential the page never displayed.
 type Settings struct {
-	Enabled         bool
-	MultiWANEnabled bool
-	School          string
-	STAIface        string
+	Enabled         bool   `json:"enabled"`
+	MultiWANEnabled bool   `json:"multi_wan_enabled"`
+	School          string `json:"school"`
+	STAIface        string `json:"sta_iface"`
 
-	LoginDefaults domain.LoginDefaults
-	Quiet         domain.QuietConfig
-	Retry         domain.RetryConfig
-	Checks        domain.ChecksConfig
-	Failover      domain.FailoverConfig
-	Log           domain.LogConfig
+	LoginDefaults domain.LoginDefaults  `json:"login_defaults"`
+	Quiet         domain.QuietConfig    `json:"quiet"`
+	Retry         domain.RetryConfig    `json:"retry"`
+	Checks        domain.ChecksConfig   `json:"checks"`
+	Failover      domain.FailoverConfig `json:"failover"`
+	Log           domain.LogConfig      `json:"log"`
 
 	// SchoolExtra is strategy-private storage. Filtering it against the
 	// strategy's declared descriptors needs the strategy registry and lands
 	// with it (M06); what is enforced here is the rule that does not need
 	// descriptors -- switching strategy drops the previous one's values.
-	SchoolExtra map[string]any
+	SchoolExtra map[string]any `json:"school_extra"`
 }
 
 // SettingsOf reads the settings half out of a configuration.

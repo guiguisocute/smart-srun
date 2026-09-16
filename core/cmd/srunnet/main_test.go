@@ -69,7 +69,7 @@ func TestVersionAndHelpAnswerOnStdout(t *testing.T) {
 // exist exits 2. A user who typed `srunnet lgoin` and a user who asked for
 // something not written yet need different answers.
 func TestUnimplementedAndUnknownCommandsDiffer(t *testing.T) {
-	code, _, stderr := capture(t, []string{"login"})
+	code, _, stderr := capture(t, []string{"update"})
 	if code != cli.ExitUnsupported {
 		t.Errorf("a reserved command exited %d, want %d", code, cli.ExitUnsupported)
 	}

@@ -23,6 +23,16 @@ func (d *Daemon) register(registry *control.Registry) {
 	registry.Register("schema.get", d.schemaGet)
 	registry.Register("config.get", d.configGet)
 	registry.Register("config.validate", d.configValidate)
+	registry.Register("config.apply", d.configApply)
+	registry.Register("capabilities.get", d.capabilitiesGet)
+	registry.Register("campus.get", d.campusGet)
+	registry.Register("campus.upsert", d.campusUpsert)
+	registry.Register("campus.remove", d.campusRemove)
+	registry.Register("campus.set_default", d.campusSetDefault)
+	registry.Register("hotspot.get", d.hotspotGet)
+	registry.Register("hotspot.upsert", d.hotspotUpsert)
+	registry.Register("hotspot.remove", d.hotspotRemove)
+	registry.Register("hotspot.set_default", d.hotspotSetDefault)
 	registry.Register("user_presets.get", d.userPresetsGet)
 	registry.Register("user_presets.set", d.userPresetsSet)
 	registry.Register("presets.list", d.presetsList)
@@ -158,7 +168,8 @@ func (d *Daemon) actionSubmit(ctx context.Context, raw json.RawMessage) (any, er
 		return nil, domain.Errorf(domain.CodeInvalidArgument,
 			"动作 %q 由调度器自行发起，不接受外部提交", params.Kind)
 	}
-	if params.ExpectedRevision != nil && *params.ExpectedRevision != d.config.Revision() {
+	revision := d.config.Revision()
+	if params.ExpectedRevision != nil && *params.ExpectedRevision != revision {
 		return nil, domain.Errorf(domain.CodeConflict,
 			"配置已变化（当前版本 %d，请求基于 %d），请刷新后重试",
 			d.config.Revision(), *params.ExpectedRevision)
@@ -170,6 +181,8 @@ func (d *Daemon) actionSubmit(ctx context.Context, raw json.RawMessage) (any, er
 		HotspotID:      params.HotspotID,
 		IdempotencyKey: params.IdempotencyKey,
 		IgnoreQuiet:    params.IgnoreQuiet,
+		CheckRevision:  true,
+		ConfigRevision: revision,
 	})
 	if err != nil {
 		return nil, err

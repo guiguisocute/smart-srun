@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"sort"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -32,6 +33,7 @@ type Maintainer struct {
 	onEvent  func(MaintenanceEvent)
 
 	results chan Action
+	changes chan struct{}
 	started atomic.Bool
 	keys    atomic.Uint64
 
@@ -45,6 +47,7 @@ type Maintainer struct {
 	// occurrence is the quiet-hours visit the sweep is currently recording
 	// against. policy.Sweep keys on it and does not hand it back.
 	occurrence string
+	revision   uint64
 }
 
 // accountState is what the loop remembers about one account between ticks.
@@ -133,6 +136,7 @@ func NewMaintainer(options MaintainerOptions) *Maintainer {
 		// Buffered so the coordinator's observer never blocks on this loop, and
 		// bounded so it cannot become an unread backlog either.
 		results:  make(chan Action, 64),
+		changes:  make(chan struct{}, 1),
 		accounts: map[string]*accountState{},
 	}
 }
@@ -149,6 +153,14 @@ func (m *Maintainer) Observe(action Action) {
 	}
 	select {
 	case m.results <- action:
+	default:
+	}
+}
+
+// ConfigurationChanged wakes the loop after a committed settings change.
+func (m *Maintainer) ConfigurationChanged() {
+	select {
+	case m.changes <- struct{}{}:
 	default:
 	}
 }
@@ -184,6 +196,8 @@ func (m *Maintainer) Run(ctx context.Context) error {
 					draining = false
 				}
 			}
+		case <-m.changes:
+			timer.Stop()
 		case <-timer.C():
 		}
 	}
@@ -192,6 +206,13 @@ func (m *Maintainer) Run(ctx context.Context) error {
 // tick does one pass and returns the instant the loop must wake at.
 func (m *Maintainer) tick(ctx context.Context, now time.Time) time.Time {
 	cfg := m.settings.Snapshot()
+	if cfg.Revision != m.revision {
+		m.accounts = map[string]*accountState{}
+		m.sweep = policy.Sweep{}
+		m.occurrence = ""
+		m.reported = ""
+		m.revision = cfg.Revision
+	}
 
 	quiet := policy.EvaluateQuiet(cfg.Quiet, now)
 	previous := m.pause
@@ -249,6 +270,8 @@ func (m *Maintainer) maintain(ctx context.Context, cfg *domain.Config, now time.
 		}
 		m.queue(ctx, state, Request{
 			Kind:           KindMaintain,
+			CheckRevision:  true,
+			ConfigRevision: cfg.Revision,
 			AccountID:      target.AccountID,
 			IdempotencyKey: m.key("maintain", target.AccountID),
 		}, EventMaintainQueued, now)
@@ -267,11 +290,13 @@ func (m *Maintainer) sweepQuietHours(ctx context.Context, cfg *domain.Config,
 			continue
 		}
 		receipt, err := m.submit(ctx, Request{
-			Kind:      KindForcedLogout,
-			AccountID: target.AccountID,
+			Kind:           KindForcedLogout,
+			CheckRevision:  true,
+			ConfigRevision: cfg.Revision,
+			AccountID:      target.AccountID,
 			// The occurrence is in the key, so the same account is swept once
 			// per visit to the window and not once per tick for six hours.
-			IdempotencyKey: "sweep:" + quiet.Occurrence + ":" + target.AccountID,
+			IdempotencyKey: "sweep:" + quiet.Occurrence + ":" + target.AccountID + ":" + strconv.FormatUint(cfg.Revision, 10),
 		})
 		if err != nil {
 			continue
@@ -302,13 +327,15 @@ func (m *Maintainer) queue(ctx context.Context, state *accountState,
 
 // apply folds one finished action back into the account's state.
 func (m *Maintainer) apply(action Action, now time.Time) {
+	cfg := m.settings.Snapshot()
+	if action.Request.CheckRevision && action.Request.ConfigRevision != cfg.Revision {
+		return
+	}
 	accountID := action.Request.AccountID
 	if accountID == "" {
 		return
 	}
 	state := m.stateFor(accountID)
-	cfg := m.settings.Snapshot()
-
 	if action.ID == state.sweepAction {
 		state.sweepAction = ""
 		if action.State == StateSucceeded {

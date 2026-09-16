@@ -34,6 +34,11 @@ func (c *Coordinator) onSubmit(request Request) (Receipt, error) {
 		delete(c.byKey, request.IdempotencyKey)
 	}
 
+	if c.check != nil {
+		if err := c.check(request); err != nil {
+			return Receipt{}, err
+		}
+	}
 	if len(c.queue) >= c.queueLimit {
 		return Receipt{}, domain.Errorf(domain.CodeBusy,
 			"动作队列已满（上限 %d 个），请稍后重试", c.queueLimit)

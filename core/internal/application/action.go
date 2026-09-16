@@ -140,6 +140,9 @@ type Request struct {
 	// applies to this action and nothing else: the maintenance loop behind it
 	// stays suspended.
 	IgnoreQuiet bool
+	// CheckRevision distinguishes an unchecked internal request from revision 0.
+	CheckRevision  bool
+	ConfigRevision uint64
 }
 
 // fingerprint is everything about a request except its key.
@@ -154,7 +157,7 @@ func (r Request) fingerprint() string {
 	if r.IgnoreQuiet {
 		quiet = "1"
 	}
-	return string(r.Kind) + "\x00" + r.AccountID + "\x00" + r.HotspotID + "\x00" + quiet + "\x00" + r.Interface
+	return string(r.Kind) + "\x00" + r.AccountID + "\x00" + r.HotspotID + "\x00" + quiet + "\x00" + r.Interface + "\x00" + strconv.FormatBool(r.CheckRevision) + ":" + strconv.FormatUint(r.ConfigRevision, 10)
 }
 
 // Validate refuses a request the coordinator could not act on.

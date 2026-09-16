@@ -144,6 +144,9 @@ func TestTheServiceAnswersOverItsSocket(t *testing.T) {
 	}
 
 	status := service.status()
+	if status.SchemaVersion != SnapshotSchemaVersion || status.WrittenAt.IsZero() {
+		t.Errorf("live snapshot has no valid schema/timestamp: %+v", status)
+	}
 	if status.Service != ServiceRunning {
 		t.Errorf("service = %q, want running", status.Service)
 	}

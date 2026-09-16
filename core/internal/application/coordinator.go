@@ -46,6 +46,9 @@ type Options struct {
 	// waits, so a ubus call here would block every other caller. Resolving the
 	// actual binding is the worker's job, and it happens after dispatch.
 	Lines func(Request) string
+	// Check runs on the loop before a new request is queued. It rejects work
+	// prepared against a configuration that has since changed.
+	Check func(Request) error
 
 	// Observer is called whenever an action changes state or phase, with the
 	// action as it now stands. It is the seam the structured event log will
@@ -85,6 +88,7 @@ type Coordinator struct {
 	clock         policy.Clock
 	runner        Runner
 	lines         func(Request) string
+	check         func(Request) error
 	observer      func(Action)
 	record        func(observe.Observation)
 	parallel      int
@@ -168,6 +172,7 @@ func New(options Options) *Coordinator {
 		clock:         clock,
 		runner:        options.Runner,
 		lines:         options.Lines,
+		check:         options.Check,
 		observer:      observer,
 		record:        record,
 		parallel:      orDefaultInt(options.Parallel, policy.MaxConcurrentLines),
@@ -371,6 +376,29 @@ func (c *Coordinator) Submit(ctx context.Context, request Request) (Receipt, err
 	return receipt, failure
 }
 
+// ChangeConfiguration serializes a short, local configuration transaction with
+// dispatch. Even a cancelled worker must have exited before credentials or line
+// settings can change. The callback must not call back into the coordinator.
+func (c *Coordinator) ChangeConfiguration(ctx context.Context, change func() error) error {
+	var failure error
+	ready := make(chan struct{})
+	err := c.call(ctx, func() {
+		defer close(ready)
+		switch {
+		case ctx.Err() != nil:
+			failure = contextError(ctx)
+		case len(c.queue) != 0 || len(c.running) != 0:
+			failure = domain.Errorf(domain.CodeBusy, "动作尚未结束，请稍后保存配置")
+		default:
+			failure = change()
+		}
+	}, ready)
+	if err != nil {
+		return err
+	}
+	return failure
+}
+
 // Cancel asks for an action to stop. Cancelling a finished action is not an
 // error: the caller's intent is already satisfied.
 func (c *Coordinator) Cancel(ctx context.Context, actionID string) error {
@@ -418,4 +446,15 @@ func (c *Coordinator) Actions(ctx context.Context) ([]Action, error) {
 		return nil, err
 	}
 	return all, nil
+}
+
+// Inspect collects a read-only projection on the loop, so its config, account
+// observations and action list cannot straddle a configuration transaction.
+// read must be fast, must not retain mutable state, and must not call back in.
+func (c *Coordinator) Inspect(ctx context.Context, read func([]Action)) error {
+	ready := make(chan struct{})
+	return c.call(ctx, func() {
+		read(c.onList())
+		close(ready)
+	}, ready)
 }

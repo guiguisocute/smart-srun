@@ -142,6 +142,17 @@ func (s *Store) SetRevision(revision uint64) {
 	}
 }
 
+// ResetConfiguration drops observations and terminal notes about the previous
+// configuration. The coordinator calls this only after every worker has exited.
+func (s *Store) ResetConfiguration(revision uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if revision > s.revision {
+		s.revision = revision
+		s.accounts = map[string]*entry{}
+	}
+}
+
 // Accept records an observation unless it is obsolete or late.
 func (s *Store) Accept(observation Observation) (bool, Drop) {
 	if observation.AccountID == "" {

@@ -79,6 +79,7 @@ type Daemon struct {
 	observer      func(application.Action)
 	users         *presets.UserStore
 	publicPresets func() ([]presets.School, error)
+	configChanged func(uint64)
 
 	// dirty is a one-slot signal, so a burst of changes coalesces into one
 	// write instead of one write per change.
@@ -208,10 +209,22 @@ func Run(ctx context.Context, options Options) error {
 		OnEvent: service.onMaintenanceEvent,
 	})
 
+	service.configChanged = func(revision uint64) {
+		service.store.ResetConfiguration(revision)
+		pool.Close()
+		maintainer.ConfigurationChanged()
+		service.markDirty()
+	}
 	service.actions = application.New(application.Options{
 		Clock:  clock,
 		Runner: runner,
 		Lines:  service.lineOf,
+		Check: func(request application.Request) error {
+			if request.CheckRevision && request.ConfigRevision != repository.Revision() {
+				return domain.Errorf(domain.CodeConflict, "配置已变化，请刷新后重试")
+			}
+			return nil
+		},
 		Observer: func(action application.Action) {
 			service.onAction(action)
 			// The loop learns what happened from the same publication the
@@ -393,25 +406,42 @@ func (d *Daemon) writeSnapshots(ctx context.Context) {
 // the line is down, and a poll that probed would turn an open browser tab into
 // continuous authentication traffic.
 func (d *Daemon) Snapshot() Snapshot {
+	ctx, cancel := context.WithTimeout(context.Background(), readBudget)
+	defer cancel()
+	// Buffered: if the caller times out after dispatch, the loop may still
+	// finish the read without blocking or writing into a returned value.
+	result := make(chan Snapshot, 1)
+	if err := d.actions.Inspect(ctx, func(actions []application.Action) {
+		result <- d.snapshotOf(actions)
+	}); err == nil {
+		return <-result
+	}
+	// The loop may already have stopped during service shutdown. Report only
+	// the persisted settings; no mixed account/action state is presented.
+	snapshot := d.snapshotOf(nil)
+	snapshot.Accounts = nil
+	return snapshot
+}
+
+func (d *Daemon) snapshotOf(actions []application.Action) Snapshot {
 	cfg := d.config.Snapshot()
 	projection := d.store.Read()
+	if projection.Revision != cfg.Revision {
+		// A save between the two reads invalidates the old observations.
+		projection.Accounts = nil
+	}
 
 	snapshot := Snapshot{
+		SchemaVersion:  SnapshotSchemaVersion,
+		WrittenAt:      d.clock.Now().UTC(),
 		Service:        ServiceRunning,
 		PID:            os.Getpid(),
 		Enabled:        cfg.Enabled,
-		ConfigRevision: d.config.Revision(),
+		ConfigRevision: cfg.Revision,
 		Version:        d.version,
 		Accounts:       projection.Accounts,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), readBudget)
-	defer cancel()
-	actions, err := d.actions.Actions(ctx)
-	if err != nil {
-		// The coordinator has stopped. The rest of the picture is still true.
-		return snapshot
-	}
 	snapshot.Actions = make([]ActionView, 0, len(actions))
 	for _, action := range actions {
 		snapshot.Actions = append(snapshot.Actions, ViewOf(action))
