@@ -16,6 +16,10 @@ import (
 // different next steps, and only one of them should make the caller try the
 // next source.
 func Parse(data []byte) (Catalogue, error) {
+	if int64(len(data)) > MaxPayloadBytes {
+		return Catalogue{}, domain.Errorf(domain.CodeProtocolInvalid,
+			"预设内容超过 %d 字节的上限", MaxPayloadBytes)
+	}
 	if len(data) == 0 {
 		return Catalogue{}, domain.Errorf(domain.CodeProtocolInvalid,
 			"预设内容为空")

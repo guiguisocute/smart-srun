@@ -25,7 +25,8 @@ type fakeFetcher struct {
 	errs   map[string]error
 	asked  []string
 	// pause blocks the fetch, so a test can cancel while one is in flight.
-	pause chan struct{}
+	pause   chan struct{}
+	started chan struct{}
 }
 
 func (f *fakeFetcher) requested() []string {
@@ -38,6 +39,9 @@ func (f *fakeFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
 	f.mu.Lock()
 	f.asked = append(f.asked, url)
 	f.mu.Unlock()
+	if f.started != nil {
+		f.started <- struct{}{}
+	}
 	if f.pause != nil {
 		select {
 		case <-f.pause:
@@ -140,7 +144,7 @@ func TestEverySourceFailingIsReportedOnce(t *testing.T) {
 // Carrying on would turn one cancellation into three more immediate failures,
 // reported as though the sources themselves were bad.
 func TestACancelledRefreshStopsAtOnce(t *testing.T) {
-	fetcher := &fakeFetcher{pause: make(chan struct{})}
+	fetcher := &fakeFetcher{pause: make(chan struct{}), started: make(chan struct{}, 1)}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
@@ -152,10 +156,8 @@ func TestACancelledRefreshStopsAtOnce(t *testing.T) {
 			newTestCache(t), nil)
 	}()
 
-	// Give the first fetch time to be in flight, then stop it.
-	for len(fetcher.requested()) == 0 {
-		time.Sleep(time.Millisecond)
-	}
+	// Synchronize on the actual call instead of polling with real sleeps.
+	<-fetcher.started
 	cancel()
 	<-done
 

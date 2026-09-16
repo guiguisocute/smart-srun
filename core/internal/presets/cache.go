@@ -18,23 +18,28 @@ import (
 const (
 	FileMode = 0o600
 	DirMode  = 0o700
+	// DefaultCachePath is tmpfs per spec 02. The built-in catalogue supplies
+	// the offline fallback after reboot; refreshing must not wear out flash.
+	DefaultCachePath = "/tmp/smart-srun/presets-cache.json"
+	maxSourceBytes   = 8 << 10
+	// Allow the largest payload plus JSON-escaped source metadata.
+	maxCacheBytes = MaxPayloadBytes + 64<<10
 )
 
-// Cache is the last good catalogue, on flash.
-//
-// On flash and not in the runtime directory: the whole point of it is that a
-// router which boots with no internet still knows which schools exist, and a
-// tmpfs copy would be gone exactly when it was needed. It is still not the
-// user's data -- it is a copy of something published, regenerable from the
-// network -- so it belongs beside the recovery journals rather than beside
-// config.json, and it must not be preserved across a sysupgrade.
+// Cache is the last good catalogue. Production uses tmpfs; it is regenerable
+// public data, not user configuration or a persistent recovery journal.
 type Cache struct {
 	path string
 }
 
 // NewCache addresses a cache file. It creates nothing: a router that never
 // refreshes should not gain a directory for a file it will not write.
-func NewCache(path string) *Cache { return &Cache{path: path} }
+func NewCache(path string) *Cache {
+	if path == "" {
+		path = DefaultCachePath
+	}
+	return &Cache{path: path}
+}
 
 // Path is where it lives, for a caller that has to report it.
 func (c *Cache) Path() string { return c.path }
@@ -46,16 +51,12 @@ func (c *Cache) Path() string { return c.path }
 // publisher's own fields -- which is what the baseline does -- means a future
 // schema that happens to use that name collides with it.
 //
-// Under its own key, not byte-for-byte: the encoder re-indents the nested
-// document, so what comes back is the same JSON and not the same bytes. That is
-// enough for the reason the payload is kept at all -- a later build with a
-// different parser reads the content, and no JSON parser can see whitespace --
-// and the indented form is what makes the file readable on a router, which is
-// where somebody will be looking at it.
+// Save appends the original payload without passing it through an encoder, so
+// unknown fields, missing fields, field order and internal whitespace survive.
 type cached struct {
 	CachedAt  int64           `json:"cached_at"`
 	SourceURL string          `json:"source_url"`
-	Payload   json.RawMessage `json:"payload"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 
 // Entry is what Load found: the catalogue and where it came from.
@@ -64,8 +65,8 @@ type Entry struct {
 	SourceURL string
 	CachedAt  time.Time
 	// Raw is the published document as JSON, so a later build with a different
-	// parser can read a cache this one wrote. The encoder's indentation, not
-	// the publisher's.
+	// parser can read a cache this one wrote. Only surrounding JSON whitespace
+	// is stripped when the wrapper is decoded; the payload is not re-encoded.
 	Raw []byte
 }
 
@@ -77,13 +78,18 @@ type Entry struct {
 // than fail, but a cache that cannot be read is worth saying out loud instead
 // of silently behaving like an empty one.
 func (c *Cache) Load() (Entry, bool, error) {
-	data, err := os.ReadFile(c.path)
+	file, err := os.Open(c.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return Entry{}, false, nil
 		}
 		return Entry{}, true, domain.Errorf(domain.CodeInternal,
 			"无法读取预设缓存 %s", c.path).Wrap(err)
+	}
+	defer file.Close()
+	data, err := ReadLimited(file, maxCacheBytes)
+	if err != nil {
+		return Entry{}, true, err
 	}
 
 	var wrapper cached
@@ -108,15 +114,8 @@ func (c *Cache) Load() (Entry, bool, error) {
 	}, true, nil
 }
 
-// Save writes a payload that has already been validated.
-//
-// Already validated, and that ordering is the point. The baseline parses before
-// it writes for a reason it records in a comment: a remote publication with an
-// illegal schema_version written to the cache poisons it, and every later read
-// then fails from the bad cache -- taking the built-in fallback down with it,
-// because the same code path loads both. So Save takes the raw bytes and the
-// catalogue they parsed into, and there is no way to call it with bytes nobody
-// has read.
+// Save validates the actual bytes before replacing the previous cache. A
+// separately supplied Catalogue is not proof that these bytes were parsed.
 func (c *Cache) Save(raw []byte, catalogue Catalogue, sourceURL string,
 	at time.Time) error {
 
@@ -129,16 +128,28 @@ func (c *Cache) Save(raw []byte, catalogue Catalogue, sourceURL string,
 		return domain.Errorf(domain.CodeInternal,
 			"预设缓存只接受已经解析过的内容")
 	}
+	if _, err := Parse(raw); err != nil {
+		return err
+	}
+	if len(sourceURL) > maxSourceBytes {
+		return domain.Errorf(domain.CodeInvalidArgument, "预设来源地址过长")
+	}
 
-	document, err := json.MarshalIndent(cached{
+	metadata, err := json.Marshal(cached{
 		CachedAt:  at.Unix(),
 		SourceURL: sourceURL,
-		Payload:   json.RawMessage(raw),
-	}, "", "  ")
+	})
 	if err != nil {
 		return domain.Errorf(domain.CodeInternal, "无法编码预设缓存").Wrap(err)
 	}
-	return writeAtomic(c.path, append(document, '\n'))
+	// MarshalIndent can amplify a deeply nested, otherwise bounded document.
+	// Append validated JSON verbatim to keep both layout and allocations bounded.
+	document := make([]byte, 0, len(metadata)+len(raw)+16)
+	document = append(document, metadata[:len(metadata)-1]...)
+	document = append(document, `,"payload":`...)
+	document = append(document, raw...)
+	document = append(document, '}', '\n')
+	return writeAtomic(c.path, document)
 }
 
 // Clear removes the cache. Absent is success: that is the state it asks for.
@@ -152,11 +163,8 @@ func (c *Cache) Clear() error {
 
 // writeAtomic writes a file that a reader never sees half of.
 //
-// Temp, fsync, rename, sync the directory. A cache written without the fsync
-// would be a cache that is present but truncated after the power cut it exists
-// to survive -- and a truncated cache is worse than none, because it is read
-// and fails to parse where an absent one falls straight through to the
-// built-in catalogue.
+// Temp, fsync, rename, sync the directory. This helper also serves persistent
+// user presets; cache callers use tmpfs and rely on the built-in after reboot.
 func writeAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, DirMode); err != nil {

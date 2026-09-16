@@ -12,10 +12,8 @@ import (
 //
 // Syncing the file guarantees its contents; until the directory entry is
 // flushed, a power loss can leave the name pointing at the old inode or at
-// nothing. A cache that was never flushed is a cache that is not there after
-// the reboot it exists for -- and worse than absent, because a half-written one
-// is read and fails to parse where an absent one falls straight through to the
-// built-in catalogue.
+// nothing. This matters for user presets on persistent storage; the remote
+// cache uses tmpfs and is replaced by the built-in fallback after reboot.
 //
 // wireless has its own copy of this and they are deliberately not shared. Two
 // packages needing the same three system calls is not a reason for one to

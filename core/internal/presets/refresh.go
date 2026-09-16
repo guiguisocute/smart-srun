@@ -98,6 +98,9 @@ func Refresh(ctx context.Context, fetcher Fetcher, sources []string,
 
 	result := Refreshed{}
 	for _, source := range sources {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		catalogue, raw, err := fetchOne(ctx, fetcher, source)
 		if err != nil {
 			result.Attempts = append(result.Attempts, Attempt{source, err})
@@ -117,7 +120,11 @@ func Refresh(ctx context.Context, fetcher Fetcher, sources []string,
 		if cache == nil {
 			return result, nil
 		}
-		replaced, err := store(cache, catalogue, raw, source, now())
+		at := now()
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		replaced, err := store(cache, catalogue, raw, source, at)
 		if err != nil {
 			return result, err
 		}
@@ -140,8 +147,16 @@ func fetchOne(ctx context.Context, fetcher Fetcher, source string) (
 	if err != nil {
 		return Catalogue{}, nil, err
 	}
+	// A transport may finish just as the caller cancels or the deadline fires.
+	// Its nil error must not turn a late result into a successful refresh.
+	if err := ctx.Err(); err != nil {
+		return Catalogue{}, nil, err
+	}
 	catalogue, err := Parse(raw)
 	if err != nil {
+		return Catalogue{}, nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return Catalogue{}, nil, err
 	}
 	return catalogue, raw, nil

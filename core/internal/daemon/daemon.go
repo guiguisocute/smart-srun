@@ -14,6 +14,7 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/observe"
 	"github.com/matthewlu070111/smart-srun/core/internal/openwrt"
 	"github.com/matthewlu070111/smart-srun/core/internal/policy"
+	"github.com/matthewlu070111/smart-srun/core/internal/presets"
 	"github.com/matthewlu070111/smart-srun/core/internal/transport"
 )
 
@@ -33,6 +34,11 @@ type Options struct {
 	// to this device's adapter and connection pool. A test supplies its own so
 	// that the lifecycle can be exercised without a router.
 	Runner application.Runner
+
+	// PublicPresets reads the current merged public catalogue, including drafts.
+	// Nil uses the installed built-in file and the tmpfs cache. Reading this
+	// never triggers a remote refresh or an authentication request.
+	PublicPresets func() ([]presets.School, error)
 
 	// Capabilities is what this device can actually do, detected once by the
 	// caller. Detected once because it does not change while the process runs,
@@ -64,10 +70,12 @@ type Daemon struct {
 	capabilities openwrt.Capabilities
 	onError      func(error)
 
-	config   *config.Repository
-	store    *observe.Store
-	actions  *application.Coordinator
-	observer func(application.Action)
+	config        *config.Repository
+	store         *observe.Store
+	actions       *application.Coordinator
+	observer      func(application.Action)
+	users         *presets.UserStore
+	publicPresets func() ([]presets.School, error)
 
 	// dirty is a one-slot signal, so a burst of changes coalesces into one
 	// write instead of one write per change.
@@ -157,15 +165,17 @@ func Run(ctx context.Context, options Options) error {
 	}
 
 	service := &Daemon{
-		paths:        paths,
-		version:      options.Version,
-		clock:        clock,
-		capabilities: options.Capabilities,
-		onError:      onError,
-		config:       repository,
-		store:        observe.New(),
-		observer:     observer,
-		dirty:        make(chan struct{}, 1),
+		paths:         paths,
+		version:       options.Version,
+		clock:         clock,
+		capabilities:  options.Capabilities,
+		onError:       onError,
+		config:        repository,
+		store:         observe.New(),
+		observer:      observer,
+		users:         presets.NewUserStore(paths.UserPresets()),
+		publicPresets: options.PublicPresets,
+		dirty:         make(chan struct{}, 1),
 	}
 	service.store.SetRevision(repository.Revision())
 

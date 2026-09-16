@@ -23,6 +23,8 @@ func (d *Daemon) register(registry *control.Registry) {
 	registry.Register("schema.get", d.schemaGet)
 	registry.Register("config.get", d.configGet)
 	registry.Register("config.validate", d.configValidate)
+	registry.Register("user_presets.get", d.userPresetsGet)
+	registry.Register("user_presets.set", d.userPresetsSet)
 	registry.Register("action.submit", d.actionSubmit)
 	registry.Register("action.get", d.actionGet)
 	registry.Register("action.cancel", d.actionCancel)
