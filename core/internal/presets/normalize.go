@@ -169,22 +169,26 @@ func (f flexString) version() (int, bool) {
 	return digits, true
 }
 
-// safeID is the identifier a school is stored and looked up under.
+var unsafeID = regexp.MustCompile(`[^a-z0-9_.-]+`)
+
+// SafeID is the identifier a school is stored and looked up under.
 //
 // Lower-cased, and everything outside [a-z0-9_.-] becomes a dash. It ends up in
 // a file path and a UCI value, so a name that arrived with a slash or a space
 // in it must not stay that way.
-var unsafeID = regexp.MustCompile(`[^a-z0-9_.-]+`)
-
-func safeID(value string) string {
+//
+// Exported because a caller holding what a user typed has to reduce it the same
+// way before looking a school up: two spellings differing only in case would
+// otherwise find nothing.
+func SafeID(value string) string {
 	text := unsafeID.ReplaceAllString(strings.ToLower(strings.TrimSpace(value)), "-")
 	return strings.Trim(text, "-")
 }
 
 func normalizeSchool(raw rawSchool) (School, bool) {
-	shortName := safeID(raw.ID.trimmed())
+	shortName := SafeID(raw.ID.trimmed())
 	if shortName == "" {
-		shortName = safeID(raw.ShortName.trimmed())
+		shortName = SafeID(raw.ShortName.trimmed())
 	}
 	if shortName == "" {
 		// Nothing to store it under, so there is nothing to store.
