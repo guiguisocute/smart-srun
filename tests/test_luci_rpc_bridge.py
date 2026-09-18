@@ -1,0 +1,49 @@
+"""The LuCI bridge's mapping between the frozen form and config v2.
+
+The interface keeps the baseline's flat field names while the daemon owns a
+typed configuration, so a wrong destination here is a setting that silently
+does not take effect -- or, in the password case, a credential a routine edit
+would wipe. The assertions live in Lua next door and run under the same
+interpreter version LuCI uses; this wrapper is what puts them in the suite.
+"""
+
+import shutil
+import subprocess
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+LUA_ROOT = REPO_ROOT / "root" / "usr" / "lib" / "lua"
+PROBE_DIR = Path(__file__).resolve().parent / "lua"
+
+
+class LuciRpcBridgeTests(unittest.TestCase):
+    def test_bridge_mapping_probe_passes(self):
+        lua = shutil.which("lua")
+        if not lua:
+            self.skipTest("lua is not installed")
+
+        probe = PROBE_DIR / "bridge_probe.lua"
+        self.assertTrue(probe.is_file(), probe)
+        result = subprocess.run(
+            [lua, "-e", "require 'stub_env'; dofile([[%s]])" % probe.as_posix()],
+            cwd=str(REPO_ROOT),
+            env={
+                "LUA_PATH": ";".join(
+                    [
+                        "%s/?.lua" % LUA_ROOT.as_posix(),
+                        "%s/?.lua" % PROBE_DIR.as_posix(),
+                        "",
+                    ]
+                ),
+                "PATH": "/usr/bin:/bin",
+            },
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

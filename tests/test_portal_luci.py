@@ -154,117 +154,65 @@ console.log(JSON.stringify({result: nodes['smart-srun-manual-result'].textConten
         self.assertEqual("登录成功", rendered["tip"])
         self.assertEqual([], rendered["portal"])
 
-    def test_controller_persists_and_exposes_action_specific_feedback(self):
-        text = CONTROLLER_FILE.read_text(encoding="utf-8")
-        for field in ("last_action_message", "last_action_portal_url"):
-            self.assertIn(f'{field} = tostring(data.{field} or "")', text)
-            self.assertIn(f'state.{field} = ""', text)
+    def test_status_projection_publishes_action_specific_feedback(self):
+        """The result of the last action is part of the status answer.
+
+        It is built from the daemon's action record now, not copied out of a
+        state file the page also wrote. Clearing it when a new action starts is
+        the daemon's job (observe.Store.ActionStarted), which is why the page
+        no longer has a line that blanks it. (M00 ledger:
+        replaced_with_stronger_test -> T39;T24.)
+        """
+        bridge = (REPO_ROOT / "root/usr/lib/lua/luci/smart_srun/bridge.lua").read_text(
+            encoding="utf-8"
+        )
+        for field in ("last_action", "last_action_message", "action_result",
+                      "last_action_portal_url", "last_action_ts"):
+            self.assertIn(f"{field} =", bridge)
+        self.assertIn("ACTION_RESULT", bridge)
         self.assertIn(
             'id="smart-srun-manual-portal"', CBI_FILE.read_text(encoding="utf-8")
         )
 
     def test_controller_status_enqueue_and_friendly_logs_execute(self):
+        """Drive the shipped controller against a recording stand-in daemon.
+
+        The old version of this test stubbed the filesystem, because the page
+        used to answer from files it also wrote. It now stubs the control
+        protocol instead, which is where the work went: what is asserted is the
+        request that leaves the page, the credential that does not, and the
+        refusal that reaches the browser unchanged. (M00 ledger:
+        ported_behavior -> T39;T24.)
+        """
         lua = shutil.which("lua")
         if not lua:
             self.skipTest("lua is not installed")
-        script = r"""
-local files, encoded, form = {}, {}, {}
-local portal_url = PORTAL_URL
-local sequence, output = 0, nil
-local function stringify(value)
-    sequence = sequence + 1
-    local key = "json" .. sequence
-    encoded[key] = value
-    return key
-end
-local function parse(value)
-    return encoded[tostring(value or ""):match("^(json%d+)")] or {}
-end
-local state_path = "/var/run/smart_srun/state.json"
-files[state_path] = stringify({
-    last_action="manual_login", action_result="error", message="later tick",
-    last_action_message="original failure", last_action_portal_url=portal_url
-})
-package.preload["luci.http"] = function() return {
-    formvalue=function(key) return form[key] end, prepare_content=function() end,
-    write=function(value) output = parse(value) end
-} end
-package.preload["luci.jsonc"] = function() return {parse=parse, stringify=stringify} end
-package.preload["luci.sys"] = function() return {exec=function() return "" end, call=function() return 0 end} end
-package.preload["luci.util"] = function() return {
-    trim=function(value) return tostring(value or ""):match("^%s*(.-)%s*$") end
-} end
-package.preload["nixio.fs"] = function() return {
-    readfile=function(path) return files[path] end,
-    writefile=function(path, value) files[path] = value; return true end,
-    rename=function(from, target) files[target] = files[from]; files[from] = nil; return true end,
-    access=function() return false end, mkdirr=function() return true end,
-    remove=function(path) files[path] = nil; return true end,
-    dir=function() return function() return nil end end
-} end
-package.preload["luci.smart_srun.schema"] = function() return {
-    POINTER_KEYS={}, LIST_KEYS={}, global_scalar_key_set=function() return {} end,
-    with_file_lock=function(_, callback) return callback() end
-} end
-dofile(CONTROLLER_PATH)
-local controller = package.loaded["luci.controller.smart_srun"]
-controller.action_status()
-assert(output.status == "later tick")
-assert(output.last_action_message == "original failure")
-assert(output.last_action_portal_url == portal_url)
-form.action = "manual_login"
-controller.action_enqueue()
-local saved = parse(files[state_path])
-assert(saved.last_action_message == "")
-assert(saved.last_action_portal_url == "")
-assert(saved.action_result == "pending")
-local config_path = "/usr/lib/smart_srun/config.json"
-files[config_path] = stringify({campus_accounts={{
-    id="campus1", network_interface="wan.old", custom_field="preserved"
-}}})
-form = {
-    action="edit_campus", id="campus1", access_mode="wired", wired_iface="  ",
-    network_interface="  wan.test  ", auth_enabled="1"
-}
-controller.action_enqueue()
-local account = parse(files[config_path]).campus_accounts[1]
-assert(account.wired_iface == "wan.test")
-assert(account.network_interface == nil)
-assert(account.custom_field == "preserved")
-assert(account.auth_enabled == "1")
-form.wired_iface = "  wan.canonical  "
-controller.action_enqueue()
-assert(parse(files[config_path]).campus_accounts[1].wired_iface == "wan.canonical")
-for _, code in ipairs({
-    "no_response_data_error", "not_online_error", "portal_intercept_error",
-    "auth_html_response_error", "auth_response_parse_error"
-}) do
-    local line = controller.friendly_line('[2026-06-01 22:00:00] WARN srun_login_response error_code=' .. code)
-    assert(not line:find(code, 1, true), line)
-end
-local multi = controller.friendly_line(
-    '[2026-06-01 22:00:00] WARN multi_wan_session account_id=campus1 wired_iface=wan.test | offline'
-)
-assert(not multi:find("multi_wan_session", 1, true), multi)
-assert(multi:find("wan.test", 1, true), multi)
-""".replace("CONTROLLER_PATH", json.dumps(CONTROLLER_FILE.as_posix())).replace(
-            "PORTAL_URL", json.dumps(PORTAL_ORIGIN)
-        )
-        subprocess.run(
-            [lua, "-e", script],
+        result = subprocess.run(
+            [lua, (REPO_ROOT / "tests/lua/controller_actions.lua").as_posix(),
+             REPO_ROOT.as_posix()],
+            cwd=str(REPO_ROOT),
             stdin=subprocess.DEVNULL,
-            check=True,
             capture_output=True,
             text=True,
             encoding="utf-8",
+            timeout=30,
         )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_luci_account_editor_reads_legacy_interface_but_saves_canonical(self):
         controller = CONTROLLER_FILE.read_text(encoding="utf-8")
+        bridge = (REPO_ROOT / "root/usr/lib/lua/luci/smart_srun/bridge.lua").read_text(
+            encoding="utf-8"
+        )
         js = JS_FILE.read_text(encoding="utf-8")
         cbi = CBI_FILE.read_text(encoding="utf-8")
-        self.assertIn('util.trim(fv("network_interface"))', controller)
-        self.assertIn("merged.network_interface = nil", controller)
+        # The alias is read from the form and resolved in one place; the patch
+        # that goes to the daemon carries only the canonical field, so nothing
+        # has to remember to delete the old one afterwards.
+        self.assertIn('network_interface = fv("network_interface")', controller)
+        self.assertIn("trim(form.network_interface)", bridge)
+        self.assertIn("patch.wired_iface", bridge)
+        self.assertNotIn("patch.network_interface", bridge)
         self.assertIn("String(item.network_interface || '').replace", js)
         self.assertIn("fd.append('wired_iface'", js)
         self.assertNotIn("fd.append('network_interface'", js)

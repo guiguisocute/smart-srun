@@ -15,24 +15,51 @@ if [ -n "$(git -C "$project_dir" status --porcelain -- core)" ]; then revision="
 version="0.0.0-dev.$revision"
 arch=${GOARCH:-$(go env GOARCH)}
 mkdir -p "$stage_dir/usr/bin" "$stage_dir/etc/init.d" \
-    "$stage_dir/usr/share/smart-srun"
+    "$stage_dir/usr/share/smart-srun" \
+    "$stage_dir/usr/lib/lua/luci/controller" "$stage_dir/usr/lib/lua/luci/model/cbi" \
+    "$stage_dir/usr/lib/lua/luci/smart_srun" \
+    "$stage_dir/www/luci-static/resources"
+# PREBUILT_SRUNNET exists for a Windows checkout whose POSIX shell has no Go
+# toolchain: the cross build runs outside, this assembles the same payload. It
+# must be the ELF built from this tree at this revision; nothing here can check
+# that, so the build-info version is the only claim made about it.
+if [ -n "${PREBUILT_SRUNNET:-}" ]; then
+    cp "$PREBUILT_SRUNNET" "$stage_dir/usr/bin/srunnet"
+else
 (
     cd "$project_dir/core"
     CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
         -ldflags "-s -w -X github.com/matthewlu070111/smart-srun/core/internal/cli.Version=$version" \
         -o "$stage_dir/usr/bin/srunnet" ./cmd/srunnet
 )
+fi
 # Normalize text resource line endings when building a Windows checkout.
 sed 's/\r$//' "$project_dir/root/etc/init.d/smart_srun" > "$stage_dir/etc/init.d/smart_srun"
 cp "$project_dir/doc/school-presets.json" "$stage_dir/usr/share/smart-srun/school-presets.json"
+# The interface is part of what has to be installed to try anything through it.
+# Same files the package will install; the packaging itself is batch C.
+luci_files="usr/lib/lua/luci/controller/smart_srun.lua
+usr/lib/lua/luci/model/cbi/smart_srun.lua
+usr/lib/lua/luci/smart_srun/schema.lua
+usr/lib/lua/luci/smart_srun/rpc.lua
+usr/lib/lua/luci/smart_srun/bridge.lua
+www/luci-static/resources/smart_srun.js"
+for relative in $luci_files; do
+    sed 's/\r$//' "$project_dir/root/$relative" > "$stage_dir/$relative"
+    chmod 644 "$stage_dir/$relative"
+done
 chmod 755 "$stage_dir/usr/bin/srunnet" "$stage_dir/etc/init.d/smart_srun"
 chmod 644 "$stage_dir/usr/share/smart-srun/school-presets.json"
 
 (
     cd "$stage_dir"
-    sha256sum usr/bin/srunnet etc/init.d/smart_srun usr/share/smart-srun/school-presets.json > manifest.sha256
+    sha256sum usr/bin/srunnet etc/init.d/smart_srun \
+        usr/share/smart-srun/school-presets.json $luci_files > manifest.sha256
     payload_bytes=$(wc -c < usr/bin/srunnet)
     payload_bytes=$((payload_bytes + $(wc -c < etc/init.d/smart_srun) + $(wc -c < usr/share/smart-srun/school-presets.json)))
+    for relative in $luci_files; do
+        payload_bytes=$((payload_bytes + $(wc -c < "$relative")))
+    done
     if [ "$payload_bytes" -gt 10485760 ]; then
         echo "Development payload exceeds the 10 MiB budget: $payload_bytes bytes" >&2
         exit 1
@@ -41,7 +68,7 @@ chmod 644 "$stage_dir/usr/share/smart-srun/school-presets.json"
         "$version" "$arch" "$payload_bytes" > build-info.txt
     tar -czf "$output_dir/smart-srun-dev-$arch.tar.gz" \
         manifest.sha256 build-info.txt usr/bin/srunnet etc/init.d/smart_srun \
-        usr/share/smart-srun/school-presets.json
+        usr/share/smart-srun/school-presets.json $luci_files
     cat build-info.txt
 )
 sha256sum "$output_dir/smart-srun-dev-$arch.tar.gz"

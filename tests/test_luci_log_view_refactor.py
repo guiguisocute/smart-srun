@@ -60,7 +60,9 @@ class LuciLogViewRefactorTests(unittest.TestCase):
         self.assertIn('local system_text = read_system_log_text(source_lines)', self.controller_text)
         self.assertIn('local function tail_text(text, lines)', self.controller_text)
         self.assertIn('local read_file_tail', self.controller_text)
-        self.assertIn('read_file_tail(LOG_FILE, 1)', self.controller_text)
+        # The status answer no longer carries a tail of the plugin log: it is
+        # built from the daemon's snapshot, and the log store that replaces
+        # this file arrives with M14. The log panel itself still reads it.
         self.assertIn('return read_file_tail(LOG_FILE, lines)', self.controller_text)
         self.assertNotIn('tail -n 1 /var/log/smart_srun.log', self.controller_text)
         self.assertIn('"logread -l " .. lines .. " 2>/dev/null"', self.controller_text)

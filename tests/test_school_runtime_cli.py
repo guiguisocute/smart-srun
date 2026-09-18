@@ -905,17 +905,25 @@ class ForceClosePluginSourceTests(unittest.TestCase):
         )
 
     def test_shared_force_stop_controller_path_stays_smart_only(self):
+        """Force stop is one fixed helper, not a process hunt.
+
+        The baseline had to search /proc because the daemon, the CLI and the
+        update worker were all client.py. The Go service is supervised by procd
+        and the update worker is a separate service, so stopping this service
+        stops this service -- and the page asks for exactly that, with no shell
+        command and no signal of its own. (M00 ledger:
+        obsolete_implementation_detail -> T41;T09.)
+        """
         controller_source = read_repo_text(
             "root", "usr", "lib", "lua", "luci", "controller", "smart_srun.lua"
         )
 
-        self.assertIn('state.message = "已强制关闭插件并停止服务"', controller_source)
-        self.assertIn(
-            'return true, string.format("已强制关闭插件并停止服务（结束 %d 个进程）", #killed)',
-            controller_source,
-        )
-        self.assertIn("/etc/init.d/smart_srun stop", controller_source)
-        self.assertIn("/usr/lib/smart_srun/client.py", controller_source)
+        self.assertIn('return true, "已强制关闭插件并停止服务"', controller_source)
+        self.assertIn("rpc.stop_service()", controller_source)
+        self.assertNotIn("/etc/init.d/smart_srun", controller_source)
+        self.assertNotIn("/usr/lib/smart_srun/client.py", controller_source)
+        self.assertNotIn("kill -", controller_source)
+        self.assertNotIn("/proc", controller_source)
         self.assertNotIn("jxnu_srun", controller_source)
 
 
@@ -931,9 +939,16 @@ class LuciSourceHardeningTests(unittest.TestCase):
             "root", "www", "luci-static", "resources", "smart_srun.js"
         )
 
+        bridge_source = read_repo_text(
+            "root", "usr", "lib", "lua", "luci", "smart_srun", "bridge.lua"
+        )
+
         self.assertIn('id="jm-wired_iface"', js_source)
         self.assertIn("fd.append('wired_iface'", js_source)
-        self.assertIn('wired_iface = util.trim(fv("wired_iface"))', controller_source)
+        self.assertIn('wired_iface = fv("wired_iface")', controller_source)
+        # The selected interface is what the account authenticates through, so
+        # it is also what the table matches the observed line against.
+        self.assertIn('patch.wired_iface = iface ~= "" and iface or "wan"', bridge_source)
         self.assertIn('current_iface == wired_iface', model_source)
 
     def test_cbi_model_uses_escaped_hidden_json_payloads_and_static_js_asset(self):
@@ -989,7 +1004,12 @@ class LuciSourceHardeningTests(unittest.TestCase):
             "root", "usr", "lib", "lua", "luci", "smart_srun", "schema.lua"
         )
 
-        self.assertIn('require "luci.smart_srun.schema"', controller_source)
+        # The controller's shared knowledge is now the bridge: it maps form
+        # fields to the daemon's configuration contract, and the model keeps
+        # schema for the key lists and defaults the form renders from. Neither
+        # keeps its own copy of either.
+        self.assertIn('require "luci.smart_srun.bridge"', controller_source)
+        self.assertIn('require "luci.smart_srun.bridge"', model_source)
         self.assertIn('require "luci.smart_srun.schema"', model_source)
         self.assertIn("defaults.json", schema_source)
         self.assertIn("GLOBAL_SCALAR_KEYS", schema_source)
@@ -998,24 +1018,29 @@ class LuciSourceHardeningTests(unittest.TestCase):
         self.assertIn("global_scalar_key_set", schema_source)
         self.assertNotIn("local GLOBAL_SCALAR_KEYS_SET = {}", controller_source)
 
-    def test_model_save_cfg_merges_latest_pointer_and_list_state(self):
+    def test_model_save_sends_only_edited_fields_under_the_revision_it_read(self):
+        """A settings save must not carry values the user did not touch.
+
+        The baseline re-read the file and merged, which kept pointers and lists
+        intact but could still lose a concurrent scalar edit. The daemon does
+        the merge now, from a patch of the dirty fields plus the revision the
+        page read -- so a save made against a stale page is refused instead of
+        overwriting whatever changed underneath it. (M00 ledger:
+        obsolete_implementation_detail -> T41;T09.)
+        """
         model_source = read_repo_text(
             "root", "usr", "lib", "lua", "luci", "model", "cbi", "smart_srun.lua"
         )
 
         self.assertIn("local dirty_scalar_keys = {}", model_source)
         self.assertIn("local school_extra_dirty = false", model_source)
-        self.assertIn(
-            'local latest = jsonc.parse(fs.readfile(CONFIG_FILE) or "{}")', model_source
-        )
-        self.assertIn("dirty_scalar_keys[key]", model_source)
-        self.assertIn('out[key] = tostring(latest[key] or "")', model_source)
-        self.assertIn(
-            'out[key] = type(latest[key]) == "table" and latest[key] or {}',
-            model_source,
-        )
+        self.assertIn("bridge.settings_patch(cfg, dirty)", model_source)
+        self.assertIn("expected_revision = config_revision", model_source)
+        self.assertIn('rpc.call_started("config.apply"', model_source)
         self.assertIn("function opt.remove(self, section)", model_source)
         self.assertIn('set_value(key, "")', model_source)
+        # A failed save must say so rather than print the success message.
+        self.assertIn('"配置未保存："', model_source)
 
     def test_luci_presets_refresh_is_background_only(self):
         model_source = read_repo_text(
@@ -1023,10 +1048,13 @@ class LuciSourceHardeningTests(unittest.TestCase):
         )
         daemon_source = read_repo_text("root", "usr", "lib", "smart_srun", "daemon.py")
 
-        self.assertIn('run_client("presets list", false)', model_source)
-        self.assertIn("refresh_presets_cache_once()", model_source)
-        self.assertIn("fs.access(PRESETS_CACHE_FILE)", model_source)
-        self.assertIn("presets refresh >/dev/null 2>&1", model_source)
+        # Rendering the page reads the merged catalogue and nothing else: the
+        # remote refresh is a queued task on the daemon, not something a page
+        # load starts, and no Python process is spawned to answer a form.
+        self.assertIn('rpc.call("presets.list"', model_source)
+        self.assertNotIn("run_client(", model_source)
+        self.assertNotIn("presets refresh", model_source)
+        self.assertNotIn("python3", model_source)
         self.assertIn("_refresh_school_presets_after_online", daemon_source)
         self.assertIn("school_presets.refresh_remote_presets(timeout=5)", daemon_source)
         self.assertIn('connectivity_level", "")).strip() != "online"', daemon_source)
@@ -1049,14 +1077,35 @@ class LuciSourceHardeningTests(unittest.TestCase):
         )
         daemon_source = read_repo_text("root", "usr", "lib", "smart_srun", "daemon.py")
 
-        self.assertIn("cfg.default_campus_id = id", controller_source)
-        self.assertIn("cfg.active_campus_id = id", controller_source)
-        self.assertIn("cfg.default_hotspot_id = id", controller_source)
-        self.assertIn("cfg.active_hotspot_id = id", controller_source)
+        # "Set as default" also switches to it, which is why both pointers move
+        # together. The move itself belongs to the daemon's configuration
+        # transaction (config.SetDefaultCampus / SetDefaultHotspot); the page
+        # asks for the operation and never edits a pointer of its own.
+        self.assertIn('"campus.set_default"', controller_source)
+        self.assertIn('"hotspot.set_default"', controller_source)
+        self.assertNotIn("cfg.active_campus_id = id", controller_source)
+        self.assertNotIn("cfg.active_hotspot_id = id", controller_source)
+        for go_source, pointers in (
+            ("core/internal/config/mutations.go",
+             ("cfg.Selection.DefaultCampusID = id", "cfg.Selection.ActiveCampusID = id",
+              "cfg.Selection.DefaultHotspotID = id", "cfg.Selection.ActiveHotspotID = id")),
+        ):
+            text = read_repo_text(*go_source.split("/"))
+            for pointer in pointers:
+                self.assertIn(pointer, text)
         self.assertIn('"active_campus_id": args.id', daemon_source)
         self.assertIn('"active_hotspot_id": args.id', daemon_source)
 
-    def test_luci_config_writes_use_temp_file_replace_flow(self):
+    def test_luci_never_writes_configuration_or_runtime_state(self):
+        """There is one writer for the configuration, and it is not the page.
+
+        The temporary-file-and-rename dance this test used to check was the
+        page's own attempt at an atomic write. Spec 02 puts persistence behind
+        the daemon, so the interesting property is now stronger and simpler:
+        the LuCI tree names no configuration, action or state file at all, and
+        every change goes out as an RPC. (M00 ledger:
+        obsolete_implementation_detail -> T41;T09.)
+        """
         controller_source = read_repo_text(
             "root", "usr", "lib", "lua", "luci", "controller", "smart_srun.lua"
         )
@@ -1064,14 +1113,16 @@ class LuciSourceHardeningTests(unittest.TestCase):
             "root", "usr", "lib", "lua", "luci", "model", "cbi", "smart_srun.lua"
         )
 
-        self.assertIn('local tmp = CONFIG_FILE .. ".tmp"', controller_source)
-        self.assertIn("os.rename(tmp, CONFIG_FILE)", controller_source)
-        self.assertIn('local tmp = CONFIG_FILE .. ".tmp"', model_source)
-        self.assertIn("os.rename(tmp, CONFIG_FILE)", model_source)
-        self.assertNotIn(
-            'fs.writefile(CONFIG_FILE, (jsonc.stringify(out) or "{}") .. "\\n")',
-            model_source,
-        )
+        for source in (controller_source, model_source):
+            self.assertNotIn("CONFIG_FILE", source)
+            # No path into either the configuration or the runtime state, and
+            # no rename: the page cannot write what it cannot name.
+            self.assertNotIn("/usr/lib/smart_srun/", source)
+            self.assertNotIn("/var/run/smart_srun", source)
+            self.assertNotIn("/etc/smart-srun", source)
+            self.assertNotIn("os.rename", source)
+        self.assertIn('config_write("campus.upsert"', controller_source)
+        self.assertIn('rpc.call_started("config.apply"', model_source)
 
     def test_hot_update_uploads_runtime_payload_dependency_closure(self):
         hot_update = load_hot_update_module(self)

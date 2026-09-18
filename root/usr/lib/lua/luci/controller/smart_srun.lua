@@ -5,17 +5,10 @@ local jsonc = require "luci.jsonc"
 local sys = require "luci.sys"
 local util = require "luci.util"
 local fs = require "nixio.fs"
-local schema = require "luci.smart_srun.schema"
+local rpc = require "luci.smart_srun.rpc"
+local bridge = require "luci.smart_srun.bridge"
 
-local STATE_FILE = "/var/run/smart_srun/state.json"
-local ACTION_FILE = "/var/run/smart_srun/action.json"
-local INFLIGHT_ACTION_FILE = "/var/run/smart_srun/action_inflight.json"
-local DAEMON_LOCK_FILE = "/var/run/smart_srun/daemon.lock"
 local LOG_FILE = "/var/log/smart_srun.log"
-local USER_PRESETS_FILE = "/usr/lib/smart_srun/user_presets.json"
-local USER_PRESETS_MAX_ITEMS = 50
-local restore_manual_guarded_enabled
-local ACTION_STALE_SECONDS = 90
 local LOG_TAIL_SOURCE_LINES = 2000
 
 local NETWORK_EVENTS = {
@@ -132,273 +125,25 @@ function action_presets_refresh()
     write_json_response(run_srunnet_json("presets refresh"))
 end
 
-local function read_json_file(path)
-    local raw = fs.readfile(path)
-    if not raw or raw == "" then
-        return {}
-    end
-
-    local parsed = jsonc.parse(raw)
-    if type(parsed) ~= "table" then
-        return {}
-    end
-    return parsed
-end
-
-local function write_json_file(path, payload)
-    local dir = path:match("^(.+)/[^/]+$")
-    if dir and not fs.access(dir) then
-        fs.mkdirr(dir)
-    end
-    -- 原子写：先写临时文件再 rename，避免守护进程读到截断中的半截 JSON
-    -- （撕裂读会被当成空动作，进而误删刚入队的 action.json）。
-    local body = (jsonc.stringify(payload) or "{}") .. "\n"
-    local tmp = path .. ".tmp"
-    if fs.writefile(tmp, body) then
-        if not fs.rename(tmp, path) then
-            fs.writefile(path, body)
-            fs.remove(tmp)
-        end
-    else
-        fs.writefile(path, body)
-    end
-end
-
-local function remove_file(path)
-    if fs.access(path) then
-        fs.remove(path)
-    end
-end
-
-local function collect_client_pids()
-    local pids = {}
-    local proc = fs.dir("/proc")
-    if not proc then
-        return pids
-    end
-
-    for entry in proc do
-        if tostring(entry):match("^%d+$") then
-            local cmdline = fs.readfile("/proc/" .. entry .. "/cmdline") or ""
-            cmdline = cmdline:gsub("%z", " ")
-            if cmdline:find("/usr/lib/smart_srun/client.py", 1, true) then
-                pids[#pids + 1] = tostring(entry)
-            end
-        end
-    end
-    return pids
-end
-
--- state.daemon_running 只会被写成 true，守护进程被 SIGKILL / OOM / 断电打断后
--- 这个标记会一直留着。守护进程持有的 flock 在进程死亡时由内核释放，所以用
--- 锁文件里的 PID 加 cmdline 校验判断存活，PID 复用也不会误判。
-local function daemon_is_alive()
-    local pid = tostring(fs.readfile(DAEMON_LOCK_FILE) or ""):match("^%s*(%d+)")
-    if not pid then
-        return false
-    end
-
-    local cmdline = fs.readfile("/proc/" .. pid .. "/cmdline") or ""
-    cmdline = cmdline:gsub("%z", " ")
-    return cmdline:find("/usr/lib/smart_srun/client.py", 1, true) ~= nil
-end
-
-local function force_stop_client_processes()
-    local pids = collect_client_pids()
-    for _, pid in ipairs(pids) do
-        sys.call("kill -TERM " .. pid .. " >/dev/null 2>&1")
-    end
-    for _, pid in ipairs(collect_client_pids()) do
-        sys.call("kill -KILL " .. pid .. " >/dev/null 2>&1")
-    end
-    return pids
-end
-
-local function handle_force_stop()
-    sys.call("/etc/init.d/smart_srun stop >/dev/null 2>&1")
-    local killed = force_stop_client_processes()
-    remove_file(ACTION_FILE)
-    -- 强停是用户明确取消动作，必须一并清掉执行中标记，
-    -- 否则下次服务重启时守护进程会把被取消的动作重新排队执行。
-    remove_file(INFLIGHT_ACTION_FILE)
-
-    local state = read_json_file(STATE_FILE)
-    restore_manual_guarded_enabled(state)
-    state.message = "已强制关闭插件并停止服务"
-    state.last_action_message = state.message
-    state.last_action_portal_url = ""
-    state.pending_action = ""
-    state.last_action = "force_stop"
-    state.last_action_ts = os.time()
-    state.action_result = "forced"
-    state.action_started_at = 0
-    state.daemon_running = false
-    write_json_file(STATE_FILE, state)
-
-    return true, string.format("已强制关闭插件并停止服务（结束 %d 个进程）", #killed)
-end
-
-local function current_pending_runtime_action()
-    local action = read_json_file(ACTION_FILE)
-    local queued = tostring(action.action or "")
-    if queued ~= "" then
-        local requested_at = tonumber(action.requested_at) or 0
-        if requested_at > 0 and (os.time() - requested_at) >= ACTION_STALE_SECONDS then
-            -- 丢弃滞留动作时必须同步收敛 state，否则 action_result 会一直停在
-            -- pending，界面永远显示“待执行”（旧版正是这样卡死的）。
-            remove_file(ACTION_FILE)
-            local state = read_json_file(STATE_FILE)
-            if tostring(state.action_result or "") == "pending" then
-                state.message = string.format("动作 %s 长时间未被守护进程接取，已取消，请重试", queued)
-                state.pending_action = ""
-                state.action_result = "error"
-                state.action_started_at = 0
-                state.last_action = queued
-                state.last_action_ts = os.time()
-                write_json_file(STATE_FILE, state)
-            end
-        else
-            return queued
-        end
-    end
-
-    local state = read_json_file(STATE_FILE)
-    if tostring(state.action_result or "") == "pending" then
-        local daemon_running = daemon_is_alive()
-        local started_at = tonumber(state.action_started_at) or tonumber(state.last_action_ts) or 0
-        if daemon_running or (started_at > 0 and (os.time() - started_at) < 15) then
-            return tostring(state.pending_action or state.last_action or "")
-        end
-    end
-    return ""
-end
-
 local read_file_tail
 
+-- 状态改为从 Go 守护进程的组合快照读取。
+-- 轮询只读缓存：不启动服务，也不触发认证或同步探测（规范 02/03）。
 function action_status()
-    local data = read_json_file(STATE_FILE)
-    local text = tostring(data.message or "未知")
-    local pending = current_pending_runtime_action()
-    local last_log = util.trim(read_file_tail(LOG_FILE, 1))
-    local enabled = true
-    if data.enabled == false or tostring(data.enabled or "") == "0" then
-        enabled = false
+    local payload, err = bridge.status()
+    if not payload then
+        payload = bridge.offline_view(rpc.message(err, "无法读取认证服务状态"), os.time())
     end
-
-    http.prepare_content("application/json")
-    http.write(jsonc.stringify({
-        status = text,
-        enabled = enabled,
-        mode = tostring(data.current_mode or ""),
-        mode_label = tostring(data.mode_label or ""),
-        in_quiet = data.in_quiet and true or false,
-        pending_action = pending,
-        current_ssid = tostring(data.current_ssid or ""),
-        current_bssid = tostring(data.current_bssid or ""),
-        current_wireless_ifname = tostring(data.current_wireless_ifname or ""),
-        current_signal = tonumber(data.current_signal),
-        current_channel = tonumber(data.current_channel),
-        ap_selection_policy = tostring(data.ap_selection_policy or ""),
-        ap_selection_reason = tostring(data.ap_selection_reason or ""),
-        current_ip = tostring(data.current_ip or ""),
-        current_iface = tostring(data.current_iface or ""),
-        current_campus_access_mode = tostring(data.current_campus_access_mode or ""),
-        campus_account_label = tostring(data.campus_account_label or ""),
-        online_account_label = tostring(data.online_account_label or ""),
-        hotspot_profile_label = tostring(data.hotspot_profile_label or ""),
-        campus_ssid = tostring(data.campus_ssid or ""),
-        campus_bssid = tostring(data.campus_bssid or ""),
-        connectivity = tostring(data.connectivity or ""),
-        connectivity_level = tostring(data.connectivity_level or "offline"),
-        wired_auth_sessions = type(data.wired_auth_sessions) == "table" and data.wired_auth_sessions or {},
-        last_action = tostring(data.last_action or ""),
-        last_action_message = tostring(data.last_action_message or ""),
-        last_action_portal_url = tostring(data.last_action_portal_url or ""),
-        action_result = tostring(data.action_result or ""),
-        last_action_ts = tonumber(data.last_action_ts) or 0,
-        action_started_at = tonumber(data.action_started_at) or 0,
-        last_log = last_log,
-        updated_at = tonumber(data.updated_at) or 0,
-        ts = os.time(),
-    }))
-end
-
--- 表格 CRUD 需要的配置读写
-local CONFIG_FILE = "/usr/lib/smart_srun/config.json"
-
-local function load_config_json_unlocked()
-    local raw = fs.readfile(CONFIG_FILE) or "{}"
-    local parsed = jsonc.parse(raw)
-    return type(parsed) == "table" and parsed or {}
-end
-
-local function write_config_json_unlocked(data)
-    local tmp = CONFIG_FILE .. ".tmp"
-    fs.writefile(tmp, (jsonc.stringify(data) or "{}") .. "\n")
-    os.rename(tmp, CONFIG_FILE)
-end
-
-local function update_config_json(mutator)
-    return schema.with_file_lock(CONFIG_FILE, function()
-        local cfg = load_config_json_unlocked()
-        local should_save, result = mutator(cfg)
-        local payload = type(result) == "table" and result or cfg
-        if should_save then
-            write_config_json_unlocked(payload)
-        end
-        return payload, should_save
-    end)
-end
-
-restore_manual_guarded_enabled = function(state)
-    if type(state) ~= "table" or not state.manual_service_guard_active then
-        return false
-    end
-
-    local previous_enabled = tostring(state.manual_service_enabled_before or "")
-    if previous_enabled == "" then
-        previous_enabled = "1"
-    end
-
-    update_config_json(function(cfg)
-        cfg.enabled = previous_enabled
-        return true, cfg
-    end)
-    state.manual_service_guard_active = false
-    state.manual_service_enabled_before = ""
-    return true
-end
-
-local function find_index_by_id(items, target_id)
-    if type(items) ~= "table" then return nil end
-    for i, item in ipairs(items) do
-        if type(item) == "table" and tostring(item.id or "") == target_id then
-            return i
-        end
-    end
-    return nil
-end
-
-local function next_id(items, prefix)
-    local max_num = 0
-    if type(items) == "table" then
-        for _, item in ipairs(items) do
-            local ns = tostring(item.id or ""):match("^" .. prefix .. "%-(%d+)$")
-            if ns then
-                local n = tonumber(ns)
-                if n and n > max_num then max_num = n end
-            end
-        end
-    end
-    return prefix .. "-" .. (max_num + 1)
+    write_json_response(payload)
 end
 
 local function fv(name)
     return tostring(http.formvalue(name) or ""):match("^%s*(.-)%s*$")
 end
 
--- 用户自定义预设/运营商存储（/usr/lib/smart_srun/user_presets.json）。
--- 由浏览器整份提交、此处白名单清洗后落盘，跨设备共享；凭据类字段一律不收。
+-- 用户自定义预设/运营商存储由守护进程持有（独立 revision + CAS）。
+-- 浏览器整份提交，这里只补齐 schema_version/revision 并转交；校验、去重、
+-- 上限和与公共目录的冲突检查都在 Go 侧完成，页面不再自己落盘。
 
 local function sanitize_user_operator(raw)
     if type(raw) ~= "table" then
@@ -459,28 +204,29 @@ local function sanitize_user_preset(raw)
     return item
 end
 
-local function sanitize_user_preset_store(raw)
-    local store = { schema_version = 1, presets = {}, operators = {} }
+-- 浏览器提交的整份存储只做形状归整：条目原样转交，未知字段保留。
+-- schema_version/revision 由本次读到的版本决定，CAS 冲突时由守护进程拒绝。
+local function shape_user_preset_store(raw, revision)
+    local store = { schema_version = 2, revision = revision, presets = {}, operators = {} }
     if type(raw) ~= "table" then
         return store
     end
-    local seen = {}
     if type(raw.presets) == "table" then
-        for _, p in ipairs(raw.presets) do
-            if #store.presets >= USER_PRESETS_MAX_ITEMS then break end
-            local item = sanitize_user_preset(p)
-            if item and not seen[item.short_name] then
-                seen[item.short_name] = true
-                store.presets[#store.presets + 1] = item
+        for _, item in ipairs(raw.presets) do
+            -- The shaping keeps every nested object non-empty, which an empty
+            -- Lua table could not express: it would encode as [] and the
+            -- daemon would refuse a preset whose defaults were an array.
+            local shaped = sanitize_user_preset(item)
+            if shaped then
+                store.presets[#store.presets + 1] = shaped
             end
         end
     end
     if type(raw.operators) == "table" then
-        for _, op in ipairs(raw.operators) do
-            if #store.operators >= USER_PRESETS_MAX_ITEMS then break end
-            local so = sanitize_user_operator(op)
-            if so then
-                store.operators[#store.operators + 1] = so
+        for _, operator in ipairs(raw.operators) do
+            local shaped = sanitize_user_operator(operator)
+            if shaped then
+                store.operators[#store.operators + 1] = shaped
             end
         end
     end
@@ -497,14 +243,22 @@ function action_user_presets_set()
         write_json_response({ ok = false, message = "数据格式错误" })
         return
     end
-    local store = sanitize_user_preset_store(parsed)
-    local write_ok = true
-    schema.with_file_lock(USER_PRESETS_FILE, function()
-        write_json_file(USER_PRESETS_FILE, store)
-        write_ok = fs.access(USER_PRESETS_FILE)
-    end)
-    if not write_ok then
-        write_json_response({ ok = false, message = "写入 user_presets.json 失败" })
+
+    -- Read the current version first: the store has its own revision, and the
+    -- daemon refuses a save carrying a stale one rather than overwriting an
+    -- edit made from another tab.
+    local current, err = rpc.call("user_presets.get", nil)
+    if not current then
+        write_json_response({ ok = false, message = rpc.message(err, "无法读取用户预设") })
+        return
+    end
+    local store = shape_user_preset_store(parsed, tonumber(current.revision) or 0)
+    local saved, save_err = rpc.call_started("user_presets.set", {
+        expected_revision = store.revision,
+        document = store,
+    })
+    if not saved then
+        write_json_response({ ok = false, message = rpc.message(save_err, "保存用户预设失败") })
         return
     end
     write_json_response({
@@ -652,295 +406,215 @@ local function normalize_base_url(value)
     return (text:gsub("/+$", ""))
 end
 
+-- 手动动作交给 Go 协调器排队，配置写入走 campus/hotspot 的 CAS 提交。
+-- Lua 不再写 config.json / action.json，也不再重启服务：配置提交后守护进程
+-- 自行重新观测，服务生命周期只经固定 helper。
+local DAEMON_ACTIONS = {
+    switch_hotspot = "已提交切到热点请求，自动守护已暂停",
+    switch_campus = "已提交切回校园网请求",
+    manual_login = "已提交手动登录请求",
+    manual_logout = "已提交手动登出请求",
+}
+
+-- 一次点击一个幂等键。同一秒内的重复提交会被协调器认成同一个动作，
+-- 这正是双击应该发生的事——不是第二次登录。
+local function idempotency_key(action, requested_at)
+    local nixio = require "nixio"
+    return string.format("luci-%s-%d-%d", action, requested_at, nixio.getpid())
+end
+
+local function running_action(snapshot)
+    for _, action in ipairs(type(snapshot) == "table" and snapshot.actions or {}) do
+        local state = tostring(action.state or "")
+        if state == "queued" or state == "running" then
+            return tostring(action.kind or "")
+        end
+    end
+    return ""
+end
+
+local function submit_daemon_action(action)
+    local requested_at = os.time()
+    -- 只在快照可读时挡：服务停着时读不到，本来就没有在执行的动作。
+    local pending = running_action(rpc.call("status.get", nil))
+    if pending ~= "" then
+        write_json_response({
+            ok = false,
+            message = "已有动作正在执行: " .. pending .. "，请等待完成后再试",
+            action = action,
+            pending_action = pending,
+            ts = requested_at,
+        })
+        return
+    end
+
+    -- 明确的用户动作可以先拉起服务，再提交自己的请求（规范 02）。
+    local config, err = rpc.call_started("config.get", nil)
+    if not config then
+        write_json_response({ ok = false, message = rpc.message(err, "无法读取配置"), action = action })
+        return
+    end
+    local selection = type(config.selection) == "table" and config.selection or {}
+    local params = {
+        kind = action,
+        idempotency_key = idempotency_key(action, requested_at),
+        expected_revision = tonumber(config.revision) or 0,
+    }
+    if action == "switch_hotspot" then
+        params.hotspot_id = tostring(selection.default_hotspot_id or "")
+        if params.hotspot_id == "" then
+            write_json_response({ ok = false, message = "尚未配置热点，请先添加", action = action })
+            return
+        end
+    else
+        -- 切回校园网用默认账号，登录/登出用当前账号，与 CLI 同一套选择规则。
+        params.account_id = tostring(selection.active_campus_id or "")
+        if action == "switch_campus" then
+            params.account_id = tostring(selection.default_campus_id or "")
+        end
+        if params.account_id == "" then
+            write_json_response({ ok = false, message = "尚未配置校园网账号，请先添加", action = action })
+            return
+        end
+    end
+
+    local receipt, submit_err = rpc.call("action.submit", params)
+    if not receipt then
+        write_json_response({ ok = false, message = rpc.message(submit_err, "提交动作失败"), action = action })
+        return
+    end
+    write_json_response({
+        ok = true,
+        message = DAEMON_ACTIONS[action],
+        action = action,
+        action_id = tostring(receipt.action_id or ""),
+        requested_at = requested_at,
+    })
+end
+
+-- 强停映射固定的 `srunnet service stop`：先取消本项目进行中的动作再停服务，
+-- 不改用户的自动认证开关，也不再遍历进程表逐个杀。
+local function handle_force_stop()
+    local ok, err = rpc.stop_service()
+    if not ok then
+        return false, rpc.message(err, "停止认证服务失败")
+    end
+    return true, "已强制关闭插件并停止服务"
+end
+
+local function campus_form()
+    return {
+        id = fv("id"),
+        label = fv("label"),
+        user_id = fv("user_id"),
+        operator = fv("operator"),
+        operator_suffix = fv("operator_suffix"),
+        password = fv("password"),
+        access_mode = fv("access_mode"),
+        wired_iface = fv("wired_iface"),
+        network_interface = fv("network_interface"),
+        auth_enabled = fv("auth_enabled"),
+        base_url = normalize_base_url(fv("base_url")),
+        ac_id = fv("ac_id"),
+        ssid = fv("ssid"),
+        bssid = fv("bssid"),
+        radio = fv("radio"),
+        ap_selection = fv("ap_selection"),
+        n = fv("n"),
+        type = fv("type"),
+        enc = fv("enc"),
+        info_prefix = fv("info_prefix"),
+        double_stack = fv("double_stack"),
+        login_os = fv("login_os"),
+        login_name = fv("login_name"),
+    }
+end
+
+-- 字段级校验只有 Go 一处：这里把它的中文说明原样交给弹窗。
+local function config_write(method, params, success_message)
+    local result, err = rpc.call_started(method, params)
+    if not result then
+        return false, rpc.message(err, "保存失败")
+    end
+    return true, success_message
+end
+
 function action_enqueue()
     local action = fv("action")
-    local setup_job = fv("setup_job")
-    local setup_account = nil
-    if setup_job ~= "" then
-        if action ~= "add_campus" or fv("access_mode") ~= "wifi" then
-            write_json_response({ ok = false, message = "无线连接只能保存为无线校园网账号" })
-            return
-        end
-        local result = run_srunnet_json("detect wifi --account " .. util.shellquote(setup_job) .. " --ssid " .. util.shellquote(fv("ssid")))
-        if not result.ok or type(result.account) ~= "table" then
-            write_json_response({ ok = false, message = result.message or "无线连接已超时，请重新连接" })
-            return
-        end
-        setup_account = result.account
-    end
 
-    -- 原有的 daemon action 处理
-    local daemon_actions = {
-        switch_hotspot = "已提交切到热点请求，自动守护已暂停",
-        switch_campus = "已提交切回校园网请求",
-        manual_login = "已提交手动登录请求",
-        manual_logout = "已提交手动登出请求",
-    }
     if action == "force_stop" then
         local ok_force, message_force = handle_force_stop()
-        http.prepare_content("application/json")
-        http.write(jsonc.stringify({ ok = ok_force, message = message_force, action = action, ts = os.time() }))
+        write_json_response({ ok = ok_force, message = message_force, action = action, ts = os.time() })
         return
     end
 
-    if daemon_actions[action] then
-        local pending = current_pending_runtime_action()
-        if pending ~= "" then
-            http.prepare_content("application/json")
-            http.write(jsonc.stringify({
-                ok = false,
-                message = "已有动作正在执行: " .. pending .. "，请等待完成后再试",
-                action = action,
-                pending_action = pending,
-                ts = os.time(),
-            }))
-            return
-        end
+    if DAEMON_ACTIONS[action] then
+        submit_daemon_action(action)
+        return
+    end
 
-        local requested_at = os.time()
-        local state = read_json_file(STATE_FILE)
-        local action_message = daemon_actions[action]
-        if action == "switch_hotspot" then
-            -- 热点模式下自动守护会抢着重连校园网，切热点时暂停守护；
-            -- 仅当守护原本开启时记录 guard，守护进程检测到回到校园网后恢复。
-            update_config_json(function(cfg)
-                if tostring(cfg.enabled or "0") == "1" then
-                    state.switch_service_guard_active = true
-                    state.switch_service_enabled_before = "1"
-                end
-                cfg.enabled = "0"
-                return true, cfg
-            end)
-            state.enabled = false
-        elseif action == "switch_campus" and state.switch_service_guard_active then
-            -- 恢复由守护进程在确认回到校园网后执行（含热点回退路径），这里只提示
-            action_message = action_message .. "，切换完成后将恢复自动守护并自动认证"
-        end
-        write_json_file(ACTION_FILE, {
+    if fv("setup_job") ~= "" then
+        -- 向导的临时无线连接仍属于旧后端，还没有接到新的 setup_wifi 任务上。
+        write_json_response({
+            ok = false,
+            message = "无线连接向导尚未接入新的认证服务，请先连接 Wi-Fi 后再保存账号",
             action = action,
-            requested_at = requested_at,
         })
-        state.message = action_message
-        state.last_action_message = ""
-        state.last_action_portal_url = ""
-        state.pending_action = action
-        state.last_action = action
-        state.last_action_ts = requested_at
-        state.action_result = "pending"
-        state.action_started_at = requested_at
-        state.updated_at = requested_at
-        write_json_file(STATE_FILE, state)
-        sys.call("(/etc/init.d/smart_srun restart >/dev/null 2>&1) >/dev/null 2>&1 &")
-        http.prepare_content("application/json")
-        http.write(jsonc.stringify({ ok = true, message = action_message, requested_at = requested_at }))
         return
     end
 
-    -- 表格 CRUD 操作
-    local ok = false
-    local message = "不支持的动作"
-    local need_restart = false
+    local config, err = rpc.call_started("config.get", nil)
+    if not config then
+        write_json_response({ ok = false, message = rpc.message(err, "无法读取配置"), action = action })
+        return
+    end
+    local revision = tonumber(config.revision) or 0
 
-    update_config_json(function(cfg)
-        if type(cfg.campus_accounts) ~= "table" then cfg.campus_accounts = {} end
-        if type(cfg.hotspot_profiles) ~= "table" then cfg.hotspot_profiles = {} end
+    local ok, message = false, "不支持的动作"
+    local id = fv("id")
 
-        if action == "add_campus" or action == "edit_campus" then
-            local id = fv("id")
-            local item = {
-                label = fv("label"), user_id = fv("user_id"),
-                operator = fv("operator"), operator_suffix = fv("operator_suffix"),
-                password = fv("password"),
-                access_mode = fv("access_mode"),
-                wired_iface = util.trim(fv("wired_iface")),
-                auth_enabled = fv("auth_enabled") == "1" and "1" or "0",
-                base_url = normalize_base_url(fv("base_url")), ac_id = fv("ac_id"),
-                ssid = fv("ssid"), bssid = util.trim(fv("bssid")):lower(), radio = fv("radio"),
-                ap_selection = fv("ap_selection"),
-                n = fv("n"), type = fv("type"), enc = fv("enc"),
-                info_prefix = fv("info_prefix"),
-                double_stack = fv("double_stack"),
-                login_os = fv("login_os"), login_name = fv("login_name"),
-            }
-            if setup_account then
-                item.radio = setup_account.radio
-                item.encryption = setup_account.encryption
-                item.key = setup_account.key
-            end
-            if item.access_mode ~= "wired" then
-                item.access_mode = "wifi"
-                item.auth_enabled = "0"
-            end
-            if item.wired_iface == "" then
-                item.wired_iface = util.trim(fv("network_interface"))
-                if item.wired_iface == "" then item.wired_iface = "wan" end
-            end
-            if item.access_mode == "wired" then
-                item.ssid = ""
-                item.bssid = ""
-                item.radio = ""
-                item.ap_selection = ""
-            else
-                item.ap_selection = schema.normalize_ap_selection(item.ap_selection, item.bssid)
-                if item.ap_selection == "fixed" and not schema.is_valid_bssid(item.bssid) then
-                    message = "固定 BSSID 需要有效的单播地址，例如 02:11:22:33:44:55"
-                    return false, cfg
-                end
-            end
-            if item.label == "" then
-                local suffix = item.operator_suffix or ""
-                if suffix ~= "" and item.user_id ~= "" then
-                    item.label = item.user_id .. "@" .. suffix
-                elseif item.user_id ~= "" then
-                    item.label = item.user_id
-                else
-                    item.label = "未命名账号"
-                end
-            end
-            if action == "edit_campus" and id ~= "" then
-                local idx = find_index_by_id(cfg.campus_accounts, id)
-                if idx then
-                    item.id = id
-                    -- 浅合并：以现有账号为基底，仅覆盖弹窗提交的字段，保留 Python 侧
-                    -- 写入但表单未提交的字段（如 encryption/key 及未来新增字段），
-                    -- 避免每次在网页编辑都把这些字段清空。
-                    local merged = cfg.campus_accounts[idx]
-                    if type(merged) ~= "table" then merged = {} end
-                    for k, v in pairs(item) do merged[k] = v end
-                    merged.network_interface = nil
-                    cfg.campus_accounts[idx] = merged
-                    ok = true; message = "已更新"; need_restart = true
-                else
-                    ok = false; message = "未找到 ID: " .. id
-                end
-            else
-                item.id = next_id(cfg.campus_accounts, "campus")
-                cfg.campus_accounts[#cfg.campus_accounts + 1] = item
-                if #cfg.campus_accounts == 1 or setup_account then
-                    cfg.active_campus_id = item.id
-                    cfg.default_campus_id = item.id
-                end
-                ok = true; message = "已添加"; need_restart = true
-            end
-            return ok, cfg
+    if action == "add_campus" or action == "edit_campus" then
+        local creating = action == "add_campus"
+        local patch = bridge.campus_patch(campus_form(), { creating = creating })
+        if patch.label == "" then
+            patch.label = bridge.default_label(patch.user_id, patch.operator_suffix, "未命名账号")
+        end
+        if not creating and tostring(patch.id or "") == "" then
+            ok, message = false, "未找到 ID: " .. id
+        else
+            ok, message = config_write("campus.upsert",
+                { expected_revision = revision, account = patch },
+                creating and "已添加" or "已更新")
         end
 
-        if action == "add_hotspot" or action == "edit_hotspot" then
-            local id = fv("id")
-            local item = {
-                label = fv("label"), ssid = fv("ssid"),
-                encryption = fv("encryption"), key = fv("key"),
-                radio = fv("radio"),
-            }
-            if item.label == "" then
-                item.label = item.ssid ~= "" and item.ssid or "未命名热点"
-            end
-            if action == "edit_hotspot" and id ~= "" then
-                local idx = find_index_by_id(cfg.hotspot_profiles, id)
-                if idx then
-                    item.id = id
-                    -- 同 edit_campus：浅合并保留表单未提交的既有字段。
-                    local merged = cfg.hotspot_profiles[idx]
-                    if type(merged) ~= "table" then merged = {} end
-                    for k, v in pairs(item) do merged[k] = v end
-                    cfg.hotspot_profiles[idx] = merged
-                    ok = true; message = "已更新"; need_restart = true
-                else
-                    ok = false; message = "未找到 ID: " .. id
-                end
-            else
-                item.id = next_id(cfg.hotspot_profiles, "hotspot")
-                cfg.hotspot_profiles[#cfg.hotspot_profiles + 1] = item
-                if #cfg.hotspot_profiles == 1 then
-                    cfg.active_hotspot_id = item.id
-                    cfg.default_hotspot_id = item.id
-                end
-                ok = true; message = "已添加"; need_restart = true
-            end
-            return ok, cfg
+    elseif action == "add_hotspot" or action == "edit_hotspot" then
+        local creating = action == "add_hotspot"
+        local patch = bridge.hotspot_patch({
+            id = id, label = fv("label"), ssid = fv("ssid"),
+            encryption = fv("encryption"), key = fv("key"), radio = fv("radio"),
+        }, { creating = creating })
+        if patch.label == "" then
+            patch.label = patch.ssid ~= "" and patch.ssid or "未命名热点"
+        end
+        if not creating and tostring(patch.id or "") == "" then
+            ok, message = false, "未找到 ID: " .. id
+        else
+            ok, message = config_write("hotspot.upsert",
+                { expected_revision = revision, profile = patch },
+                creating and "已添加" or "已更新")
         end
 
-        if action == "delete_campus" then
-            local id = fv("id")
-            local idx = find_index_by_id(cfg.campus_accounts, id)
-            if idx then
-                table.remove(cfg.campus_accounts, idx)
-                if tostring(cfg.active_campus_id or "") == id then
-                    cfg.active_campus_id = #cfg.campus_accounts > 0 and cfg.campus_accounts[1].id or ""
-                end
-                if tostring(cfg.default_campus_id or "") == id then
-                    cfg.default_campus_id = cfg.active_campus_id
-                end
-                ok = true; message = "已删除"; need_restart = true
-            else
-                ok = false; message = "未找到"
-            end
-            return ok, cfg
-        end
+    elseif action == "delete_campus" or action == "delete_hotspot" then
+        local method = action == "delete_campus" and "campus.remove" or "hotspot.remove"
+        ok, message = config_write(method, { expected_revision = revision, id = id }, "已删除")
 
-        if action == "delete_hotspot" then
-            local id = fv("id")
-            local idx = find_index_by_id(cfg.hotspot_profiles, id)
-            if idx then
-                table.remove(cfg.hotspot_profiles, idx)
-                if tostring(cfg.active_hotspot_id or "") == id then
-                    cfg.active_hotspot_id = #cfg.hotspot_profiles > 0 and cfg.hotspot_profiles[1].id or ""
-                end
-                if tostring(cfg.default_hotspot_id or "") == id then
-                    cfg.default_hotspot_id = cfg.active_hotspot_id
-                end
-                ok = true; message = "已删除"; need_restart = true
-            else
-                ok = false; message = "未找到"
-            end
-            return ok, cfg
-        end
-
-        if action == "set_default_campus" then
-            local id = fv("id")
-            if find_index_by_id(cfg.campus_accounts, id) then
-                cfg.default_campus_id = id
-                cfg.active_campus_id = id
-                ok = true; message = "已设为当前默认账号"; need_restart = true
-            else
-                ok = false; message = "未找到"
-            end
-            return ok, cfg
-        end
-
-        if action == "set_default_hotspot" then
-            local id = fv("id")
-            if find_index_by_id(cfg.hotspot_profiles, id) then
-                cfg.default_hotspot_id = id
-                cfg.active_hotspot_id = id
-                ok = true; message = "已设为当前默认热点"; need_restart = true
-            else
-                ok = false; message = "未找到"
-            end
-            return ok, cfg
-        end
-
-        return false, cfg
-    end)
-
-    if ok then
-        if setup_account then
-            local result = run_srunnet_json("detect wifi --commit " .. util.shellquote(setup_job))
-            if not result.ok then
-                write_json_response({ ok = false, saved = true, message = "账号已保存，但无线连接未保留。请刷新列表核对，并重新连接 Wi-Fi。" })
-                return
-            end
-            -- Changed connections resume the daemon after the worker releases
-            -- its transaction; an existing connection has no waiting worker.
-            if result.state ~= "done" then need_restart = false end
-        end
-        if need_restart then
-            sys.call("(sleep 1; /etc/init.d/smart_srun restart >/dev/null 2>&1) >/dev/null 2>&1 &")
-        end
+    elseif action == "set_default_campus" or action == "set_default_hotspot" then
+        local method = action == "set_default_campus" and "campus.set_default" or "hotspot.set_default"
+        local done = action == "set_default_campus" and "已设为当前默认账号" or "已设为当前默认热点"
+        ok, message = config_write(method, { expected_revision = revision, id = id }, done)
     end
 
-    http.prepare_content("application/json")
-    http.write(jsonc.stringify({ ok = ok, message = message, action = action, ts = os.time() }))
+    write_json_response({ ok = ok, message = message, action = action, ts = os.time() })
 end
 
 -- Structured log translation table (event -> Chinese)
@@ -1666,7 +1340,9 @@ local function build_network_log_text(lines, since, source_lines)
         end
     end
 
-    local state = read_json_file(STATE_FILE)
+    -- 系统日志按当前线路的上下文过滤；上下文来自守护进程快照，
+    -- 读不到（服务停止）就退回关键词匹配，不再读旧的运行态文件。
+    local state = bridge.status() or {}
     local system_text = read_system_log_text(source_lines)
     for line in system_text:gmatch("[^\n]+") do
         order_counter = order_counter + 1

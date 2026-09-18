@@ -1,0 +1,269 @@
+-- Exercises the LuCI bridge's pure mapping against the Go configuration shape.
+--
+-- Run by tests/test_luci_rpc_bridge.py with the repository's own Lua tree on
+-- package.path and nixio/luci.jsonc stubbed: nothing here opens a socket, and
+-- the functions under test are the ones that decide what a save sends.
+
+local failures = 0
+
+local function check(name, condition, detail)
+    if not condition then
+        failures = failures + 1
+        io.stderr:write(string.format("FAIL %s: %s\n", name, tostring(detail or "")))
+    end
+end
+
+local function equal(name, got, want)
+    check(name, got == want, string.format("got %s, want %s", tostring(got), tostring(want)))
+end
+
+local bridge = require "luci.smart_srun.bridge"
+local rpc = require "luci.smart_srun.rpc"
+
+-- One configuration in exactly the shape config.get answers with.
+local CONFIG = {
+    schema_version = 2,
+    revision = 7,
+    enabled = true,
+    multi_wan_enabled = false,
+    school = "default",
+    sta_iface = "",
+    login_defaults = { n = "200", type = "1", enc = "srun_bx1" },
+    selection = {
+        active_campus_id = "c1", default_campus_id = "c2",
+        active_hotspot_id = "h1", default_hotspot_id = "h1",
+    },
+    quiet = { enabled = true, start = "00:00", ["end"] = "06:00", force_logout = true },
+    retry = { enabled = true, max_retries = 4, initial_seconds = 10, max_seconds = 60 },
+    checks = {
+        interval_seconds = 60, mode = "internet", switch_timeout_seconds = 30,
+        terminal_attempts = 5, terminal_interval_seconds = 2,
+    },
+    failover = { enabled = true, hotspot_failback_enabled = true },
+    log = { level = "INFO" },
+    campus_accounts = {
+        {
+            id = "c1", label = "宿舍有线", user_id = "2021001", password = "",
+            operator = "中国电信", operator_suffix = "telecom",
+            access_mode = "wired", wired_iface = "wan", auth_enabled = true,
+            base_url = "http://10.0.0.55", ac_id = "1",
+            login = { n = "200", type = "1", info_prefix = "SRBX1", double_stack = false },
+        },
+        {
+            id = "c2", label = "教学楼 Wi-Fi", user_id = "2021002",
+            operator_suffix = "", access_mode = "wifi", ssid = "JXNU",
+            encryption = "none", ap_selection = "fixed", bssid = "02:11:22:33:44:55",
+            base_url = "http://10.0.0.55", ac_id = "8", login = {},
+        },
+    },
+    hotspot_profiles = {
+        { id = "h1", label = "手机热点", ssid = "iPhone", encryption = "psk2", key = "", radio = "radio0" },
+    },
+    school_extra = {},
+}
+
+-- flatten: the page's flat, string-valued view of a typed configuration.
+local flat = bridge.flatten(CONFIG)
+equal("flatten.enabled", flat.enabled, "1")
+equal("flatten.multi_wan", flat.multi_wan_enabled, "0")
+equal("flatten.quiet_enabled", flat.quiet_hours_enabled, "1")
+equal("flatten.quiet_start", flat.quiet_start, "00:00")
+equal("flatten.quiet_end", flat.quiet_end, "06:00")
+equal("flatten.interval", flat.interval, "60")
+equal("flatten.retry_cooldown", flat.retry_cooldown_seconds, "10")
+equal("flatten.max_retries", flat.backoff_max_retries, "4")
+equal("flatten.log_level", flat.log_level, "INFO")
+equal("flatten.login_default_n", flat.n, "200")
+equal("flatten.active_campus", flat.active_campus_id, "c1")
+equal("flatten.default_campus", flat.default_campus_id, "c2")
+equal("flatten.revision", flat.revision, 7)
+equal("flatten.accounts", #flat.campus_accounts, 2)
+equal("flatten.account_auth_enabled", flat.campus_accounts[1].auth_enabled, "1")
+equal("flatten.account_double_stack", flat.campus_accounts[1].double_stack, "0")
+equal("flatten.account_unset_double_stack", flat.campus_accounts[2].double_stack, "")
+equal("flatten.account_mode", flat.campus_accounts[2].access_mode, "wifi")
+-- A redacted configuration must stay redacted on its way to the page.
+equal("flatten.no_password", flat.campus_accounts[1].password, "")
+equal("flatten.no_hotspot_key", flat.hotspot_profiles[1].key, "")
+
+-- settings_patch: only what the form touched.
+local patch = bridge.settings_patch(
+    { quiet_hours_enabled = "0", interval = "90", log_level = "DEBUG", enabled = "1" },
+    { quiet_hours_enabled = true, interval = true })
+equal("patch.quiet_enabled", patch.quiet.enabled, false)
+equal("patch.interval", patch.checks.interval_seconds, 90)
+check("patch.log_untouched", patch.log == nil, "log level must not travel unless edited")
+check("patch.enabled_untouched", patch.enabled == nil, "enabled must not travel unless edited")
+check("patch.nothing_dirty", bridge.settings_patch(flat, {}) == nil, "an untouched form sends nothing")
+
+-- A number field that is not a number keeps its stored value rather than
+-- becoming zero, which the daemon would accept as a valid setting.
+local bad = bridge.settings_patch({ interval = "abc" }, { interval = true })
+check("patch.rejects_non_numeric", bad == nil, "non-numeric interval must not be sent")
+
+-- An emptied field is "not submitted", not "set to nothing": a clock with no
+-- time or an enum with no choice would fail the whole save, including the
+-- fields the user did change.
+local cleared = bridge.settings_patch(
+    { quiet_start = "", log_level = "", school = "", interval = "90" },
+    { quiet_start = true, log_level = true, school = true, interval = true })
+check("patch.skips_empty_clock", cleared.quiet == nil, "an empty clock must not be sent")
+check("patch.skips_empty_enum", cleared.log == nil, "an empty enum must not be sent")
+check("patch.skips_empty_required", cleared.school == nil, "an empty school must not be sent")
+equal("patch.keeps_the_edited_field", cleared.checks.interval_seconds, 90)
+-- The one field that may genuinely be empty still can be.
+local sta = bridge.settings_patch({ sta_iface = "" }, { sta_iface = true })
+equal("patch.allows_empty_sta_iface", sta.sta_iface, "")
+
+-- Seconds stay fractional: the baseline parsed them with float().
+local fraction = bridge.settings_patch({ retry_cooldown_seconds = "0.5" }, { retry_cooldown_seconds = true })
+equal("patch.fractional_seconds", fraction.retry.initial_seconds, 0.5)
+
+-- campus_patch: presence decides what a save overwrites.
+local edit = bridge.campus_patch({
+    id = "c1", label = "", user_id = "2021001", operator_suffix = "telecom",
+    password = "", access_mode = "wired", wired_iface = "", network_interface = "wan.v2",
+    auth_enabled = "1", base_url = "http://10.0.0.55", ac_id = "1",
+    ssid = "leftover", bssid = "02:11:22:33:44:55", ap_selection = "fixed",
+    n = "200", type = "1", enc = "srun_bx1", info_prefix = "SRBX1",
+    double_stack = "", login_os = "Windows 10", login_name = "Windows",
+}, { creating = false })
+equal("campus.id", edit.id, "c1")
+check("campus.keeps_password", edit.password == nil,
+    "an empty password box on an edit must not clear the stored credential")
+equal("campus.wired_iface_alias", edit.wired_iface, "wan.v2")
+equal("campus.auth_enabled", edit.auth_enabled, true)
+equal("campus.clears_ssid", edit.ssid, "")
+equal("campus.clears_bssid", edit.bssid, "")
+equal("campus.wired_ap_selection", edit.ap_selection, "auto")
+equal("campus.double_stack_cleared", edit.login.double_stack, rpc.NULL)
+
+local created = bridge.campus_patch({
+    label = "", user_id = "2021003", operator_suffix = "", password = "",
+    access_mode = "wifi", ssid = "JXNU", bssid = "", ap_selection = "",
+    double_stack = "1",
+}, { creating = true })
+check("campus.new_id_absent", created.id == nil, "a new account must not choose its own id")
+equal("campus.new_password_stored", created.password, "")
+equal("campus.wifi_default_encryption", created.encryption, "none")
+equal("campus.ap_selection_auto", created.ap_selection, "auto")
+equal("campus.double_stack_true", created.login.double_stack, true)
+
+local pinned = bridge.campus_patch({
+    access_mode = "wifi", ssid = "JXNU", bssid = "02:11:22:33:44:55",
+    ap_selection = "", double_stack = "0",
+}, { creating = true })
+equal("campus.ap_selection_from_bssid", pinned.ap_selection, "fixed")
+equal("campus.double_stack_false", pinned.login.double_stack, false)
+
+local hotspot = bridge.hotspot_patch(
+    { id = "h1", label = "手机热点", ssid = "iPhone", encryption = "psk2", key = "", radio = "" },
+    { creating = false })
+check("hotspot.keeps_key", hotspot.key == nil, "an empty key box on an edit must not clear the stored key")
+equal("hotspot.id", hotspot.id, "h1")
+
+equal("label.with_suffix", bridge.default_label("2021001", "telecom", "未命名账号"), "2021001@telecom")
+equal("label.plain", bridge.default_label("2021001", "", "未命名账号"), "2021001")
+equal("label.fallback", bridge.default_label("", "", "未命名账号"), "未命名账号")
+
+-- utc_seconds: known instants, and a difference that survives any local zone.
+equal("time.epoch", bridge.utc_seconds("1970-01-01T00:00:00Z"), 0)
+equal("time.known", bridge.utc_seconds("2026-09-18T12:00:00Z"), 1789732800)
+equal("time.leap_day", bridge.utc_seconds("2024-02-29T00:00:00Z"), 1709164800)
+check("time.rejects_garbage", bridge.utc_seconds("not a time") == nil, "a malformed timestamp is not a time")
+
+-- status_view: what the page polls, built from a snapshot plus the config.
+local snapshot = {
+    service = "running", enabled = true, config_revision = 7,
+    written_at = "2026-09-18T12:00:30Z",
+    accounts = {
+        { account_id = "c1", link = "Ready", auth = "VerifiedSelf",
+          connectivity = "InternetReachable", identity = "2021001@telecom" },
+    },
+    actions = {
+        { id = "a1", kind = "manual_login", state = "succeeded", message = "认证完成",
+          ended_at = "2026-09-18T12:00:00Z" },
+    },
+}
+local view = bridge.status_view(snapshot, CONFIG, 1000)
+equal("status.text", view.status, "已认证")
+equal("status.connectivity", view.connectivity, "互联网可达")
+equal("status.level", view.connectivity_level, "online")
+equal("status.mode_label", view.mode_label, "校园网模式（有线）")
+equal("status.access_mode", view.current_campus_access_mode, "wired")
+equal("status.account_label", view.campus_account_label, "宿舍有线")
+equal("status.identity", view.online_account_label, "2021001@telecom")
+equal("status.iface", view.current_iface, "wan")
+equal("status.hotspot_label", view.hotspot_profile_label, "手机热点")
+equal("status.last_action", view.last_action, "manual_login")
+equal("status.result", view.action_result, "ok")
+equal("status.message", view.last_action_message, "认证完成")
+-- The action finished 30 seconds before the snapshot was written, so it reads
+-- as 30 seconds ago on this clock, whatever zone either machine is in.
+equal("status.last_ts", view.last_action_ts, 970)
+equal("status.pending", view.pending_action, "")
+-- A managed wired account gets a session row; an unmanaged one does not.
+check("status.no_sessions_without_multiwan", next(view.wired_auth_sessions) == nil,
+    "multi_wan_enabled is off, so no account is managed")
+
+local managed = {}
+for key, value in pairs(CONFIG) do managed[key] = value end
+managed.multi_wan_enabled = true
+local managed_view = bridge.status_view(snapshot, managed, 1000)
+check("status.session_present", managed_view.wired_auth_sessions.c1 ~= nil, "c1 opted in and the switch is on")
+equal("status.session_online", managed_view.wired_auth_sessions.c1.online, true)
+
+-- A queued action is what the progress dialog waits on.
+local busy = {
+    service = "running", enabled = true, written_at = "2026-09-18T12:00:30Z",
+    accounts = {}, actions = {
+        { id = "a2", kind = "switch_campus", state = "running" },
+        { id = "a1", kind = "manual_login", state = "succeeded", ended_at = "2026-09-18T12:00:00Z" },
+    },
+}
+local busy_view = bridge.status_view(busy, CONFIG, 1000)
+equal("status.pending_kind", busy_view.pending_action, "switch_campus")
+equal("status.pending_result", busy_view.action_result, "pending")
+
+-- Mode follows the switch that actually succeeded, not the one requested.
+local switched = {
+    service = "running", enabled = true, written_at = "2026-09-18T12:10:00Z", accounts = {},
+    actions = {
+        { id = "a3", kind = "switch_hotspot", state = "succeeded", ended_at = "2026-09-18T12:05:00Z" },
+        { id = "a4", kind = "switch_campus", state = "failed", ended_at = "2026-09-18T12:09:00Z" },
+    },
+}
+local switched_view = bridge.status_view(switched, CONFIG, 1000)
+equal("status.mode_after_switch", switched_view.current_mode, "hotspot")
+equal("status.mode_label_hotspot", switched_view.mode_label, "热点模式")
+equal("status.failed_switch_result", switched_view.action_result, "error")
+
+-- A cancelled action is "forced", which is what the dialog's stop button means.
+local cancelled = {
+    service = "running", enabled = true, written_at = "2026-09-18T12:00:10Z", accounts = {},
+    actions = { { id = "a5", kind = "manual_login", state = "cancelled", ended_at = "2026-09-18T12:00:00Z" } },
+}
+equal("status.cancelled", bridge.status_view(cancelled, CONFIG, 1000).action_result, "forced")
+
+-- A stopped service is a state, not a page error.
+local stopped = bridge.status_view({ service = "stopped", enabled = false }, CONFIG, 1000)
+equal("status.stopped", stopped.status, "认证服务已停止")
+equal("status.stopped_level", stopped.connectivity_level, "offline")
+equal("offline.status", bridge.offline_view("认证服务未在运行", 1000).status, "认证服务未在运行")
+equal("offline.ts", bridge.offline_view(nil, 1000).ts, 1000)
+
+-- A link that is not ready is reported as the link problem it is, not as an
+-- authentication result the gateway never gave.
+local pending_link = {
+    service = "running", enabled = true, written_at = "2026-09-18T12:00:00Z",
+    accounts = { { account_id = "c1", link = "AddressPending", auth = "Unknown", connectivity = "Unknown" } },
+    actions = {},
+}
+equal("status.link_problem", bridge.status_view(pending_link, CONFIG, 1000).status, "等待 IPv4 地址")
+equal("status.link_iface_unknown", bridge.status_view(pending_link, CONFIG, 1000).current_iface, "")
+
+if failures > 0 then
+    io.stderr:write(string.format("%d check(s) failed\n", failures))
+    os.exit(1)
+end
+print("bridge probe: all checks passed")

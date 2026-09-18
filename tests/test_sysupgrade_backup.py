@@ -40,14 +40,18 @@ class SysupgradeBackupTests(unittest.TestCase):
             )
         )
         self.assertEqual(config_path, CONFIG_PATH)
+        # The LuCI tree no longer names either path. It reaches both files
+        # through the daemon, which owns them, so a page that is open while an
+        # upgrade restores them cannot write a stale copy over the restore.
+        # The paths above remain the Python runtime's and the keep list's.
+        # (M00 ledger: approved_behavior_change -> T46, the config moves to
+        # /etc/smart-srun/config.json with the packaging work in batch C.)
         for relative_path in (
             "root/usr/lib/lua/luci/controller/smart_srun.lua",
             "root/usr/lib/lua/luci/model/cbi/smart_srun.lua",
         ):
-            self.assertIn('local CONFIG_FILE = "%s"' % CONFIG_PATH,
-                          read_source(relative_path))
-            self.assertIn('local USER_PRESETS_FILE = "%s"' % USER_PRESETS_PATH,
-                          read_source(relative_path))
+            self.assertNotIn(CONFIG_PATH, read_source(relative_path))
+            self.assertNotIn(USER_PRESETS_PATH, read_source(relative_path))
         # The package must not ship defaults over restored user data.
         for path in (CONFIG_PATH, USER_PRESETS_PATH):
             self.assertFalse((REPO_ROOT / ("root" + path)).exists())

@@ -45,8 +45,23 @@ for _, key in ipairs(M.LIST_KEYS) do
     LIST_KEY_SET[key] = true
 end
 
+-- load_defaults prefers the daemon's own schema.
+--
+-- Spec 02 gives Go the types, defaults, bounds and choices and leaves the page
+-- its labels, so that the two cannot disagree about what a valid value is. The
+-- shipped defaults file is the fallback for a device where the service is not
+-- answering, which is also the only case where the form has nothing better to
+-- show than the values it was built with.
 local function load_defaults()
-    local parsed = jsonc.parse(fs.readfile(DEFAULTS_FILE) or "")
+    -- One pcall around both the load and the call: on a host without nixio, or
+    -- with the service stopped, this must fall back rather than take the page
+    -- down with it.
+    local ok, parsed = pcall(function()
+        return require("luci.smart_srun.bridge").defaults()
+    end)
+    if not ok or type(parsed) ~= "table" then
+        parsed = jsonc.parse(fs.readfile(DEFAULTS_FILE) or "")
+    end
     if type(parsed) ~= "table" then
         parsed = {}
     end
