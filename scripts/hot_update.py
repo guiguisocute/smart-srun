@@ -139,6 +139,14 @@ LUA_AND_SERVICE_TARGETS = [
         "remote": "/usr/lib/lua/luci/smart_srun/schema.lua",
     },
     {
+        "local": "root/usr/lib/lua/luci/smart_srun/rpc.lua",
+        "remote": "/usr/lib/lua/luci/smart_srun/rpc.lua",
+    },
+    {
+        "local": "root/usr/lib/lua/luci/smart_srun/bridge.lua",
+        "remote": "/usr/lib/lua/luci/smart_srun/bridge.lua",
+    },
+    {
         "local": "root/usr/lib/lua/luci/model/cbi/smart_srun.lua",
         "remote": "/usr/lib/lua/luci/model/cbi/smart_srun.lua",
     },
