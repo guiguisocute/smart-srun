@@ -22,7 +22,7 @@
 
 ### Go SDK 开发包
 
-`targets.json` 锁定 SDK 下载哈希、feeds 提交和 Go 工具链。当前录入的 x86_64 目标用于验证 IPK/APK 安装链，`pending_architectures` 仍是待完成的架构，不能宣称已经支持。只有纯 LuCI 包使用 `all`/`noarch`，核心和 bundle 使用实际 SDK 架构。
+`targets.json` 锁定 SDK 下载哈希、feeds 提交和 Go 工具链。当前录入 x86_64 的 IPK/APK，以及 aarch64_cortex-a53、mips_24kc 的 IPK 构建目标；录入不等于真机验收。`pending_architectures` 仍是待完成的架构，不能宣称已经支持。只有纯 LuCI 包使用 `all`/`noarch`，核心和 bundle 使用实际 SDK 架构。
 
 在 Linux（Python 3.12+、OpenWrt SDK 主机依赖及现有 Go 引导工具链）运行：
 
@@ -32,6 +32,15 @@ python3 scripts/build_go_sdk.py --target x86_64-opkg-24.10.8 \
 ```
 
 工作目录不能有空格。脚本保留构建日志，并输出包、`SHA256SUMS` 和包含源码文件哈希、实际包版本、架构、大小的 `build-record.json`。已记录的同版本产物不会覆盖；构建通过不等于安装或独立验收通过。开发载荷限制为 10 MiB。
+
+MIPS 使用 `GOMIPS=softfloat`，并关闭内联以满足完整载荷上限；其他架构保留正常内联。这会增加部分 CPU 操作耗时，不能将模拟器微基准当作真机延迟或内存验收。比较用例在 `core/tests/performance/`，资源和网络表现仍需在目标设备测量。
+
+`scripts/verify_go_sdk.py` 重新核对原生包元数据、完整载荷、ELF 架构/大小端、静态链接和 Go 构建参数。必须提供构建记录、开发机 Go 和新的报告目录；`--qemu` 或 `--execute` 才运行包内版本命令。APK 另需 `--apk` 和受信公钥目录 `--keys`。输出的 `validation.json` 按包 SHA256 记录 ELF 检查，`inspection.json` 保存具体结果；版本命令成功不等于核心功能、安装或真机通过。
+
+```sh
+python3 scripts/verify_go_sdk.py sdk/artifacts/2.0.0rc1/build-record.json \
+  --go /usr/local/go/bin/go --qemu /usr/bin/qemu-aarch64 --output checks/arm64
+```
 
 APK 目标可通过 `--sign-key` 和 `--public-key` 传入维护者控制的密钥。私钥不得入库或上传到构建产物。脚本对自己的未签名输入执行离线签名，然后必须用公钥通过原生 `apk verify`，不能只相信签名命令的退出码。公钥信任引导、固件安装和发布验收是另外的步骤；不能在安装时加 `--allow-untrusted`。
 

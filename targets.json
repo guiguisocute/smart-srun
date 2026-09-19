@@ -41,17 +41,49 @@
         "packages": "268d92d3d46147efe1e81892e3a618f8bbd4806b",
         "luci": "067535eaf51a59582b775a8b588a9b05810f8030"
       }
+    },
+    {
+      "id": "aarch64_cortex-a53-opkg-24.10.8",
+      "openwrt_arch": "aarch64_cortex-a53",
+      "target": "mediatek/filogic",
+      "goos": "linux",
+      "goarch": "arm64",
+      "package_manager": "opkg",
+      "format": "ipk",
+      "sdk_release": "24.10.8",
+      "sdk_url": "https://downloads.openwrt.org/releases/24.10.8/targets/mediatek/filogic/openwrt-sdk-24.10.8-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst",
+      "sdk_sha256": "d9fd074f281823a3023e8f6a73aaac598018c898ec9ac4d1c507b596930d7482",
+      "feeds": {
+        "base": "0b795ce79e23b553aa184080c390f9ce92a2b6d4",
+        "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
+        "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
+      }
+    },
+    {
+      "id": "mips_24kc-opkg-24.10.8",
+      "openwrt_arch": "mips_24kc",
+      "target": "ath79/generic",
+      "goos": "linux",
+      "goarch": "mips",
+      "package_manager": "opkg",
+      "format": "ipk",
+      "sdk_release": "24.10.8",
+      "sdk_url": "https://downloads.openwrt.org/releases/24.10.8/targets/ath79/generic/openwrt-sdk-24.10.8-ath79-generic_gcc-13.3.0_musl.Linux-x86_64.tar.zst",
+      "sdk_sha256": "e46c4d0127061486ef4ce681f527f8a3980702011cafbf7801aff965a366dd8d",
+      "feeds": {
+        "base": "0b795ce79e23b553aa184080c390f9ce92a2b6d4",
+        "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
+        "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
+      }
     }
   ],
   "pending_architectures": [
-    "aarch64_cortex-a53",
     "aarch64_generic",
     "aarch64_cortex-a72",
     "aarch64_cortex-a76",
     "arm_cortex-a7_neon-vfpv4",
     "arm_cortex-a9_vfpv3-d16",
     "arm_cortex-a15_neon-vfpv4",
-    "mips_24kc",
     "mipsel_24kc",
     "mipsel_24kc_24kf",
     "mipsel_74kc"

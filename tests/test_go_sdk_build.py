@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +17,36 @@ spec.loader.exec_module(build)
 
 
 class GoSDKBuildTests(unittest.TestCase):
+    def test_sdk_filter_discards_only_builder_host_links(self):
+        filter_member = build.sdk_archive_filter("sdk")
+        with tempfile.TemporaryDirectory() as temporary:
+            for tool in ("gcc", "python3", "git", "xxd"):
+                member = tarfile.TarInfo("sdk/staging_dir/host/bin/" + tool)
+                member.type = tarfile.SYMTYPE
+                member.linkname = "/builder/original/tool"
+                self.assertIsNone(filter_member(member, temporary))
+            member = tarfile.TarInfo("sdk/toolchain/lib64")
+            member.type = tarfile.SYMTYPE
+            member.linkname = "../lib64"
+            self.assertIsNotNone(filter_member(member, temporary))
+            member.linkname = "/outside"
+            with self.assertRaises(tarfile.FilterError):
+                filter_member(member, temporary)
+
+    def test_sdk_filter_preserves_path_and_link_escape_checks(self):
+        filter_member = build.sdk_archive_filter("sdk")
+        with tempfile.TemporaryDirectory() as temporary:
+            for name in ("../outside", "/sdk/absolute", "other/file", "sdk/../outside"):
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    filter_member(tarfile.TarInfo(name), temporary)
+            for kind, target in ((tarfile.SYMTYPE, "../../../outside"),
+                                 (tarfile.LNKTYPE, "../outside"),
+                                 (tarfile.LNKTYPE, "/outside")):
+                member = tarfile.TarInfo("sdk/bin/link")
+                member.type, member.linkname = kind, target
+                with self.subTest(kind=kind, target=target), self.assertRaises(tarfile.FilterError):
+                    filter_member(member, temporary)
+
     def test_native_rc_substitution_preserves_common_input_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

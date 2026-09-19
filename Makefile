@@ -24,6 +24,12 @@ GO_PKG_DEFAULT_LDFLAGS:=-s -w -buildid '$(SOURCE_DATE_EPOCH)' -linkmode internal
 GO_ARM64:=v8.0
 GO_MIPS:=softfloat
 
+# MIPS needs the smaller non-inlined build to fit the complete 10 MiB payload.
+# Other architectures retain normal inlining. No runtime feature is removed.
+ifneq ($(filter mips mipsle,$(GO_ARCH)),)
+  GO_PKG_GCFLAGS:=all=-l
+endif
+
 RUNTIME_DEPENDS:=+ca-bundle +uci +ubus +procd +iwinfo +rpcd +rpcd-mod-iwinfo
 LUCI_FILE_DEPENDS:=+luci-base +luci-compat
 

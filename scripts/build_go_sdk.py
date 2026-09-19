@@ -11,7 +11,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
@@ -127,6 +127,21 @@ def download(url, destination, sha256):
     temporary.replace(destination)
 
 
+def sdk_archive_filter(root_name):
+    def filter_member(member, destination):
+        path = PurePosixPath(member.name)
+        if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != root_name:
+            raise ValueError("SDK archive member escapes its expected root")
+        # Official SDKs carry links to their original builder's host tools.
+        # Do not extract these external links. OpenWrt's prerequisite checks
+        # recreate them using tools on this host before any feed scan/build.
+        if (member.issym() and PurePosixPath(member.linkname).is_absolute()
+                and len(path.parts) == 5 and path.parts[1:4] == ("staging_dir", "host", "bin")):
+            return None
+        return tarfile.data_filter(member, destination)
+    return filter_member
+
+
 def prepare_sdk(work, catalog, target, log):
     sdk = work / "sdk"
     marker = work / "inputs.json"
@@ -145,7 +160,7 @@ def prepare_sdk(work, catalog, target, log):
         process = subprocess.Popen(["zstd", "-dc", str(archive)], stdout=subprocess.PIPE)
         try:
             with tarfile.open(fileobj=process.stdout, mode="r|") as tar:
-                tar.extractall(temporary, filter="data")
+                tar.extractall(temporary, filter=sdk_archive_filter(archive.name.removesuffix(".tar.zst")))
             process.stdout.close()
             if process.wait() != 0:
                 raise ValueError("SDK decompression failed")
@@ -158,6 +173,8 @@ def prepare_sdk(work, catalog, target, log):
         if len(directories) != 1 or not (directories[0] / "include/package.mk").is_file():
             raise ValueError("Unexpected SDK archive layout")
         directories[0].rename(sdk)
+    # The archive's successful check belongs to its builder, not this host.
+    (sdk / "staging_dir/host/.prereq-build").unlink(missing_ok=True)
     lines = []
     for name, url in FEED_URLS.items():
         option = " --root=package" if name == "base" and target.get("base_feed_subdir") == "package" else ""
