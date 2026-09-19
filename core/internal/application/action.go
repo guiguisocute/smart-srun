@@ -55,11 +55,14 @@ const (
 	// KindPresetsRefresh reads a selected line without authenticating an account.
 	KindPresetsRefresh Kind = "presets_refresh"
 	// KindDetectACID reads portal pages on a selected line without credentials.
-	KindDetectACID Kind = "detect_acid"
+	KindDetectACID        Kind = "detect_acid"
+	KindDetectEnvironment Kind = "detect_environment"
 )
 
 var kinds = []Kind{KindLogin, KindLogout, KindRelogin, KindSwitchCampus,
-	KindSwitchHotspot, KindMaintain, KindForcedLogout, KindPresetsRefresh, KindDetectACID}
+	KindSwitchHotspot, KindMaintain, KindForcedLogout, KindPresetsRefresh, KindDetectACID, KindDetectEnvironment}
+
+func (k Kind) Discovery() bool { return k == KindDetectACID || k == KindDetectEnvironment }
 
 func (k Kind) Valid() bool { return slices.Contains(kinds, k) }
 
@@ -138,10 +141,11 @@ type Request struct {
 	Interface string
 	// Probe fields contain only the draft address and selected network, never
 	// credentials. Strings keep action copies immutable across worker boundaries.
-	ProbeURL  string
-	ProbeSSID string
-	ProbeMode string
-	Owner     string
+	ProbeURL    string
+	ProbeSSID   string
+	ProbeMode   string
+	ProbeSchool string
+	Owner       string
 	// IdempotencyKey is supplied by the caller -- the LuCI click id, or the CLI
 	// invocation. Resubmitting the same key returns the same action instead of
 	// starting a second one, which is what makes a double-click harmless.
@@ -167,7 +171,7 @@ func (r Request) fingerprint() string {
 	if r.IgnoreQuiet {
 		quiet = "1"
 	}
-	return string(r.Kind) + "\x00" + r.AccountID + "\x00" + r.HotspotID + "\x00" + quiet + "\x00" + r.Interface + "\x00" + strconv.FormatBool(r.CheckRevision) + ":" + strconv.FormatUint(r.ConfigRevision, 10) + "\x00" + r.ProbeURL + "\x00" + r.ProbeSSID + "\x00" + r.ProbeMode + "\x00" + r.Owner
+	return string(r.Kind) + "\x00" + r.AccountID + "\x00" + r.HotspotID + "\x00" + quiet + "\x00" + r.Interface + "\x00" + strconv.FormatBool(r.CheckRevision) + ":" + strconv.FormatUint(r.ConfigRevision, 10) + "\x00" + r.ProbeURL + "\x00" + r.ProbeSSID + "\x00" + r.ProbeMode + "\x00" + r.ProbeSchool + "\x00" + r.Owner
 }
 
 // Validate refuses a request the coordinator could not act on.
@@ -175,7 +179,7 @@ func (r Request) Validate() error {
 	if !r.Kind.Valid() {
 		return domain.Errorf(domain.CodeInvalidArgument, "未知的动作类型：%q", string(r.Kind))
 	}
-	if r.Kind == KindPresetsRefresh || r.Kind == KindDetectACID {
+	if r.Kind == KindPresetsRefresh || r.Kind.Discovery() {
 		if r.Interface == "" || len(r.Interface) > 64 || strings.ContainsAny(r.Interface, "\x00\r\n\t /\\") {
 			return domain.Errorf(domain.CodeInvalidArgument, "需要明确的有效线路 iface")
 		}
@@ -185,13 +189,13 @@ func (r Request) Validate() error {
 	} else if r.Interface != "" {
 		return domain.Errorf(domain.CodeInvalidArgument, "此动作不接受 iface")
 	}
-	if r.Kind != KindDetectACID && (r.ProbeURL != "" || r.ProbeSSID != "" || r.ProbeMode != "") {
+	if !r.Kind.Discovery() && (r.ProbeURL != "" || r.ProbeSSID != "" || r.ProbeMode != "" || r.ProbeSchool != "") {
 		return domain.Errorf(domain.CodeInvalidArgument, "此动作不接受探测参数")
 	}
-	if r.Kind == KindDetectACID && (r.ProbeURL == "" || len(r.ProbeURL) > 2048 || len(r.ProbeSSID) > 32 || strings.ContainsAny(r.ProbeURL+r.ProbeSSID+r.ProbeMode, "\x00\r\n")) {
+	if r.Kind.Discovery() && ((r.Kind == KindDetectACID && r.ProbeURL == "") || len(r.ProbeURL) > 2048 || len(r.ProbeSSID) > 32 || len(r.ProbeSchool) > 128 || strings.ContainsAny(r.ProbeURL+r.ProbeSSID+r.ProbeMode+r.ProbeSchool, "\x00\r\n")) {
 		return domain.Errorf(domain.CodeInvalidArgument, "探测参数无效")
 	}
-	if r.AccountID == "" && r.Kind != KindSwitchHotspot && r.Kind != KindPresetsRefresh && r.Kind != KindDetectACID {
+	if r.AccountID == "" && r.Kind != KindSwitchHotspot && r.Kind != KindPresetsRefresh && !r.Kind.Discovery() {
 		return domain.Errorf(domain.CodeInvalidArgument, "动作 %s 需要指定账号", string(r.Kind))
 	}
 	if r.Kind == KindSwitchHotspot && r.HotspotID == "" {

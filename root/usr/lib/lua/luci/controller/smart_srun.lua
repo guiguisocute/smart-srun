@@ -271,7 +271,7 @@ local function detect_connection_args()
         " --ssid " .. util.shellquote(fv("ssid"))
 end
 
-function action_detect_acid()
+local function discovery_job(method)
     local dispatcher = require "luci.dispatcher"
     if not dispatcher.test_post_security() then return end
     local session = dispatcher.context.authsession
@@ -286,9 +286,10 @@ function action_detect_acid()
             action_id = fv("action_id"), session = session,
         })
     elseif action == "" or action == "start" then
-        payload, err = rpc.call_started("detect.acid", {
+        payload, err = rpc.call_started(method, {
             base_url = fv("base_url"), access_mode = fv("access_mode"),
             iface = fv("iface"), ssid = fv("ssid"),
+            school = fv("school"),
             idempotency_key = fv("idempotency_key"), session = session,
         })
     else
@@ -307,16 +308,13 @@ function action_detect_acid()
     write_json_response(payload)
 end
 
+function action_detect_acid()
+    discovery_job("detect.acid")
+end
+
 -- 出口自检：绑定所选接口；已在线时仍可检查预设、已有账号及本线路网关。
 function action_detect_env()
-    local args = fv("access_mode") ~= "" and detect_connection_args() or ""
-    args = args .. " --base-url " .. util.shellquote(fv("base_url")) ..
-        " --school " .. util.shellquote(fv("school"))
-    local payload = run_srunnet_json("detect env" .. args)
-    if type(payload) == "table" and payload.acid ~= nil then
-        payload.ac_id = tostring(payload.acid or "")
-    end
-    write_json_response(payload)
+    discovery_job("detect.environment")
 end
 
 -- 运营商后缀探测。密码不能进 argv（同机 ps 可见），改用 0600 临时文件传参，

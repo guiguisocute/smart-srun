@@ -38,6 +38,7 @@ type DetectACIDParams struct {
 	SSID           string `json:"ssid,omitempty"`
 	IdempotencyKey string `json:"idempotency_key"`
 	Session        string `json:"session,omitempty"`
+	School         string `json:"school,omitempty"`
 }
 
 // DetectACIDResult is what the address step displays.
@@ -72,12 +73,20 @@ func (d *Daemon) probeLine(ctx context.Context, iface string) (portal.Fetcher, f
 }
 
 func (d *Daemon) detectACID(ctx context.Context, raw json.RawMessage) (any, error) {
+	return d.submitDiscovery(ctx, raw, application.KindDetectACID)
+}
+
+func (d *Daemon) detectEnvironment(ctx context.Context, raw json.RawMessage) (any, error) {
+	return d.submitDiscovery(ctx, raw, application.KindDetectEnvironment)
+}
+
+func (d *Daemon) submitDiscovery(ctx context.Context, raw json.RawMessage, kind application.Kind) (any, error) {
 	var params DetectACIDParams
 	if err := control.DecodeParams(raw, &params); err != nil {
 		return nil, err
 	}
 	start := portal.Address(params.BaseURL)
-	if start == "" {
+	if start == "" && (params.BaseURL != "" || kind == application.KindDetectACID) {
 		return nil, domain.FieldErrorf(domain.CodeInvalidArgument, "base_url",
 			"需要一个 http:// 或 https:// 的认证地址")
 	}
@@ -91,8 +100,9 @@ func (d *Daemon) detectACID(ctx context.Context, raw json.RawMessage) (any, erro
 		return nil, domain.FieldErrorf(domain.CodeInvalidArgument, "ssid", "有线探测不接受 SSID")
 	}
 	receipt, err := d.actions.Submit(ctx, application.Request{
-		Kind: application.KindDetectACID, Interface: params.Iface,
+		Kind: kind, Interface: params.Iface,
 		ProbeURL: start, ProbeMode: params.AccessMode, ProbeSSID: params.SSID,
+		ProbeSchool:    params.School,
 		IdempotencyKey: params.IdempotencyKey,
 		Owner:          probeOwner(params.Session),
 	})
@@ -108,13 +118,28 @@ type probeRoutingRunner struct {
 }
 
 func (r probeRoutingRunner) Run(ctx context.Context, action application.Action, report func(application.Phase)) application.Outcome {
-	if action.Request.Kind != application.KindDetectACID {
+	if !action.Request.Kind.Discovery() {
 		return r.actions.Run(ctx, action, report)
 	}
-	ctx, cancel := context.WithTimeout(ctx, portal.Budget)
+	budget := portal.Budget
+	if action.Request.Kind == application.KindDetectEnvironment {
+		budget = portal.EnvironmentBudget
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	report(application.PhaseFetch)
-	result, err := r.daemon.runACID(ctx, action.Request)
+	var result any
+	var message string
+	var err error
+	if action.Request.Kind == application.KindDetectEnvironment {
+		var finding DetectEnvironmentResult
+		finding, err = r.daemon.runEnvironment(ctx, action.Request)
+		result, message = finding, finding.Message
+	} else {
+		var finding DetectACIDResult
+		finding, err = r.daemon.runACID(ctx, action.Request)
+		result, message = finding, finding.Message
+	}
 	if err != nil {
 		code, known := domain.CodeOf(err)
 		if !known {
@@ -132,7 +157,7 @@ func (r probeRoutingRunner) Run(ctx context.Context, action application.Action, 
 	if err != nil {
 		return application.Outcome{State: application.StateFailed, Code: domain.CodeInternal, Message: "无法编码探测结果"}
 	}
-	return application.Outcome{State: application.StateSucceeded, Message: result.Message, ResultJSON: string(encoded)}
+	return application.Outcome{State: application.StateSucceeded, Message: message, ResultJSON: string(encoded)}
 }
 
 func (d *Daemon) runACID(ctx context.Context, request application.Request) (DetectACIDResult, error) {

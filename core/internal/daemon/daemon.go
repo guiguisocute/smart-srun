@@ -72,6 +72,8 @@ type Options struct {
 	// so that a probe can be exercised against a local server, which no bound
 	// client could reach.
 	OpenProbe func(ctx context.Context, iface string) (portal.Fetcher, func(), error)
+	// ProbeGateways reads only the selected netifd interface's default routes.
+	ProbeGateways func(context.Context, string) ([]string, error)
 }
 
 // Daemon is the assembled service.
@@ -86,6 +88,7 @@ type Daemon struct {
 	store         *observe.Store
 	events        *logstore.Store
 	openProbe     func(ctx context.Context, iface string) (portal.Fetcher, func(), error)
+	probeGateways func(context.Context, string) ([]string, error)
 	actions       *application.Coordinator
 	observer      func(application.Action)
 	users         *presets.UserStore
@@ -224,6 +227,10 @@ func Run(ctx context.Context, options Options) error {
 		dirty:         make(chan struct{}, 1),
 	}
 	service.openProbe = options.OpenProbe
+	service.probeGateways = options.ProbeGateways
+	if service.probeGateways == nil {
+		service.probeGateways = deviceProbeGateways
+	}
 	if service.openProbe == nil {
 		service.openProbe = service.openDeviceProbe(
 			openwrt.NewAdapter(openwrt.Runner{}).ResolveBinding)
@@ -377,7 +384,7 @@ const wirelessLine = "wireless"
 // lock spec 04 requires. It keeps this process from dispatching two wireless
 // actions at once; the lock is what protects the radio from everything else.
 func (d *Daemon) lineOf(request application.Request) string {
-	if request.Kind == application.KindPresetsRefresh || request.Kind == application.KindDetectACID {
+	if request.Kind == application.KindPresetsRefresh || request.Kind.Discovery() {
 		if request.ProbeMode == "wifi" {
 			return wirelessLine
 		}

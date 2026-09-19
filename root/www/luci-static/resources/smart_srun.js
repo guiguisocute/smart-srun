@@ -1045,33 +1045,14 @@
       if (nodes.status) {
         nodes.status.textContent = baseUrl ? '嗅探中...' : '正在检查出口是否被认证页拦截...';
       }
-      if (path === 'detect_acid') {
-        var mode = getFieldValue('jm-access_mode');
-        postACID({base_url: baseUrl, access_mode: mode,
-          iface: mode === 'wired' ? getFieldValue('jm-wired_iface') : (readJson('smart-probe-config', {}).sta_iface || 'wwan'),
-          ssid: mode === 'wifi' ? getFieldValue('jm-ssid') : ''}, function(err, data) {
-          if (!nodes.base || !document.body.contains(nodes.base)) return;
-          applyDetectResult(err ? {ok: false, message: err.message} : data, nodes);
-          if (button) button.disabled = false;
-        });
-        return;
-      }
-      var xhr = new XMLHttpRequest();
-      xhr.open('POST', '/cgi-bin/luci/admin/services/smart_srun/' + path, true);
-      xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
-      xhr.onload = function() {
-        var data = {};
-        try {
-          data = JSON.parse(xhr.responseText || '{}');
-        } catch (e) {}
-        applyDetectResult(data, nodes);
+      var mode = getFieldValue('jm-access_mode');
+      postDiscovery(path, {base_url: baseUrl, access_mode: mode, school: selectedPresetId,
+        iface: mode === 'wired' ? getFieldValue('jm-wired_iface') : (readJson('smart-probe-config', {}).sta_iface || 'wwan'),
+        ssid: mode === 'wifi' ? getFieldValue('jm-ssid') : ''}, function(err, data) {
+        if (!nodes.base || !document.body.contains(nodes.base)) return;
+        applyDetectResult(err ? {ok: false, message: err.message} : data, nodes);
         if (button) button.disabled = false;
-      };
-      xhr.onerror = function() {
-        if (nodes.status) nodes.status.textContent = '嗅探请求失败';
-        if (button) button.disabled = false;
-      };
-      xhr.send(baseUrl ? ('base_url=' + encodeURIComponent(baseUrl)) : '');
+      });
     }
 
     showNativeModal(
@@ -1831,9 +1812,9 @@
 
   // Preserve the wizard's callbacks and presentation while the daemon owns
   // the bounded job. Polling reads cached action state; it never probes again.
-  function postACID(values, done) {
+  function postDiscovery(path, values, done) {
     var stopped = false, active = null, timer = null, actionId = '';
-    var deadline = Date.now() + 45000;
+    var deadline = Date.now() + 65000;
     var tokenNode = document.querySelector('input[name="token"]');
     var token = tokenNode ? tokenNode.value : ((window.L && L.env) ? L.env.token : '');
     values.idempotency_key = 'luci-probe-' + Date.now() + '-' + Math.random().toString(16).slice(2);
@@ -1843,7 +1824,7 @@
       for (var key in params) {
         if (Object.prototype.hasOwnProperty.call(params, key)) encoded.push(encodeURIComponent(key) + '=' + encodeURIComponent(params[key]));
       }
-      xhr.open('POST', '/cgi-bin/luci/admin/services/smart_srun/detect_acid', true);
+      xhr.open('POST', '/cgi-bin/luci/admin/services/smart_srun/' + path, true);
       xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
       xhr.timeout = 12000;
       xhr.onload = function() {
@@ -1889,8 +1870,8 @@
 
   function wizPost(path, values, done, timeout) {
     var owner = wiz;
-    if (path === 'detect_acid') {
-      var job = postACID(values, function(err, data) {
+    if (path === 'detect_acid' || path === 'detect_env') {
+      var job = postDiscovery(path, values, function(err, data) {
         if (wiz !== owner || owner.xhr !== job) return;
         owner.xhr = null;
         owner.busy = '';
@@ -1934,7 +1915,8 @@
   }
 
   function wizConnection() {
-    return { access_mode: wiz.accessMode, iface: wiz.accessMode === 'wired' ? wiz.wiredIface : wiz.wifiIface, ssid: wiz.ssid };
+    return { access_mode: wiz.accessMode, iface: wiz.accessMode === 'wired' ? wiz.wiredIface : wiz.wifiIface,
+      ssid: wiz.accessMode === 'wifi' ? wiz.ssid : '' };
   }
 
   function wizLoginPreview(suffix) {

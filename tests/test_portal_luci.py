@@ -226,7 +226,7 @@ console.log(JSON.stringify({result: nodes['smart-srun-manual-result'].textConten
 
         self.assertIn('"detect_env"}, call("action_detect_env")', controller)
         self.assertIn("function action_detect_env()", controller)
-        self.assertIn('run_srunnet_json("detect env" .. args)', controller)
+        self.assertIn('discovery_job("detect.environment")', controller)
 
         self.assertIn("var path = baseUrl ? 'detect_acid' : 'detect_env';", js)
         self.assertNotIn("请先填写认证地址", js)

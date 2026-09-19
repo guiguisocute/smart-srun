@@ -6,9 +6,9 @@ var fs = require('fs');
 var vm = require('vm');
 var path = require('path');
 var source = fs.readFileSync(path.join(__dirname, '../../root/www/luci-static/resources/smart_srun.js'), 'utf8');
-var helper = source.slice(source.indexOf('  function postACID('), source.indexOf('  function wizPost('));
+var helper = source.slice(source.indexOf('  function postDiscovery('), source.indexOf('  function wizPost('));
 
-function setup() {
+function setup(endpoint) {
   var requests = [], timers = [], completed = [];
   function XHR() { requests.push(this); }
   XHR.prototype.open = function(method, url) { this.method = method; this.url = url; };
@@ -19,7 +19,7 @@ function setup() {
     setTimeout: function(fn) { timers.push(fn); return timers.length; }, clearTimeout: function(id) { timers[id - 1] = null; }};
   vm.createContext(sandbox);
   vm.runInContext(helper, sandbox);
-  var handle = sandbox.postACID({base_url: 'http://portal.invalid/path', access_mode: 'wired', iface: 'wan'},
+  var handle = sandbox.postDiscovery(endpoint || 'detect_acid', {base_url: 'http://portal.invalid/path', access_mode: 'wired', iface: 'wan'},
     function(err, data) { completed.push({err: err, data: data}); });
   return {requests: requests, timers: timers, completed: completed, handle: handle,
     reply: function(data) { var req = requests[requests.length - 1]; req.status = 200; req.responseText = JSON.stringify(data); req.onload(); },
@@ -65,4 +65,19 @@ s.reply({ok: true, action_id: 'a4', state: 'queued'});
 s.tick();
 s.reply({ok: true, id: 'a4', state: 'failed', message: 'line changed'});
 assert.strictEqual(s.completed[0].err.message, 'line changed');
-console.log('PASS AC_ID task client: submit, poll, terminal result, completed retry, cancel, failure');
+s = setup('detect_env');
+assert(s.requests[0].url.endsWith('/detect_env'));
+s.reply({ok: true, action_id: 'env1', state: 'queued'});
+s.tick();
+assert(s.requests[1].url.endsWith('/detect_env'));
+s.reply({ok: true, id: 'env1', state: 'succeeded', result: {ok: false, state: 'online', message: 'no portal'}});
+assert.strictEqual(s.completed[0].err, null);
+assert.strictEqual(s.completed[0].data.state, 'online', 'online without a portal is a valid discovery result');
+var connection = {wiz: {accessMode: 'wired', wiredIface: 'wan', wifiIface: 'wwan', ssid: 'preset-campus'}};
+vm.createContext(connection);
+vm.runInContext(source.slice(source.indexOf('  function wizConnection('), source.indexOf('  function wizLoginPreview(')), connection);
+assert.strictEqual(connection.wizConnection().ssid, '', 'a preset Wi-Fi name must not invalidate wired discovery');
+connection.wiz.accessMode = 'wifi';
+assert.strictEqual(connection.wizConnection().ssid, 'preset-campus');
+assert.strictEqual(connection.wizConnection().iface, 'wwan');
+console.log('PASS discovery task client: submit, poll, terminal result, completed retry, cancel, failure, environment');

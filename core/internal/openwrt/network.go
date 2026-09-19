@@ -39,6 +39,7 @@ type InterfaceStatus struct {
 	L3Device   string
 	IPv4       []IPv4Address
 	DNSServers []netip.Addr
+	Gateways   []netip.Addr
 	Errors     []InterfaceError
 }
 
@@ -72,6 +73,11 @@ type interfaceStatusJSON struct {
 
 	DNSHyphen     []string `json:"dns-server"`
 	DNSUnderscore []string `json:"dns_server"`
+	Routes        []struct {
+		Target  string `json:"target"`
+		Mask    int    `json:"mask"`
+		NextHop string `json:"nexthop"`
+	} `json:"route"`
 
 	Errors []InterfaceError `json:"errors"`
 }
@@ -135,6 +141,12 @@ func ParseInterfaceStatus(name string, data []byte) (InterfaceStatus, error) {
 			continue
 		}
 		status.DNSServers = append(status.DNSServers, server)
+	}
+	for _, route := range raw.Routes {
+		gateway, err := netip.ParseAddr(route.NextHop)
+		if route.Target == "0.0.0.0" && route.Mask == 0 && err == nil && gateway.Is4() && !gateway.IsUnspecified() && !gateway.IsLoopback() && !gateway.IsMulticast() {
+			status.Gateways = append(status.Gateways, gateway)
+		}
 	}
 	return status, nil
 }

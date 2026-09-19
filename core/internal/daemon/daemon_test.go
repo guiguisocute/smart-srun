@@ -159,7 +159,7 @@ func TestTheServiceAnswersOverItsSocket(t *testing.T) {
 
 	// A declared method this build does not implement is refused as
 	// unimplemented, not answered with an empty result.
-	err := service.callExpectingError("detect.environment", nil)
+	err := service.callExpectingError("detect.identity", nil)
 	if code := codeOf(t, err); code != domain.CodeUnsupportedCapability {
 		t.Errorf("code = %s, want UnsupportedCapability", code)
 	}

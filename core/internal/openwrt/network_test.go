@@ -7,6 +7,21 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 )
 
+func TestDiscoveryGatewaysComeOnlyFromIPv4DefaultRoutes(t *testing.T) {
+	status, err := ParseInterfaceStatus("wan", []byte(`{"route":[
+		{"target":"0.0.0.0","mask":0,"nexthop":"10.0.2.2"},
+		{"target":"10.0.0.0","mask":8,"nexthop":"10.0.2.3"},
+		{"target":"0.0.0.0","mask":24,"nexthop":"10.0.2.4"},
+		{"target":"::","mask":0,"nexthop":"fe80::1"},
+		{"target":"0.0.0.0","mask":0,"nexthop":"127.0.0.1"},
+		{"target":"0.0.0.0","mask":0,"nexthop":"0.0.0.0"},
+		{"target":"0.0.0.0","mask":0,"nexthop":"invalid"}
+	]}`))
+	if err != nil || len(status.Gateways) != 1 || status.Gateways[0].String() != "10.0.2.2" {
+		t.Fatalf("%+v / %v", status, err)
+	}
+}
+
 // T12 -- the four link states, each from a real interface on a real router.
 //
 // These are not four hand-written JSON documents chosen to make the code look
