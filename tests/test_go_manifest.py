@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -14,6 +15,59 @@ spec.loader.exec_module(manifest)
 
 
 class ManifestTests(unittest.TestCase):
+    def luci_apk_pair(self, root):
+        records, packages = [], []
+        for name, arch, goarch in (("x86", "x86_64", "amd64"), ("arm", "aarch64_cortex-a53", "arm64")):
+            path, core, record = self.apk_fixture(root / name, arch, goarch)
+            luci = core.with_name("luci-app-smart-srun-2.0.0_rc2-r1.apk")
+            luci.write_bytes(b"same contents with signature " + name.encode())
+            asset = dict(record["artifacts"][0], file=luci.name, name="luci-app-smart-srun", architecture="noarch",
+                         bytes=luci.stat().st_size, sha256=hashlib.sha256(luci.read_bytes()).hexdigest())
+            record["artifacts"].insert(0, asset)  # Another artifact must still parse after deduplication.
+            path.write_text(json.dumps(record))
+            records.append(path); packages.append(luci)
+        return records, packages
+
+    def test_independently_signed_luci_requires_native_content_equivalence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            records, packages = self.luci_apk_pair(root)
+            with self.assertRaisesRegex(ValueError, "require --apk and --keys"):
+                manifest.generate(records)
+            # No signature/content check can be waived merely because both
+            # records claim the same inputs, installed size and package version.
+            with patch.object(manifest, "apk_contents", side_effect=[{"scripts": "old"}, {"scripts": "changed"}]):
+                with self.assertRaisesRegex(ValueError, "Ambiguous"):
+                    manifest.export_release(records, root / "different")
+            with patch.object(manifest, "apk_contents", return_value={"complete native metadata": "identical"}) as native:
+                out = root / "release"
+                result = manifest.export_release(records, out, apk="apk", keys="trusted")
+            self.assertEqual(native.call_count, 2)
+            self.assertEqual(len(result["assets"]), 3)
+            luci = next(a for a in result["assets"] if a["kind"] == "luci")
+            self.assertEqual(luci["sha256"], hashlib.sha256(packages[0].read_bytes()).hexdigest())
+            self.assertEqual((out / luci["url"].rsplit("/", 1)[1]).read_bytes(), packages[0].read_bytes())
+            self.assertFalse(luci["validation"]["openwrt_install"])
+
+    def test_native_apk_comparison_verifies_trust_before_reading_bounded_metadata(self):
+        with patch.object(manifest.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "apk")) as native:
+            with self.assertRaises(subprocess.CalledProcessError):
+                manifest.apk_contents("package.apk", "apk", "trusted", "2.0.0_rc2-r1")
+        self.assertEqual(native.call_count, 1)
+        self.assertEqual(native.call_args.args[0], ["apk", "--keys-dir", "trusted", "verify", "package.apk"])
+        valid = {"info": {"name": "luci-app-smart-srun", "arch": "noarch", "version": "2.0.0_rc2-r1"}, "paths": [{}]}
+        for body, accepted in ((json.dumps(valid).encode(), True), (b" " * ((256 << 10) + 1), False),
+                               (b'{}', False), (json.dumps(dict(valid, info={"name": "smart-srun"})).encode(), False)):
+            def native(args, **kwargs):
+                if "adbdump" in args:
+                    kwargs["stdout"].write(body)
+            with self.subTest(accepted=accepted), patch.object(manifest.subprocess, "run", side_effect=native):
+                if accepted:
+                    self.assertEqual(manifest.apk_contents("p.apk", "apk", "trusted", "2.0.0_rc2-r1"), valid)
+                else:
+                    with self.assertRaises(ValueError):
+                        manifest.apk_contents("p.apk", "apk", "trusted", "2.0.0_rc2-r1")
+
     def fixture(self, directory):
         package = Path(directory) / "smart-srun_2.0.0~rc2-r1_x86_64.ipk"
         package.write_bytes(b"measured test fixture")

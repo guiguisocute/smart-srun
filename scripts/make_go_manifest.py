@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import tempfile
 
 REPOSITORY = "matthewlu070111/smart-srun"
@@ -25,7 +26,32 @@ def release_filename(package, native_version, architecture, sdk, fmt):
     return f"{package}{separator}{native_version}_{architecture}_openwrt-{sdk}.{fmt}"
 
 
-def generate(records, evidence=None, internal=False, *, package_sources=None):
+def apk_contents(path, apk, keys, version):
+    """Compare signed APK content without treating randomized signatures as payload."""
+    if not apk or not keys:
+        raise ValueError("Non-identical LuCI APKs require --apk and --keys for native content verification")
+    subprocess.run([str(apk), "--keys-dir", str(keys), "verify", str(path)],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True, timeout=30)
+    # Native metadata includes file hashes, attributes, dependencies and scripts.
+    # Keep it bounded and verify the full archive first; matching sizes or source
+    # inputs alone do not prove two generated packages have the same contents.
+    with tempfile.TemporaryFile() as output:
+        subprocess.run([str(apk), "adbdump", "--format", "json", str(path)],
+                       stdout=output, stderr=subprocess.PIPE, check=True, timeout=30)
+        output.seek(0)
+        data = output.read((256 << 10) + 1)
+    if len(data) > 256 << 10:
+        raise ValueError("Native LuCI APK metadata exceeds the comparison limit")
+    document = json.loads(data)
+    if not isinstance(document, dict) or not isinstance(document.get("info"), dict) or not document.get("paths"):
+        raise ValueError("Native LuCI APK metadata is incomplete")
+    info = document["info"]
+    if (info.get("name"), info.get("arch"), info.get("version")) != ("luci-app-smart-srun", "noarch", version):
+        raise ValueError("Native LuCI APK identity differs from its build record")
+    return document
+
+
+def generate(records, evidence=None, internal=False, *, package_sources=None, apk=None, keys=None):
     evidence = evidence or {"schema_version": 1, "assets": {}}
     if evidence.get("schema_version") != 1 or not isinstance(evidence.get("assets"), dict):
         raise ValueError("Invalid validation evidence")
@@ -127,8 +153,16 @@ def generate(records, evidence=None, internal=False, *, package_sources=None):
             if identifier in selections:
                 previous = selections[identifier]
                 if kind != "luci" or any(previous[key] != asset[key] for key in
-                                        ("sha256", "package_version", "installed_bytes", "validation")):
+                                        ("package_version", "installed_bytes", "validation", "sdk_release")):
                     raise ValueError("Ambiguous packages for the same device selection")
+                if previous["sha256"] != digest:
+                    previous_name = previous["url"].rsplit("/", 1)[1]
+                    native_version = asset["package_version"]
+                    if fmt != "apk" or apk_contents(sources[previous_name], apk, keys, native_version) != apk_contents(file, apk, keys, native_version):
+                        raise ValueError("Ambiguous packages for the same device selection")
+                # ECDSA signatures differ even for identical noarch payloads.
+                # Keep the FIRST verified archive's exact bytes/hash/evidence;
+                # never transfer acceptance from the discarded signature variant.
                 continue  # identical architecture-neutral LuCI from another SDK target
             if export_name in names:
                 raise ValueError("Duplicate release asset filename")
@@ -142,9 +176,9 @@ def generate(records, evidence=None, internal=False, *, package_sources=None):
     return manifest, "".join(f"{digest}  {name}\n" for name, digest in sorted(names.items()))
 
 
-def export_release(records, output, evidence=None, internal=False):
+def export_release(records, output, evidence=None, internal=False, *, apk=None, keys=None):
     sources = {}
-    manifest, sums = generate(records, evidence, internal, package_sources=sources)
+    manifest, sums = generate(records, evidence, internal, package_sources=sources, apk=apk, keys=keys)
     output = Path(output)
     if output.exists() or output.is_symlink():
         raise ValueError("Refusing to replace an existing release directory")
@@ -178,9 +212,11 @@ def main():
     parser.add_argument("--evidence", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--internal-test", action="store_true")
+    parser.add_argument("--apk", type=Path, help="Native apk-tools for comparing independently signed noarch packages")
+    parser.add_argument("--keys", type=Path, help="Trusted public keys for native APK comparison")
     args = parser.parse_args()
     evidence = json.loads(args.evidence.read_text()) if args.evidence else None
-    manifest = export_release(args.records, args.output, evidence, args.internal_test)
+    manifest = export_release(args.records, args.output, evidence, args.internal_test, apk=args.apk, keys=args.keys)
     print(f"{manifest['release']}: {len(manifest['assets'])} measured assets -> {args.output}")
 
 
