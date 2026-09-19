@@ -201,6 +201,18 @@ func (s *recordingStore) PendingChanges(context.Context, string) ([]string, erro
 	return nil, nil
 }
 
+func (s *recordingStore) SectionKeys(_ context.Context, _, section string) ([]wireless.Key, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var keys []wireless.Key
+	for key, value := range s.values {
+		if key.Section == section && !key.IsSection() && value.Present {
+			keys = append(keys, key)
+		}
+	}
+	return keys, nil
+}
+
 func (s *recordingStore) Reload(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err

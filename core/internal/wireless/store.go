@@ -3,6 +3,7 @@ package wireless
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -144,13 +145,10 @@ func (s *UCIStore) Read(ctx context.Context, pkg string, keys []Key) (map[Key]Va
 			values[key] = Value{}
 			continue
 		}
-		// A list is not a string. Reading one as its first item would record a
-		// "before" value that cannot restore what was there, and the rollback
-		// would then quietly replace a list with a scalar -- so this refuses
-		// rather than returns something that looks usable.
 		if option.IsList {
-			return nil, domain.Errorf(domain.CodeConflict,
-				"%s.%s 是列表项，本次改动不处理列表", key.Section, key.Option)
+			data, _ := json.Marshal(option.List)
+			values[key] = Value{Text: string(data), Present: true, IsList: true}
+			continue
 		}
 		if option.Text == "" {
 			// uci has no empty option. Measured on a real device: a hand-written
@@ -165,6 +163,25 @@ func (s *UCIStore) Read(ctx context.Context, pkg string, keys []Key) (map[Key]Va
 		values[key] = Value{Text: option.Text, Present: true}
 	}
 	return values, nil
+}
+
+func (s *UCIStore) SectionKeys(ctx context.Context, pkg, section string) ([]Key, error) {
+	if err := checkName(pkg, "配置包"); err != nil {
+		return nil, err
+	}
+	if err := checkName(section, "配置节"); err != nil {
+		return nil, err
+	}
+	config, err := s.show(ctx, s.configDir, s.deltaDir, pkg)
+	if err != nil {
+		return nil, err
+	}
+	found, _ := config.Section(section)
+	var keys []Key
+	for _, option := range found.OptionNames() {
+		keys = append(keys, Key{Section: section, Option: option})
+	}
+	return keys, nil
 }
 
 // Stage builds the candidate in the isolated directory.
@@ -242,7 +259,16 @@ func (s *UCIStore) Stage(ctx context.Context, pkg string, changes []Change) erro
 			// Already the state this change asks for.
 			continue
 		}
-		if change.Delete {
+		if change.IsList {
+			if existing[keyString(change.Key)] {
+				batch.WriteString("delete " + name + "\n")
+			}
+			items, _ := listItems(change.Text) // checkWritable validated the list.
+			for _, item := range items {
+				quoted, _ := quoteBatch(item)
+				batch.WriteString("add_list " + name + "=" + quoted + "\n")
+			}
+		} else if change.Delete {
 			batch.WriteString("delete " + name + "\n")
 		} else {
 			quoted, err := quoteBatch(change.Text)
@@ -284,8 +310,12 @@ func candidateMatches(candidate openwrt.UCIConfig, changes []Change) bool {
 			var value openwrt.UCIValue
 			value, present = section.Lookup(change.Key.Option)
 			text = value.Text
-			if value.IsList {
+			if value.IsList != change.IsList && !change.Delete {
 				return false
+			}
+			if value.IsList {
+				encoded, _ := json.Marshal(value.List)
+				text = string(encoded)
 			}
 		}
 		if change.Delete && present || !change.Delete && (!present || text != change.Text) {
@@ -428,8 +458,8 @@ func (s *UCIStore) existingKeys(ctx context.Context, delta, pkg string) (
 func (s *UCIStore) show(ctx context.Context, configDir, deltaDir, pkg string) (
 	openwrt.UCIConfig, error) {
 
-	result, err := s.runner.Run(ctx, "uci", "-c", configDir, "-t", deltaDir,
-		"show", pkg)
+	result, err := s.runner.Run(ctx, "uci", "-n", "-c", configDir, "-t", deltaDir,
+		"export", pkg)
 	if err != nil {
 		return openwrt.UCIConfig{}, missingPackage(pkg, err)
 	}
@@ -437,7 +467,7 @@ func (s *UCIStore) show(ctx context.Context, configDir, deltaDir, pkg string) (
 		return openwrt.UCIConfig{}, domain.Errorf(domain.CodeInternal,
 			"配置 %s 过长，已截断", pkg)
 	}
-	return openwrt.ParseUCIShow(pkg, result.Stdout)
+	return openwrt.ParseUCIExport(pkg, result.Stdout)
 }
 
 // missingPackage gives "there is no such configuration" its own code.

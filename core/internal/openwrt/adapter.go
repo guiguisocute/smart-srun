@@ -90,6 +90,21 @@ func (a *Adapter) UCI(ctx context.Context, pkg string) (UCIConfig, error) {
 	return ParseUCIShow(pkg, result.Stdout)
 }
 
+// UCIExport retains anonymous section names and singleton list types.
+func (a *Adapter) UCIExport(ctx context.Context, pkg string) (UCIConfig, error) {
+	if !IsLogicalInterfaceName(pkg) {
+		return UCIConfig{}, domain.Errorf(domain.CodeInvalidArgument, "配置包名无效")
+	}
+	result, err := a.runner.Run(ctx, "uci", "-n", "export", pkg)
+	if err != nil {
+		return UCIConfig{}, err
+	}
+	if result.StdoutTruncated {
+		return UCIConfig{}, domain.Errorf(domain.CodeInternal, "UCI 配置过长")
+	}
+	return ParseUCIExport(pkg, result.Stdout)
+}
+
 // missingPackage names the one failure `uci show <package>` actually has.
 //
 // A router with no wireless hardware has no /etc/config/wireless at all, and

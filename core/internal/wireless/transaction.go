@@ -20,6 +20,9 @@ type Store interface {
 	// string, so an implementation that reported one would be describing a
 	// state no later call could restore or remove.
 	Read(ctx context.Context, pkg string, keys []Key) (map[Key]Value, error)
+	// SectionKeys is needed before deleting a section we created: newly added
+	// third-party options must not disappear along with that section.
+	SectionKeys(ctx context.Context, pkg, section string) ([]Key, error)
 	// Stage writes the changes somewhere they are not yet live. The adapter
 	// does this in an isolated UCI directory, so a failure between here and
 	// Commit leaves the running configuration untouched.
@@ -37,6 +40,8 @@ type Store interface {
 type Value struct {
 	Text    string
 	Present bool
+	// IsList means Text is a JSON array, preserving order and scalar/list type.
+	IsList bool
 }
 
 // Change is one option this transaction wants to write.
@@ -50,7 +55,8 @@ type Change struct {
 	// Left expressible, "set this to nothing" would be accepted, do nothing,
 	// and leave the journal claiming a value that was never written. See
 	// Begin, which refuses it.
-	Text string
+	Text   string
+	IsList bool
 	// Delete removes the option instead of setting it.
 	Delete bool
 }
@@ -122,6 +128,13 @@ func Begin(ctx context.Context, store Store, paths Paths, plan Plan,
 	if err := checkWritable(plan.Changes); err != nil {
 		return nil, err
 	}
+	seen := map[Key]bool{}
+	for _, change := range plan.Changes {
+		if seen[change.Key] {
+			return nil, domain.Errorf(domain.CodeInvalidArgument, "无线事务含重复配置项")
+		}
+		seen[change.Key] = true
+	}
 
 	// A journal left behind by a transaction that finished is cleaned up rather
 	// than treated as one still in flight.
@@ -191,10 +204,15 @@ func Begin(ctx context.Context, store Store, paths Paths, plan Plan,
 	backup := &Backup{TaskID: plan.TaskID, Values: map[string]string{}}
 	for _, change := range plan.Changes {
 		previous := before[change.Key]
+		if change.Key.IsSection() && previous.Present && (change.Delete || change.Text != previous.Text) {
+			return nil, domain.Errorf(domain.CodeConflict, "不能删除或改变已有配置节的类型")
+		}
 		entry := Entry{
 			Key:           change.Key,
 			BeforePresent: previous.Present,
 			AfterDeleted:  change.Delete,
+			BeforeList:    previous.IsList,
+			AfterList:     change.IsList,
 		}
 		if previous.Present {
 			entry.BeforeHash = journal.Hash(previous.Text)
@@ -237,6 +255,24 @@ func (t *Transaction) Apply(ctx context.Context, changes []Change) error {
 	if t.journal.Phase != PhaseBackedUp {
 		return domain.Errorf(domain.CodeConflict,
 			"无线事务处于 %s，不能再应用一次", t.journal.Phase)
+	}
+	if len(changes) != len(t.journal.Entries) {
+		return domain.Errorf(domain.CodeConflict, "应用内容与事务计划不符")
+	}
+	seen := map[Key]bool{}
+	for _, change := range changes {
+		matched := false
+		for _, entry := range t.journal.Entries {
+			if entry.Key == change.Key && entry.AfterDeleted == change.Delete && entry.AfterList == change.IsList &&
+				(change.Delete || t.journal.Hash(change.Text) == entry.AfterHash) {
+				matched = true
+				break
+			}
+		}
+		if !matched || seen[change.Key] {
+			return domain.Errorf(domain.CodeConflict, "应用内容与事务计划不符")
+		}
+		seen[change.Key] = true
 	}
 	if err := t.store.Stage(ctx, t.journal.Package, changes); err != nil {
 		return err
@@ -361,10 +397,36 @@ func rollback(ctx context.Context, store Store, paths Paths, journal *Journal,
 	if err != nil {
 		return Outcome{}, err
 	}
+	// Never remove a newly created section that now contains somebody else's
+	// option, or whose owned options have been changed by somebody else.
+	blockedSections := map[string]bool{}
+	for _, entry := range journal.Entries {
+		if !entry.Key.IsSection() || entry.BeforePresent || !current[entry.Key].Present {
+			continue
+		}
+		children, err := store.SectionKeys(ctx, journal.Package, entry.Key.Section)
+		if err != nil {
+			return Outcome{}, err
+		}
+		owned := map[Key]Entry{}
+		for _, item := range journal.Entries {
+			owned[item.Key] = item
+		}
+		for _, child := range children {
+			item, known := owned[child]
+			if !known || (!stillOurs(journal, item, current[child]) && !alreadyBefore(journal, item, current[child])) {
+				blockedSections[entry.Key.Section] = true
+			}
+		}
+	}
 
 	outcome := Outcome{}
 	var restore []Change
 	for _, entry := range journal.Entries {
+		if entry.Key.IsSection() && blockedSections[entry.Key.Section] {
+			outcome.Conflicts = append(outcome.Conflicts, entry.Key)
+			continue
+		}
 		if alreadyBefore(journal, entry, current[entry.Key]) {
 			// Nothing to do, and specifically not a conflict. Two ordinary ways
 			// to arrive here: a rollback whose writes landed and then failed to
@@ -384,9 +446,14 @@ func rollback(ctx context.Context, store Store, paths Paths, journal *Journal,
 			continue
 		}
 		if entry.BeforePresent {
+			previous, exists := backup.Values[keyString(entry.Key)]
+			if backup.TaskID != journal.TaskID || !exists || journal.Hash(previous) != entry.BeforeHash {
+				return Outcome{}, domain.Errorf(domain.CodeRecoveryRequired, "无线事务备份与日志不符，已保留原文件")
+			}
 			restore = append(restore, Change{
-				Key:  entry.Key,
-				Text: backup.Values[keyString(entry.Key)],
+				Key:    entry.Key,
+				Text:   backup.Values[keyString(entry.Key)],
+				IsList: entry.BeforeList,
 			})
 			outcome.Restored = append(outcome.Restored, entry.Key)
 			continue
@@ -455,7 +522,7 @@ func alreadyBefore(journal *Journal, entry Entry, value Value) bool {
 	if !entry.BeforePresent {
 		return !value.Present
 	}
-	return value.Present && journal.Hash(value.Text) == entry.BeforeHash
+	return value.Present && value.IsList == entry.BeforeList && journal.Hash(value.Text) == entry.BeforeHash
 }
 
 // checkWritable refuses a change uci would accept and then not perform.
@@ -472,6 +539,21 @@ func alreadyBefore(journal *Journal, entry Entry, value Value) bool {
 // the cause hidden one layer deeper.
 func checkWritable(changes []Change) error {
 	for _, change := range changes {
+		if err := checkKey(change.Key); err != nil {
+			return err
+		}
+		if change.IsList {
+			if change.Delete || change.Key.IsSection() {
+				return domain.Errorf(domain.CodeInvalidArgument, "列表必须是有效的配置选项")
+			}
+			if _, err := listItems(change.Text); err != nil {
+				return err
+			}
+		} else if !change.Delete {
+			if _, err := quoteBatch(change.Text); err != nil {
+				return err
+			}
+		}
 		if !change.Delete && change.Text == "" {
 			return domain.Errorf(domain.CodeInvalidArgument,
 				"%s.%s 要写入空值；uci 没有空选项这种东西，请改用删除",
@@ -491,7 +573,7 @@ func stillOurs(journal *Journal, entry Entry, value Value) bool {
 		// We wrote a value and it is gone. Somebody removed it.
 		return false
 	}
-	return journal.Hash(value.Text) == entry.AfterHash
+	return value.IsList == entry.AfterList && journal.Hash(value.Text) == entry.AfterHash
 }
 
 // Recover finishes whatever a previous run left open.
@@ -516,6 +598,9 @@ func Recover(ctx context.Context, store Store, paths Paths,
 	}
 
 	switch {
+	case journal.Phase == PhaseRecoveryRequired:
+		return Outcome{Phase: PhaseRecoveryRequired}, true, domain.Errorf(domain.CodeRecoveryRequired,
+			"上次无线改动仍需人工确认，已保留事务和备份")
 	case journal.Phase.Terminal():
 		// Nothing to do. Clearing it here is what stops a finished transaction
 		// being examined at every startup forever.

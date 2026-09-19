@@ -3,13 +3,110 @@
 package wireless
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/openwrt"
 )
+
+// A real UCI filesystem, but no service reloads: these packages are private
+// fixtures, never /etc/config. This test is safe on an online router too.
+func TestGroupedTransactionsAgainstRealUCI(t *testing.T) {
+	runner := openwrt.Runner{}
+	if _, err := runner.Resolve("uci"); err != nil {
+		t.Skip("real UCI required")
+	}
+	for _, conflict := range []bool{false, true} {
+		t.Run(map[bool]string{false: "rollback", true: "third-party-conflict"}[conflict], func(t *testing.T) {
+			root := t.TempDir()
+			configDir, deltaDir := filepath.Join(root, "config"), filepath.Join(root, "delta")
+			for _, dir := range []string{configDir, deltaDir} {
+				if err := os.MkdirAll(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for pkg, body := range map[string]string{
+				"wireless": "config wifi-iface 'home'\n option mode 'ap'\n option ssid 'HomeNet'\n option key 'untouched-secret'\n",
+				"network":  "config interface 'lan'\n option proto 'static'\n option ipaddr '192.168.1.1'\n",
+				"firewall": "config zone\n option name 'wan'\n list network 'wan'\n",
+			} {
+				if err := os.WriteFile(filepath.Join(configDir, pkg), []byte(body), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			store, err := NewUCIStore(runner, StoreOptions{Staging: filepath.Join(root, "stage"), ConfigDir: configDir, DeltaDir: deltaDir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fw, err := store.show(t.Context(), configDir, deltaDir, "firewall")
+			if err != nil {
+				t.Fatal(err)
+			}
+			zone := fw.SectionsOfType("zone")[0].Name
+			member := Key{Section: zone, Option: "network"}
+			before, err := store.Read(t.Context(), "firewall", []Key{member})
+			if err != nil || before[member] != (Value{Text: `["wan"]`, Present: true, IsList: true}) {
+				t.Fatal("lost singleton list type", err)
+			}
+			plans := []PackagePlan{
+				{Package: "network", Changes: []Change{{Key: Key{Section: "wwan"}, Text: "interface"}, {Key: Key{Section: "wwan", Option: "proto"}, Text: "dhcp"}}},
+				{Package: "firewall", Changes: []Change{ListChange(member, "wan", "wwan")}},
+				{Package: "wireless", Changes: []Change{{Key: Key{Section: "station"}, Text: "wifi-iface"}, {Key: Key{Section: "station", Option: "mode"}, Text: "sta"}, {Key: Key{Section: "station", Option: "key"}, Text: "a'quote\\backslash"}}},
+			}
+			safe := deferredReload{store}
+			paths := Paths{Dir: filepath.Join(root, "journal")}
+			g, err := BeginGroup(t.Context(), safe, paths, GroupPlan{TaskID: "real", ConfigRevision: 7, ConfirmWithin: time.Minute, Packages: plans}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := g.Apply(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if conflict {
+				if err := store.Stage(t.Context(), "firewall", []Change{ListChange(member, "wan", "wwan", "third_party")}); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Commit(t.Context(), "firewall"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Recreate the object, as on a daemon restart with all RAM state gone.
+			g, _, err = LoadGroup(safe, paths, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = g.Recover(context.Background(), 7, nil)
+			if (err != nil) != conflict {
+				t.Fatal("unexpected recovery result", err)
+			}
+			after, err := store.Read(t.Context(), "firewall", []Key{member})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := before[member]
+			if conflict {
+				want.Text = `["wan","wwan","third_party"]`
+			}
+			if after[member] != want {
+				t.Fatal("lost firewall list or third-party change")
+			}
+			for pkg, key := range map[string]Key{"network": {Section: "wwan"}, "wireless": {Section: "station"}} {
+				values, err := store.Read(t.Context(), pkg, []Key{key})
+				if err != nil || values[key].Present {
+					t.Fatal("created section not undone", err)
+				}
+			}
+			values, err := store.Read(t.Context(), "wireless", []Key{{Section: "home", Option: "key"}})
+			if err != nil || values[Key{Section: "home", Option: "key"}].Text != "untouched-secret" {
+				t.Fatal("home AP changed", err)
+			}
+		})
+	}
+}
 
 // The store against the real uci, on a machine that has one.
 //

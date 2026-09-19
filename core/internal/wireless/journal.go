@@ -97,6 +97,8 @@ type Entry struct {
 	// AfterHash is what this transaction wrote, or "" for a deletion.
 	AfterHash    string `json:"after_hash"`
 	AfterDeleted bool   `json:"after_deleted"`
+	BeforeList   bool   `json:"before_list,omitempty"`
+	AfterList    bool   `json:"after_list,omitempty"`
 }
 
 // Journal is the minimal record that survives a reboot.
@@ -131,7 +133,7 @@ type Journal struct {
 
 // JournalVersion is bumped when the record's shape changes. A journal this
 // build cannot read is left alone and reported, never guessed at.
-const JournalVersion = 1
+const JournalVersion = 2
 
 // FileMode and DirMode: the journal and the backup are both private. The
 // backup holds a passphrase in clear, and the journal holds enough structure to
@@ -273,7 +275,7 @@ func (p Paths) LoadJournal() (*Journal, bool, error) {
 		}
 		return nil, false, err
 	}
-	if journal.Version != JournalVersion {
+	if journal.Version != JournalVersion && journal.Version != 1 {
 		// Left alone rather than guessed at. A record this build does not
 		// understand describes changes it cannot safely undo.
 		return nil, true, domain.Errorf(domain.CodeRecoveryRequired,

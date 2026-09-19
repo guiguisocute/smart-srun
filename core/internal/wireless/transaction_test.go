@@ -73,7 +73,7 @@ func (s *fakeStore) Commit(context.Context, string) error {
 			delete(s.values, change.Key)
 			continue
 		}
-		s.values[change.Key] = Value{Text: change.Text, Present: true}
+		s.values[change.Key] = Value{Text: change.Text, Present: true, IsList: change.IsList}
 	}
 	s.staged = nil
 	return nil
@@ -81,6 +81,16 @@ func (s *fakeStore) Commit(context.Context, string) error {
 
 func (s *fakeStore) PendingChanges(context.Context, string) ([]string, error) {
 	return s.pending, nil
+}
+
+func (s *fakeStore) SectionKeys(_ context.Context, _, section string) ([]Key, error) {
+	var keys []Key
+	for key, value := range s.values {
+		if key.Section == section && !key.IsSection() && value.Present {
+			keys = append(keys, key)
+		}
+	}
+	return keys, nil
 }
 
 func (s *fakeStore) Reload(context.Context) error {
@@ -1164,8 +1174,7 @@ func TestAnInterruptedRollbackIsResumed(t *testing.T) {
 
 // A terminal journal left behind is cleared rather than examined forever.
 func TestATerminalJournalIsClearedAtStartup(t *testing.T) {
-	for _, phase := range []Phase{PhaseCommitted, PhaseRolledBack,
-		PhaseRecoveryRequired} {
+	for _, phase := range []Phase{PhaseCommitted, PhaseRolledBack} {
 		where := paths(t)
 		if err := where.SaveJournal(&Journal{
 			Version: JournalVersion, TaskID: "t", Phase: phase,

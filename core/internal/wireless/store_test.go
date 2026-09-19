@@ -116,13 +116,39 @@ func (f *fakeUCI) Run(_ context.Context, program string, args ...string) (
 
 	config, delta := flags["-c"], flags["-t"]
 	switch command {
-	case "show":
+	case "show", "export":
 		if f.missing {
 			return openwrt.Result{}, &openwrt.ExitError{Program: "uci", Code: 1}
 		}
 		data, err := os.ReadFile(filepath.Join(config, rest[1]))
 		if err != nil {
 			return openwrt.Result{}, &openwrt.ExitError{Program: "uci", Code: 1}
+		}
+		if command == "export" {
+			parsed, err := openwrt.ParseUCIShow(rest[1], data)
+			if err != nil {
+				return openwrt.Result{}, err
+			}
+			var output strings.Builder
+			output.WriteString("package " + rest[1] + "\n")
+			for _, section := range parsed.Sections() {
+				output.WriteString("config " + section.Type + " '" + section.Name + "'\n")
+				for _, name := range section.OptionNames() {
+					value, _ := section.Lookup(name)
+					items, kind := []string{value.Text}, "option"
+					if value.IsList {
+						items, kind = value.List, "list"
+					}
+					for _, item := range items {
+						quoted, err := quoteBatch(item)
+						if err != nil {
+							return openwrt.Result{}, err
+						}
+						output.WriteString(kind + " " + name + " " + quoted + "\n")
+					}
+				}
+			}
+			data = []byte(output.String())
 		}
 		return openwrt.Result{Stdout: data, StdoutTruncated: f.truncate}, nil
 
@@ -165,7 +191,7 @@ func splitFlags(args []string) (map[string]string, []string) {
 		case "-c", "-t":
 			flags[args[index]] = args[index+1]
 			index++
-		case "-q":
+		case "-q", "-n":
 		default:
 			return flags, args[index:]
 		}
@@ -699,20 +725,21 @@ func TestWritingAnEmptyValueIsRefused(t *testing.T) {
 
 // A list is not a string, and reading one as its first item would record a
 // "before" value that cannot restore what was there.
-func TestReadRefusesAListOption(t *testing.T) {
+func TestReadPreservesAListOption(t *testing.T) {
 	fixture := newFixture(t)
 	if err := os.WriteFile(fixture.live,
 		[]byte(liveWireless+"wireless.sta0.ifname='wlan0' 'wlan1'\n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, err := fixture.store.Read(t.Context(), "wireless",
+	values, err := fixture.store.Read(t.Context(), "wireless",
 		[]Key{{Section: "sta0", Option: "ifname"}})
-	if err == nil {
-		t.Fatal("Read returned a scalar for a list option")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "列表") {
-		t.Errorf("the error does not say why: %v", err)
+	value := values[Key{Section: "sta0", Option: "ifname"}]
+	if !value.IsList || value.Text != `["wlan0","wlan1"]` {
+		t.Fatal("lost list members or type")
 	}
 }
 
@@ -1265,7 +1292,7 @@ func TestReadingASectionReportsItsType(t *testing.T) {
 // An exit status uci uses for something else is not turned into NotFound.
 func TestAnOrdinaryFailureIsNotReportedAsAMissingPackage(t *testing.T) {
 	fixture := newFixture(t)
-	fixture.uci.failOn = "show"
+	fixture.uci.failOn = "export"
 
 	_, err := fixture.store.Read(t.Context(), "wireless", []Key{ssid})
 	if err == nil {
