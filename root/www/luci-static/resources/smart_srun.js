@@ -1045,6 +1045,17 @@
       if (nodes.status) {
         nodes.status.textContent = baseUrl ? '嗅探中...' : '正在检查出口是否被认证页拦截...';
       }
+      if (path === 'detect_acid') {
+        var mode = getFieldValue('jm-access_mode');
+        postACID({base_url: baseUrl, access_mode: mode,
+          iface: mode === 'wired' ? getFieldValue('jm-wired_iface') : (readJson('smart-probe-config', {}).sta_iface || 'wwan'),
+          ssid: mode === 'wifi' ? getFieldValue('jm-ssid') : ''}, function(err, data) {
+          if (!nodes.base || !document.body.contains(nodes.base)) return;
+          applyDetectResult(err ? {ok: false, message: err.message} : data, nodes);
+          if (button) button.disabled = false;
+        });
+        return;
+      }
       var xhr = new XMLHttpRequest();
       xhr.open('POST', '/cgi-bin/luci/admin/services/smart_srun/' + path, true);
       xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
@@ -1818,8 +1829,78 @@
     return bar;
   }
 
+  // Preserve the wizard's callbacks and presentation while the daemon owns
+  // the bounded job. Polling reads cached action state; it never probes again.
+  function postACID(values, done) {
+    var stopped = false, active = null, timer = null, actionId = '';
+    var deadline = Date.now() + 45000;
+    var tokenNode = document.querySelector('input[name="token"]');
+    var token = tokenNode ? tokenNode.value : ((window.L && L.env) ? L.env.token : '');
+    values.idempotency_key = 'luci-probe-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+    function post(params, callback) {
+      var xhr = new XMLHttpRequest(), encoded = ['token=' + encodeURIComponent(token || '')];
+      active = xhr;
+      for (var key in params) {
+        if (Object.prototype.hasOwnProperty.call(params, key)) encoded.push(encodeURIComponent(key) + '=' + encodeURIComponent(params[key]));
+      }
+      xhr.open('POST', '/cgi-bin/luci/admin/services/smart_srun/detect_acid', true);
+      xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
+      xhr.timeout = 12000;
+      xhr.onload = function() {
+        if (stopped) return;
+        var data;
+        try { data = JSON.parse(xhr.responseText); } catch (e) {}
+        if (xhr.status !== 200 || !data || data.ok === false) {
+          callback(new Error((data && data.message) || '探测请求失败，请检查 LuCI 登录状态。')); return;
+        }
+        callback(null, data);
+      };
+      xhr.onerror = xhr.ontimeout = function() { if (!stopped) callback(new Error('探测请求超时或连接失败，请稍后再试。')); };
+      xhr.send(encoded.join('&'));
+    }
+    function finish(err, data) {
+      if (stopped) return;
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      done(err, data || {});
+    }
+    function poll(err, data) {
+      if (err) { finish(err); return; }
+      actionId = data.action_id || data.id || actionId;
+      if (!data.action_id && data.state === 'succeeded') { finish(null, data.result || {}); return; }
+      if (!data.action_id && (data.state === 'failed' || data.state === 'cancelled' || data.state === 'interrupted')) {
+        finish(new Error(data.message || '探测未完成')); return;
+      }
+      if (!actionId || Date.now() >= deadline) { cancel(); finish(new Error('探测等待超时，请稍后再试。')); return; }
+      timer = setTimeout(function() { post({action: 'status', action_id: actionId}, poll); }, 400);
+    }
+    function cancel() {
+      if (actionId) post({action: 'cancel', action_id: actionId}, function() {});
+    }
+    post(values, poll);
+    return { abort: function() {
+      if (stopped) return;
+      if (active) active.abort();
+      if (timer) clearTimeout(timer);
+      cancel();
+      stopped = true;
+    }};
+  }
+
   function wizPost(path, values, done, timeout) {
     var owner = wiz;
+    if (path === 'detect_acid') {
+      var job = postACID(values, function(err, data) {
+        if (wiz !== owner || owner.xhr !== job) return;
+        owner.xhr = null;
+        owner.busy = '';
+        if (!owner.root || !document.body.contains(owner.root) ||
+            !document.body.classList.contains('modal-overlay-active')) return;
+        done(err, data || {});
+      });
+      owner.xhr = job;
+      return;
+    }
     var xhr = new XMLHttpRequest();
     owner.xhr = xhr;
     xhr.open('POST', '/cgi-bin/luci/admin/services/smart_srun/' + path, true);

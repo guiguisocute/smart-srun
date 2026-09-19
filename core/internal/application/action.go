@@ -54,10 +54,12 @@ const (
 	KindForcedLogout Kind = "forced_logout"
 	// KindPresetsRefresh reads a selected line without authenticating an account.
 	KindPresetsRefresh Kind = "presets_refresh"
+	// KindDetectACID reads portal pages on a selected line without credentials.
+	KindDetectACID Kind = "detect_acid"
 )
 
 var kinds = []Kind{KindLogin, KindLogout, KindRelogin, KindSwitchCampus,
-	KindSwitchHotspot, KindMaintain, KindForcedLogout, KindPresetsRefresh}
+	KindSwitchHotspot, KindMaintain, KindForcedLogout, KindPresetsRefresh, KindDetectACID}
 
 func (k Kind) Valid() bool { return slices.Contains(kinds, k) }
 
@@ -134,6 +136,12 @@ type Request struct {
 	HotspotID string
 	// Interface is an explicit uplink for account-free catalogue refreshes.
 	Interface string
+	// Probe fields contain only the draft address and selected network, never
+	// credentials. Strings keep action copies immutable across worker boundaries.
+	ProbeURL  string
+	ProbeSSID string
+	ProbeMode string
+	Owner     string
 	// IdempotencyKey is supplied by the caller -- the LuCI click id, or the CLI
 	// invocation. Resubmitting the same key returns the same action instead of
 	// starting a second one, which is what makes a double-click harmless.
@@ -159,7 +167,7 @@ func (r Request) fingerprint() string {
 	if r.IgnoreQuiet {
 		quiet = "1"
 	}
-	return string(r.Kind) + "\x00" + r.AccountID + "\x00" + r.HotspotID + "\x00" + quiet + "\x00" + r.Interface + "\x00" + strconv.FormatBool(r.CheckRevision) + ":" + strconv.FormatUint(r.ConfigRevision, 10)
+	return string(r.Kind) + "\x00" + r.AccountID + "\x00" + r.HotspotID + "\x00" + quiet + "\x00" + r.Interface + "\x00" + strconv.FormatBool(r.CheckRevision) + ":" + strconv.FormatUint(r.ConfigRevision, 10) + "\x00" + r.ProbeURL + "\x00" + r.ProbeSSID + "\x00" + r.ProbeMode + "\x00" + r.Owner
 }
 
 // Validate refuses a request the coordinator could not act on.
@@ -167,17 +175,23 @@ func (r Request) Validate() error {
 	if !r.Kind.Valid() {
 		return domain.Errorf(domain.CodeInvalidArgument, "未知的动作类型：%q", string(r.Kind))
 	}
-	if r.Kind == KindPresetsRefresh {
+	if r.Kind == KindPresetsRefresh || r.Kind == KindDetectACID {
 		if r.Interface == "" || len(r.Interface) > 64 || strings.ContainsAny(r.Interface, "\x00\r\n\t /\\") {
-			return domain.Errorf(domain.CodeInvalidArgument, "刷新预设需要明确的有效线路 iface")
+			return domain.Errorf(domain.CodeInvalidArgument, "需要明确的有效线路 iface")
 		}
 		if r.AccountID != "" || r.HotspotID != "" || r.IgnoreQuiet {
-			return domain.Errorf(domain.CodeInvalidArgument, "刷新预设不接受账号、热点或静默覆盖参数")
+			return domain.Errorf(domain.CodeInvalidArgument, "此任务不接受账号、热点或静默覆盖参数")
 		}
 	} else if r.Interface != "" {
 		return domain.Errorf(domain.CodeInvalidArgument, "此动作不接受 iface")
 	}
-	if r.AccountID == "" && r.Kind != KindSwitchHotspot && r.Kind != KindPresetsRefresh {
+	if r.Kind != KindDetectACID && (r.ProbeURL != "" || r.ProbeSSID != "" || r.ProbeMode != "") {
+		return domain.Errorf(domain.CodeInvalidArgument, "此动作不接受探测参数")
+	}
+	if r.Kind == KindDetectACID && (r.ProbeURL == "" || len(r.ProbeURL) > 2048 || len(r.ProbeSSID) > 32 || strings.ContainsAny(r.ProbeURL+r.ProbeSSID+r.ProbeMode, "\x00\r\n")) {
+		return domain.Errorf(domain.CodeInvalidArgument, "探测参数无效")
+	}
+	if r.AccountID == "" && r.Kind != KindSwitchHotspot && r.Kind != KindPresetsRefresh && r.Kind != KindDetectACID {
 		return domain.Errorf(domain.CodeInvalidArgument, "动作 %s 需要指定账号", string(r.Kind))
 	}
 	if r.Kind == KindSwitchHotspot && r.HotspotID == "" {
@@ -205,6 +219,9 @@ type Action struct {
 	Phase   Phase
 	Message string
 	Code    domain.ErrorCode
+	// ResultJSON is a bounded, credential-free task result. Only action.get
+	// publishes it; periodic snapshots do not duplicate retained task payloads.
+	ResultJSON string
 
 	QueuedAt  time.Time
 	StartedAt time.Time
@@ -258,6 +275,7 @@ type Outcome struct {
 	// the shared projection itself would be deciding that for itself -- which
 	// is the second writer this whole design exists to avoid.
 	Observation *observe.Observation
+	ResultJSON  string
 }
 
 // Runner performs one action.

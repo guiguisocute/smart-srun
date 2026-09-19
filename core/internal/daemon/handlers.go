@@ -40,6 +40,7 @@ func (d *Daemon) register(registry *control.Registry) {
 	registry.Register("action.submit", d.actionSubmit)
 	registry.Register("action.get", d.actionGet)
 	registry.Register("action.cancel", d.actionCancel)
+	registry.Register("detect.acid", d.detectACID)
 	registry.Register("log.tail", d.logTail)
 	registry.Register("log.download", d.logDownload)
 	registry.Register("log.clear", d.logClear)
@@ -158,6 +159,7 @@ var schedulerOnly = map[application.Kind]bool{
 	application.KindMaintain:       true,
 	application.KindForcedLogout:   true,
 	application.KindPresetsRefresh: true, // submitted through presets.refresh
+	application.KindDetectACID:     true, // submitted through detect.acid
 }
 
 func (d *Daemon) actionSubmit(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -197,6 +199,9 @@ func (d *Daemon) actionSubmit(ctx context.Context, raw json.RawMessage) (any, er
 // ActionParams names one action.
 type ActionParams struct {
 	ActionID string `json:"action_id"`
+	// LuCI supplies its authenticated session when polling a discovery job.
+	// The privileged CLI may inspect all actions without this web-only guard.
+	Session string `json:"session,omitempty"`
 }
 
 func (d *Daemon) actionGet(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -208,13 +213,28 @@ func (d *Daemon) actionGet(ctx context.Context, raw json.RawMessage) (any, error
 	if err != nil {
 		return nil, err
 	}
-	return ViewOf(action), nil
+	if params.Session != "" && action.Request.Owner != probeOwner(params.Session) {
+		return nil, domain.Errorf(domain.CodeNotFound, "此会话没有该探测任务")
+	}
+	return struct {
+		ActionView
+		Result json.RawMessage `json:"result,omitempty"`
+	}{ViewOf(action), json.RawMessage(action.ResultJSON)}, nil
 }
 
 func (d *Daemon) actionCancel(ctx context.Context, raw json.RawMessage) (any, error) {
 	params, err := decodeActionParams(raw)
 	if err != nil {
 		return nil, err
+	}
+	if params.Session != "" {
+		action, err := d.actions.Action(ctx, params.ActionID)
+		if err != nil {
+			return nil, err
+		}
+		if action.Request.Owner != probeOwner(params.Session) {
+			return nil, domain.Errorf(domain.CodeNotFound, "此会话没有该探测任务")
+		}
 	}
 	if err := d.actions.Cancel(ctx, params.ActionID); err != nil {
 		return nil, err

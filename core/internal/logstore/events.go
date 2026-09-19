@@ -53,6 +53,10 @@ const (
 	// EventPresetsRefresh is a catalogue refresh, which touches the network but
 	// authenticates nothing.
 	EventPresetsRefresh = "presets_refresh"
+	// EventDetectProbe is one read-only look at a gateway's own pages. It
+	// records the line and how many addresses were visited, never a credential:
+	// discovery does not have one.
+	EventDetectProbe = "detect_probe"
 
 	// EventInternalError is a fault with nobody to return it to: a snapshot
 	// that could not be written, a connection that failed mid-answer.
@@ -92,6 +96,7 @@ var catalogue = []Event{
 	{EventLineConflict, domain.LogWarn, true, ""},
 
 	{EventPresetsRefresh, domain.LogInfo, true, ""},
+	{EventDetectProbe, domain.LogInfo, true, "只读探测，永远没有凭据字段"},
 
 	{EventInternalError, domain.LogError, false, ""},
 	{EventLogCleared, domain.LogInfo, false, ""},

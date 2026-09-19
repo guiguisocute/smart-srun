@@ -272,12 +272,37 @@ local function detect_connection_args()
 end
 
 function action_detect_acid()
-    local base_url = fv("base_url")
-    local args = fv("access_mode") ~= "" and detect_connection_args() or ""
-    local payload = run_srunnet_json("detect acid " .. util.shellquote(base_url) .. args)
-    if type(payload) == "table" and payload.acid ~= nil then
-        payload.value = tostring(payload.acid or "")
-        payload.ac_id = tostring(payload.acid or "")
+    local dispatcher = require "luci.dispatcher"
+    if not dispatcher.test_post_security() then return end
+    local session = dispatcher.context.authsession
+    if type(session) ~= "string" or session == "" then
+        write_json_response({ ok = false, message = "LuCI 登录已失效，请重新登录" })
+        return
+    end
+    local action = fv("action")
+    local payload, err
+    if action == "status" or action == "cancel" then
+        payload, err = rpc.call(action == "status" and "action.get" or "action.cancel", {
+            action_id = fv("action_id"), session = session,
+        })
+    elseif action == "" or action == "start" then
+        payload, err = rpc.call_started("detect.acid", {
+            base_url = fv("base_url"), access_mode = fv("access_mode"),
+            iface = fv("iface"), ssid = fv("ssid"),
+            idempotency_key = fv("idempotency_key"), session = session,
+        })
+    else
+        write_json_response({ ok = false, message = "探测操作无效" })
+        return
+    end
+    if not payload then
+        write_json_response({ ok = false, code = err and err.code, message = rpc.message(err, "探测失败") })
+        return
+    end
+    payload.ok = true
+    if type(payload.result) == "table" then
+        payload.result.value = tostring(payload.result.acid or "")
+        payload.result.ac_id = tostring(payload.result.acid or "")
     end
     write_json_response(payload)
 end
@@ -671,6 +696,7 @@ local event_zh = {
     line_conflict       = "线路冲突",
     internal_error      = "内部错误",
     log_cleared         = "日志已清空",
+    detect_probe        = "探测认证页面",
     status_query        = "状态查询",
     update_status       = "更新状态",
     presets_refresh     = "学校预设刷新",

@@ -132,10 +132,17 @@ func (c *Coordinator) onFinish(done completion) {
 		if outcome.State == StateSucceeded && c.finalize != nil {
 			outcome = c.finalize(*action, outcome)
 		}
+		if len(outcome.ResultJSON) > 32<<10 {
+			outcome = Outcome{State: StateFailed, Code: domain.CodeInternal,
+				Message: "任务结果超过大小上限"}
+		}
 		done.outcome = outcome
 		action.transition(outcome.State, now)
 		action.Message = outcome.Message
 		action.Code = outcome.Code
+		if outcome.State == StateSucceeded {
+			action.ResultJSON = outcome.ResultJSON
+		}
 		action.MaintenanceDeferred = outcome.MaintenanceDeferred
 	}
 

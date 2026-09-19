@@ -16,6 +16,7 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/observe"
 	"github.com/matthewlu070111/smart-srun/core/internal/openwrt"
 	"github.com/matthewlu070111/smart-srun/core/internal/policy"
+	"github.com/matthewlu070111/smart-srun/core/internal/portal"
 	"github.com/matthewlu070111/smart-srun/core/internal/presets"
 	"github.com/matthewlu070111/smart-srun/core/internal/transport"
 )
@@ -65,6 +66,12 @@ type Options struct {
 	// It is how a supervisor watches the lifecycle without polling, and it is
 	// where the structured event log attaches in M11.
 	Observer func(application.Action)
+
+	// OpenProbe opens a read-only client bound to one line, for discovery. Nil
+	// uses this device's adapter and a real bound socket; a test supplies one
+	// so that a probe can be exercised against a local server, which no bound
+	// client could reach.
+	OpenProbe func(ctx context.Context, iface string) (portal.Fetcher, func(), error)
 }
 
 // Daemon is the assembled service.
@@ -78,6 +85,7 @@ type Daemon struct {
 	config        *config.Repository
 	store         *observe.Store
 	events        *logstore.Store
+	openProbe     func(ctx context.Context, iface string) (portal.Fetcher, func(), error)
 	actions       *application.Coordinator
 	observer      func(application.Action)
 	users         *presets.UserStore
@@ -215,6 +223,11 @@ func Run(ctx context.Context, options Options) error {
 		published:     map[string]string{},
 		dirty:         make(chan struct{}, 1),
 	}
+	service.openProbe = options.OpenProbe
+	if service.openProbe == nil {
+		service.openProbe = service.openDeviceProbe(
+			openwrt.NewAdapter(openwrt.Runner{}).ResolveBinding)
+	}
 	service.store.SetRevision(repository.Revision())
 
 	// The threshold is the user's setting, applied before the first line: a log
@@ -240,6 +253,7 @@ func Run(ctx context.Context, options Options) error {
 		}
 	}
 	runner = presetRoutingRunner{actions: runner, refresh: refresh}
+	runner = probeRoutingRunner{actions: runner, daemon: service}
 
 	// The maintenance loop is built before the coordinator and submits through
 	// a closure, because each needs the other: the loop submits actions, and
@@ -363,7 +377,10 @@ const wirelessLine = "wireless"
 // lock spec 04 requires. It keeps this process from dispatching two wireless
 // actions at once; the lock is what protects the radio from everything else.
 func (d *Daemon) lineOf(request application.Request) string {
-	if request.Kind == application.KindPresetsRefresh {
+	if request.Kind == application.KindPresetsRefresh || request.Kind == application.KindDetectACID {
+		if request.ProbeMode == "wifi" {
+			return wirelessLine
+		}
 		if request.Interface == d.config.Snapshot().STAIface {
 			return wirelessLine
 		}

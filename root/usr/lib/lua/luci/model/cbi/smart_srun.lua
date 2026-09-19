@@ -886,6 +886,7 @@ function tables_html.cfgvalue()
   </div>
 </div>
 <textarea id="smart-campus-data" style="display:none;">]] .. util.pcdata(campus_json) .. [[</textarea>
+<textarea id="smart-probe-config" style="display:none;">]] .. util.pcdata(jsonc.stringify({sta_iface = cfg.sta_iface or ""})) .. [[</textarea>
 <textarea id="smart-hotspot-data" style="display:none;">]] .. util.pcdata(hotspot_json) .. [[</textarea>
 <textarea id="smart-radio-options" style="display:none;">]] .. util.pcdata(radio_options) .. [[</textarea>
 <textarea id="smart-school-preset-data" style="display:none;">]] .. util.pcdata(school_presets_json) .. [[</textarea>
