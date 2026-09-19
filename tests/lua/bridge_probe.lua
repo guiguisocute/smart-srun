@@ -178,7 +178,8 @@ local snapshot = {
     written_at = "2026-09-18T12:00:30Z",
     accounts = {
         { account_id = "c1", link = "Ready", auth = "VerifiedSelf",
-          connectivity = "InternetReachable", identity = "2021001@telecom" },
+          connectivity = "InternetReachable", identity = "2021001@telecom",
+          line = { iface = "wan", device = "eth0.2", address = "10.0.0.77" } },
     },
     actions = {
         { id = "a1", kind = "manual_login", state = "succeeded", message = "认证完成",
@@ -193,7 +194,14 @@ equal("status.mode_label", view.mode_label, "校园网模式（有线）")
 equal("status.access_mode", view.current_campus_access_mode, "wired")
 equal("status.account_label", view.campus_account_label, "宿舍有线")
 equal("status.identity", view.online_account_label, "2021001@telecom")
+-- The line as observed, not as configured: the account says "wan", the device
+-- that carried the attempt was eth0.2, and the address is one nobody could
+-- have guessed from the configuration.
 equal("status.iface", view.current_iface, "wan")
+equal("status.device", view.current_device, "eth0.2")
+equal("status.ip", view.current_ip, "10.0.0.77")
+equal("status.not_paused", view.paused, false)
+equal("status.not_in_quiet", view.in_quiet, false)
 equal("status.hotspot_label", view.hotspot_profile_label, "手机热点")
 equal("status.last_action", view.last_action, "manual_login")
 equal("status.result", view.action_result, "ok")
@@ -244,6 +252,39 @@ local cancelled = {
     actions = { { id = "a5", kind = "manual_login", state = "cancelled", ended_at = "2026-09-18T12:00:00Z" } },
 }
 equal("status.cancelled", bridge.status_view(cancelled, CONFIG, 1000).action_result, "forced")
+
+-- Quiet hours suspend a service that is still switched on. The page has to be
+-- able to say that without contradicting the switch beside it.
+local quiet = {
+    service = "running", enabled = true, pause = { "QuietHours" },
+    written_at = "2026-09-18T12:00:00Z", accounts = {}, actions = {},
+}
+local quiet_view = bridge.status_view(quiet, CONFIG, 1000)
+equal("status.quiet_paused", quiet_view.paused, true)
+equal("status.quiet_flag", quiet_view.in_quiet, true)
+equal("status.quiet_keeps_the_switch", quiet_view.enabled, true)
+
+local disabled = {
+    service = "running", enabled = false, pause = { "UserDisabled" },
+    written_at = "2026-09-18T12:00:00Z", accounts = {}, actions = {},
+}
+equal("status.disabled_is_not_quiet", bridge.status_view(disabled, CONFIG, 1000).in_quiet, false)
+equal("status.disabled_is_paused", bridge.status_view(disabled, CONFIG, 1000).paused, true)
+
+-- A line nobody has observed yet leaves the address empty rather than
+-- repeating the configuration.
+local unobserved = {
+    service = "running", enabled = true, written_at = "2026-09-18T12:00:00Z",
+    accounts = { { account_id = "c1", link = "Ready", auth = "Unknown",
+                   connectivity = "Unknown" } },
+    actions = {},
+}
+local unobserved_view = bridge.status_view(unobserved, CONFIG, 1000)
+equal("status.unobserved_ip", unobserved_view.current_ip, "")
+equal("status.unobserved_device", unobserved_view.current_device, "")
+-- The configured interface still stands in while the link is ready, which is
+-- the first moment after a save and before the first attempt.
+equal("status.unobserved_iface_falls_back", unobserved_view.current_iface, "wan")
 
 -- A stopped service is a state, not a page error.
 local stopped = bridge.status_view({ service = "stopped", enabled = false }, CONFIG, 1000)

@@ -300,6 +300,14 @@ func TestASuccessfulLoginIsVerifiedBeforeItIsReported(t *testing.T) {
 	if got.Generation == 0 {
 		t.Error("the observation carries no binding generation")
 	}
+	// The line as the attempt found it, not as the account is configured: the
+	// status page names the device and address that carried this login, and a
+	// configured interface name is not evidence that anything reached anything.
+	steady := steadyBinding()
+	if got.Line.Iface != steady.LogicalIface || got.Line.Device != steady.L3Device ||
+		got.Line.Address != steady.SourceIPv4.String() {
+		t.Errorf("Line = %+v, want the binding this attempt used", got.Line)
+	}
 }
 
 // The gateway saying ok is the gateway's claim about itself.

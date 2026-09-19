@@ -47,7 +47,24 @@ type Observation struct {
 	// account: that is reported, never acted on.
 	Identity string
 
+	// Line is how the account reached the network at this moment: the interface
+	// the user selected, the device that actually carried layer 3, and the
+	// address the socket was bound to.
+	//
+	// Observed, not configured. The interface an account is set to use and the
+	// device that carried its last attempt are different facts, and a status
+	// page that showed the first as the second would claim an observation
+	// nobody made.
+	Line LineView
+
 	At time.Time
+}
+
+// LineView is the observed shape of one uplink.
+type LineView struct {
+	Iface   string `json:"iface,omitempty"`
+	Device  string `json:"device,omitempty"`
+	Address string `json:"address,omitempty"`
 }
 
 // Drop says why an observation was not recorded.
@@ -74,33 +91,40 @@ const (
 // last_action_message meant the explanation of a failed login disappeared a few
 // seconds after it appeared, while the user was still reading it.
 type Note struct {
-	ActionID string
-	Kind     string
-	State    string
-	Message  string
-	Code     domain.ErrorCode
-	At       time.Time
+	ActionID string           `json:"action_id"`
+	Kind     string           `json:"kind"`
+	State    string           `json:"state"`
+	Message  string           `json:"message,omitempty"`
+	Code     domain.ErrorCode `json:"code,omitempty"`
+	At       time.Time        `json:"at"`
 }
 
 // AccountView is one account as a reader sees it.
+//
+// The tags are part of the contract, not decoration: this value is half of
+// status.get, and the page reads it by these names. Without them Go would
+// publish its own field names into a document whose every other member is
+// snake_case, and the page would quietly match nothing -- which is exactly what
+// happened before they were added.
 type AccountView struct {
-	AccountID string
+	AccountID string `json:"account_id"`
 
-	Link         domain.LinkState
-	Auth         domain.AuthState
-	Connectivity domain.Connectivity
-	Identity     string
-	ObservedAt   time.Time
+	Link         domain.LinkState    `json:"link"`
+	Auth         domain.AuthState    `json:"auth"`
+	Connectivity domain.Connectivity `json:"connectivity"`
+	Identity     string              `json:"identity,omitempty"`
+	Line         LineView            `json:"line"`
+	ObservedAt   time.Time           `json:"observed_at"`
 
-	Revision   uint64
-	Generation uint64
-	Sequence   uint64
+	Revision   uint64 `json:"config_revision"`
+	Generation uint64 `json:"generation"`
+	Sequence   uint64 `json:"sequence"`
 
 	// RunningAction is the action in flight for this account, if any.
-	RunningAction string
+	RunningAction string `json:"running_action,omitempty"`
 	// Note is the last finished action's result. Nil when nothing has finished
 	// since the last one started.
-	Note *Note
+	Note *Note `json:"note,omitempty"`
 }
 
 // Snapshot is one combined read, which is what spec 03 requires of status.get:
@@ -185,6 +209,7 @@ func (s *Store) Accept(observation Observation) (bool, Drop) {
 	current.view.Auth = observation.Auth
 	current.view.Connectivity = observation.Connectivity
 	current.view.Identity = observation.Identity
+	current.view.Line = observation.Line
 	current.view.ObservedAt = observation.At
 	current.view.Revision = observation.Revision
 	current.view.Generation = observation.Generation

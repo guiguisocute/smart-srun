@@ -16,6 +16,7 @@ func observation(sequence uint64) Observation {
 		Link: domain.LinkReady, Auth: domain.AuthVerifiedSelf,
 		Connectivity: domain.ConnectivityInternetReachable,
 		Identity:     "2020123456", At: moment,
+		Line: LineView{Iface: "wan", Device: "eth0.2", Address: "10.0.0.77"},
 	}
 }
 
@@ -40,6 +41,13 @@ func TestAnObservationBecomesTheView(t *testing.T) {
 	}
 	if view.Identity != "2020123456" || !view.ObservedAt.Equal(moment) {
 		t.Errorf("view = %+v", view)
+	}
+	// The line the observation was made on travels with it. A status page that
+	// had to fall back to the configuration would be naming an interface
+	// nobody had looked at.
+	if view.Line.Iface != "wan" || view.Line.Device != "eth0.2" ||
+		view.Line.Address != "10.0.0.77" {
+		t.Errorf("Line = %+v, want what was observed", view.Line)
 	}
 	if _, known := store.Account("nobody"); known {
 		t.Error("an account nobody observed exists")

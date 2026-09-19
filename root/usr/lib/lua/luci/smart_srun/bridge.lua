@@ -475,10 +475,10 @@ end
 
 -- status_view is the one combined answer the page polls.
 --
--- What it cannot know, it leaves empty. The daemon's status projection
--- currently reports link, authentication and connectivity per account; SSID,
--- BSSID, signal, channel and address are not in it yet, and filling them in
--- from the configuration would state as observed what is only configured.
+-- What it cannot know, it leaves empty. The daemon reports link, authentication
+-- and connectivity per account, plus the line each attempt actually used;
+-- SSID, BSSID, signal and channel are not in it yet, and filling those in from
+-- the configuration would state as observed what is only configured.
 function M.status_view(snapshot, config, now)
     now = now or os.time()
     local running = tostring(snapshot.service or "") == "running"
@@ -537,6 +537,13 @@ function M.status_view(snapshot, config, now)
     end
 
     local link_ready = view ~= nil and tostring(view.link or "") == "Ready"
+    local line = type(view) == "table" and type(view.line) == "table" and view.line or {}
+    -- Quiet hours suspend a service the user has switched on; the page has
+    -- always shown that separately from the switch itself.
+    local paused = {}
+    for _, reason in ipairs(snapshot.pause or {}) do
+        paused[tostring(reason)] = true
+    end
     local payload = {
         status = status,
         enabled = snapshot.enabled and true or false,
@@ -553,8 +560,13 @@ function M.status_view(snapshot, config, now)
         current_ssid = "",
         current_bssid = "",
         current_wireless_ifname = "",
-        current_iface = "",
-        current_ip = "",
+        -- The line the last attempt actually reached the network on, not the
+        -- one the account is configured for.
+        current_iface = tostring(line.iface or ""),
+        current_ip = tostring(line.address or ""),
+        current_device = tostring(line.device or ""),
+        in_quiet = paused["QuietHours"] and true or false,
+        paused = next(paused) ~= nil,
         ap_selection_policy = "",
         ap_selection_reason = "",
         connectivity = connectivity.text,
@@ -575,10 +587,10 @@ function M.status_view(snapshot, config, now)
     if pending ~= "" then
         payload.action_result = "pending"
     end
-    -- The line an account authenticates through is the account's own; naming it
-    -- while its own state is shown beside it is a fact about the account, not a
-    -- claim about an interface nobody looked at.
-    if link_ready and account and wired then
+    -- The observed line is preferred; the configured one only stands in while
+    -- the link is ready and nothing has reported a device yet, which is the
+    -- first moment after a save.
+    if payload.current_iface == "" and link_ready and account and wired then
         payload.current_iface = tostring(account.wired_iface or "")
     end
     if link_ready and account and not wired then
@@ -629,6 +641,9 @@ function M.offline_view(message, now)
         current_wireless_ifname = "",
         current_iface = "",
         current_ip = "",
+        current_device = "",
+        in_quiet = false,
+        paused = false,
         ap_selection_policy = "",
         ap_selection_reason = "",
         connectivity = "未连接",

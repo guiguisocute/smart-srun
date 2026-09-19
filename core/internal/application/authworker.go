@@ -689,6 +689,17 @@ func (p *attempt) observation(a *Authenticator, state domain.AuthState,
 	if !p.binding.Ready() {
 		link = domain.LinkMissing
 	}
+	// The line as this attempt actually found it. Without it the status page
+	// can name the interface an account is configured for but not the device
+	// or address it reached the network through, which is the difference
+	// between a setting and an observation.
+	line := observe.LineView{
+		Iface:  p.binding.LogicalIface,
+		Device: p.binding.L3Device,
+	}
+	if p.binding.SourceIPv4.IsValid() {
+		line.Address = p.binding.SourceIPv4.String()
+	}
 	return &observe.Observation{
 		AccountID:    p.account.ID,
 		Revision:     p.revision,
@@ -698,6 +709,7 @@ func (p *attempt) observation(a *Authenticator, state domain.AuthState,
 		Auth:         state,
 		Connectivity: connectivity,
 		Identity:     identity,
+		Line:         line,
 		At:           a.clock.Now(),
 	}
 }

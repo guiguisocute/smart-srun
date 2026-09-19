@@ -60,7 +60,12 @@ type Snapshot struct {
 	// PID is informational. Nothing decides anything from it; the lock decides.
 	PID int `json:"pid,omitempty"`
 	// Enabled is the user's automatic-authentication switch.
-	Enabled        bool      `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// Pause is why automatic authentication is currently suspended, empty when
+	// it is not. It is kept apart from Enabled because they are different
+	// facts: quiet hours pause a service the user has switched on, and showing
+	// that as "off" would have them turning on a switch that is already on.
+	Pause          []string  `json:"pause,omitempty"`
 	ConfigRevision uint64    `json:"config_revision"`
 	Version        string    `json:"version"`
 	WrittenAt      time.Time `json:"written_at"`

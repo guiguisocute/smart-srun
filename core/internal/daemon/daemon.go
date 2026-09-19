@@ -90,6 +90,12 @@ type Daemon struct {
 	// goroutine, like everything else in onAction.
 	published map[string]string
 
+	// pause is why automatic authentication is suspended, as the maintenance
+	// loop last reported it. Written from that loop and read by any status
+	// call, so it takes the one lock in this struct.
+	pauseMu sync.Mutex
+	pause   []string
+
 	// dirty is a one-slot signal, so a burst of changes coalesces into one
 	// write instead of one write per change.
 	dirty chan struct{}
@@ -400,6 +406,19 @@ func wirelessKind(kind application.Kind) bool {
 // be noise on a stderr that procd captures.
 func (d *Daemon) onMaintenanceEvent(event application.MaintenanceEvent) {
 	d.logMaintenance(event)
+	if event.Kind == application.EventPauseChanged {
+		reasons := make([]string, 0, 2)
+		for _, reason := range event.Pause.Reasons() {
+			reasons = append(reasons, string(reason))
+		}
+		d.pauseMu.Lock()
+		d.pause = reasons
+		d.pauseMu.Unlock()
+		// The status file is what a stopped page reads; a pause that only
+		// existed in memory would disappear from it until something else
+		// changed.
+		d.markDirty()
+	}
 	if event.Kind == application.EventLineConflict {
 		d.onError(domain.Errorf(domain.CodeConflict, "%s", event.Message))
 	}
@@ -482,12 +501,17 @@ func (d *Daemon) snapshotOf(actions []application.Action) Snapshot {
 		projection.Accounts = nil
 	}
 
+	d.pauseMu.Lock()
+	pause := append([]string(nil), d.pause...)
+	d.pauseMu.Unlock()
+
 	snapshot := Snapshot{
 		SchemaVersion:  SnapshotSchemaVersion,
 		WrittenAt:      d.clock.Now().UTC(),
 		Service:        ServiceRunning,
 		PID:            os.Getpid(),
 		Enabled:        cfg.Enabled,
+		Pause:          pause,
 		ConfigRevision: cfg.Revision,
 		Version:        d.version,
 		Accounts:       projection.Accounts,
