@@ -265,12 +265,6 @@ function action_user_presets_set()
     })
 end
 
-local function detect_connection_args()
-    return " --access-mode " .. util.shellquote(fv("access_mode")) ..
-        " --iface " .. util.shellquote(fv("iface")) ..
-        " --ssid " .. util.shellquote(fv("ssid"))
-end
-
 local function discovery_job(method)
     local dispatcher = require "luci.dispatcher"
     if not dispatcher.test_post_security() then return end
@@ -286,12 +280,27 @@ local function discovery_job(method)
             action_id = fv("action_id"), session = session,
         })
     elseif action == "" or action == "start" then
-        payload, err = rpc.call_started(method, {
+        local params = {
             base_url = fv("base_url"), access_mode = fv("access_mode"),
             iface = fv("iface"), ssid = fv("ssid"),
             school = fv("school"),
+            ac_id = fv("ac_id"),
             idempotency_key = fv("idempotency_key"), session = session,
-        })
+        }
+        if method == "detect.identity" or method == "detect.verify" then
+            params.user_id = fv("user_id")
+        end
+        if method == "detect.verify" then
+            params.password = fv("password")
+            params.candidates = jsonc.parse(fv("candidates"))
+            params.max_attempts = tonumber(fv("max_attempts")) or 5
+            params.login = {
+                n = fv("n"), type = fv("type"), enc = fv("enc"), info_prefix = fv("info_prefix"),
+                os = fv("login_os"), name = fv("login_name"),
+            }
+            if fv("double_stack") ~= "" then params.login.double_stack = fv("double_stack") == "1" end
+        end
+        payload, err = rpc.call_started(method, params)
     else
         write_json_response({ ok = false, message = "探测操作无效" })
         return
@@ -317,54 +326,9 @@ function action_detect_env()
     discovery_job("detect.environment")
 end
 
--- 运营商后缀探测。密码不能进 argv（同机 ps 可见），改用 0600 临时文件传参，
--- CLI 读完即删，这里再兜底删一次。
+-- 显式区分只读身份查询和主动验证。凭据仅经 socket 传给有界任务。
 function action_detect_operator()
-    local nixio = require "nixio"
-    if http.getenv("REQUEST_METHOD") ~= "POST" then
-        write_json_response({ ok = false, message = "仅支持 POST" })
-        return
-    end
-    local candidates = jsonc.parse(fv("candidates"))
-    if type(candidates) ~= "table" then
-        write_json_response({ ok = false, message = "认证后缀格式错误" })
-        return
-    end
-    local attempts = tonumber(fv("max_attempts") or "") or 5
-    if attempts < 1 then attempts = 1 end
-    if attempts > 5 then attempts = 5 end
-
-    local path = "/tmp/smart_srun_detect_operator." .. nixio.getpid() .. ".json"
-    local handle = nixio.open(path, nixio.open_flags("wronly", "creat", "excl"), "600")
-    if not handle then
-        write_json_response({ ok = false, message = "无法写入临时探测参数" })
-        return
-    end
-    local content = jsonc.stringify({
-        base_url = fv("base_url"),
-        ac_id = fv("ac_id"),
-        user_id = fv("user_id"),
-        password = fv("password"),
-        school = fv("school"),
-        access_mode = fv("access_mode"), iface = fv("iface"), ssid = fv("ssid"),
-        login_shape = {
-            n = fv("n"), type = fv("type"), enc = fv("enc"), info_prefix = fv("info_prefix"),
-            double_stack = fv("double_stack"), login_os = fv("login_os"), login_name = fv("login_name"),
-        },
-        candidates = candidates,
-        max_attempts = attempts,
-    })
-    local written = handle:write(content)
-    handle:close()
-    if written ~= #content then
-        fs.unlink(path)
-        write_json_response({ ok = false, message = "无法完整写入探测参数" })
-        return
-    end
-
-    local payload = run_srunnet_json("detect operator --payload " .. util.shellquote(path))
-    fs.unlink(path)
-    write_json_response(payload)
+    discovery_job(fv("read_only") == "1" and "detect.identity" or "detect.verify")
 end
 
 function action_setup_wifi()
@@ -407,9 +371,7 @@ function action_setup_wifi()
 end
 
 function action_discover_operators()
-    local args = fv("access_mode") ~= "" and detect_connection_args() or ""
-    write_json_response(run_srunnet_json("detect operators " .. util.shellquote(fv("base_url")) ..
-        " --ac-id " .. util.shellquote(fv("ac_id")) .. args))
+    discovery_job("detect.operators")
 end
 
 local function normalize_base_url(value)

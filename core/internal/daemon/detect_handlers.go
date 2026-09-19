@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -21,10 +22,8 @@ import (
 
 // Discovery: what the wizard asks the gateway about itself.
 //
-// Read-only and credential-free. Spec 03 allows exactly one discovery method
-// to authenticate, and it is not this one: nothing here sends a password, and
-// nothing it finds is written to the configuration -- the user sees it in the
-// wizard and decides.
+// Only detect.verify may authenticate. Every method requires an explicit line
+// and leaves the draft unsaved for the user to review in the wizard.
 
 // DetectACIDParams names an address and the line to reach it by.
 //
@@ -39,6 +38,7 @@ type DetectACIDParams struct {
 	IdempotencyKey string `json:"idempotency_key"`
 	Session        string `json:"session,omitempty"`
 	School         string `json:"school,omitempty"`
+	ACID           string `json:"ac_id,omitempty"`
 }
 
 // DetectACIDResult is what the address step displays.
@@ -80,15 +80,26 @@ func (d *Daemon) detectEnvironment(ctx context.Context, raw json.RawMessage) (an
 	return d.submitDiscovery(ctx, raw, application.KindDetectEnvironment)
 }
 
+func (d *Daemon) detectOperators(ctx context.Context, raw json.RawMessage) (any, error) {
+	return d.submitDiscovery(ctx, raw, application.KindDetectOperators)
+}
+
 func (d *Daemon) submitDiscovery(ctx context.Context, raw json.RawMessage, kind application.Kind) (any, error) {
 	var params DetectACIDParams
 	if err := control.DecodeParams(raw, &params); err != nil {
 		return nil, err
 	}
+	return d.submitProbe(ctx, params, kind, "")
+}
+
+func (d *Daemon) submitProbe(ctx context.Context, params DetectACIDParams, kind application.Kind, private string) (any, error) {
 	start := portal.Address(params.BaseURL)
-	if start == "" && (params.BaseURL != "" || kind == application.KindDetectACID) {
+	if start == "" && (params.BaseURL != "" || kind != application.KindDetectEnvironment) {
 		return nil, domain.FieldErrorf(domain.CodeInvalidArgument, "base_url",
 			"需要一个 http:// 或 https:// 的认证地址")
+	}
+	if params.ACID != "" && portal.ValidACID(params.ACID) != params.ACID {
+		return nil, domain.FieldErrorf(domain.CodeInvalidArgument, "ac_id", "AC_ID 无效")
 	}
 	if params.AccessMode != "wired" && params.AccessMode != "wifi" {
 		return nil, domain.FieldErrorf(domain.CodeInvalidArgument, "access_mode", "需要先选择有线或无线出口")
@@ -103,6 +114,8 @@ func (d *Daemon) submitDiscovery(ctx context.Context, raw json.RawMessage, kind 
 		Kind: kind, Interface: params.Iface,
 		ProbeURL: start, ProbeMode: params.AccessMode, ProbeSSID: params.SSID,
 		ProbeSchool:    params.School,
+		ProbeACID:      params.ACID,
+		PrivateJSON:    private,
 		IdempotencyKey: params.IdempotencyKey,
 		Owner:          probeOwner(params.Session),
 	})
@@ -125,6 +138,9 @@ func (r probeRoutingRunner) Run(ctx context.Context, action application.Action, 
 	if action.Request.Kind == application.KindDetectEnvironment {
 		budget = portal.EnvironmentBudget
 	}
+	if action.Request.Kind == application.KindDetectVerify {
+		budget = verifyBudget
+	}
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	report(application.PhaseFetch)
@@ -134,6 +150,14 @@ func (r probeRoutingRunner) Run(ctx context.Context, action application.Action, 
 	if action.Request.Kind == application.KindDetectEnvironment {
 		var finding DetectEnvironmentResult
 		finding, err = r.daemon.runEnvironment(ctx, action.Request)
+		result, message = finding, finding.Message
+	} else if action.Request.Kind == application.KindDetectIdentity || action.Request.Kind == application.KindDetectVerify {
+		var finding VerificationResult
+		finding, err = r.daemon.runVerification(ctx, action.Request, report)
+		result, message = finding, finding.Message
+	} else if action.Request.Kind == application.KindDetectOperators {
+		var finding portal.OperatorsResult
+		finding, err = r.daemon.runOperators(ctx, action.Request)
 		result, message = finding, finding.Message
 	} else {
 		var finding DetectACIDResult
@@ -151,13 +175,36 @@ func (r probeRoutingRunner) Run(ctx context.Context, action application.Action, 
 		if errors.Is(err, context.Canceled) {
 			code = domain.CodeCancelled
 		}
-		return application.Outcome{State: application.StateFailed, Code: code, Message: "无法完成认证地址探测，请检查所选线路与地址"}
+		return application.Outcome{State: application.StateFailed, Code: code, Message: "无法完成认证探测，请检查所选线路与地址"}
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return application.Outcome{State: application.StateFailed, Code: domain.CodeInternal, Message: "无法编码探测结果"}
 	}
 	return application.Outcome{State: application.StateSucceeded, Message: message, ResultJSON: string(encoded)}
+}
+
+func (d *Daemon) runOperators(ctx context.Context, request application.Request) (portal.OperatorsResult, error) {
+	var result portal.OperatorsResult
+	fetcher, release, err := d.probeLine(ctx, request.Interface)
+	if err != nil {
+		return result, err
+	}
+	defer release()
+	if guard, ok := fetcher.(probeFetcher); ok {
+		guard.ssid = request.ProbeSSID
+		fetcher = guard
+		if err := guard.check(ctx); err != nil {
+			return result, err
+		}
+	}
+	result, err = portal.ProbeOperators(ctx, fetcher, request.ProbeURL, request.ProbeACID)
+	if err == nil {
+		if guard, ok := fetcher.(probeFetcher); ok {
+			err = guard.check(ctx)
+		}
+	}
+	return result, err
 }
 
 func (d *Daemon) runACID(ctx context.Context, request application.Request) (DetectACIDResult, error) {
@@ -253,6 +300,8 @@ type probeFetcher struct {
 	info    func(context.Context, string) (openwrt.RadioInfo, error)
 	ssid    string
 }
+
+func (f probeFetcher) SourceAddr() netip.Addr { return f.binding.SourceIPv4 }
 
 func (f probeFetcher) check(ctx context.Context) error {
 	current, err := f.resolve(ctx, f.binding.LogicalIface, 0)

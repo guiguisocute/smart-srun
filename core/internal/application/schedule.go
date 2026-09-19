@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
 	"sort"
 	"time"
 
@@ -14,11 +15,13 @@ import (
 
 // publish announces a change. The observer sees the action as it now stands,
 // by value, so it cannot alter what the next reader will see.
-func (c *Coordinator) publish(action *Action) { c.observer(*action) }
+func (a Action) publicCopy() Action           { a.Request.PrivateJSON = ""; return a }
+func (c *Coordinator) publish(action *Action) { c.observer(action.publicCopy()) }
 
 // onSubmit queues an action, or hands back the one an identical key already
 // started.
 func (c *Coordinator) onSubmit(request Request) (Receipt, error) {
+	request.privateDigest = sha256.Sum256([]byte(request.PrivateJSON))
 	if existingID, seen := c.byKey[request.IdempotencyKey]; seen {
 		if existing, live := c.index[existingID]; live {
 			if existing.Request.fingerprint() != request.fingerprint() {
@@ -187,7 +190,7 @@ func (c *Coordinator) onList() []Action {
 	waiting := append([]*Action(nil), c.queue...)
 	sort.Slice(waiting, func(i, j int) bool { return runsFirst(waiting[i], waiting[j]) })
 	for _, action := range waiting {
-		out = append(out, *action)
+		out = append(out, action.publicCopy())
 	}
 
 	active := make([]*Action, 0, len(c.running))
@@ -198,12 +201,12 @@ func (c *Coordinator) onList() []Action {
 	}
 	sort.Slice(active, func(i, j int) bool { return active[i].Sequence < active[j].Sequence })
 	for _, action := range active {
-		out = append(out, *action)
+		out = append(out, action.publicCopy())
 	}
 
 	for _, id := range c.terminals {
 		if action, ok := c.index[id]; ok {
-			out = append(out, *action)
+			out = append(out, action.publicCopy())
 		}
 	}
 	return out
@@ -396,6 +399,7 @@ func (c *Coordinator) retire(action *Action) {
 		return
 	}
 	action.retired = true
+	action.Request.PrivateJSON = ""
 	c.terminals = append(c.terminals, action.ID)
 
 	for len(c.terminals) > c.history {

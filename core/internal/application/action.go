@@ -16,6 +16,7 @@ package application
 
 import (
 	"context"
+	"encoding/hex"
 	"slices"
 	"strconv"
 	"strings"
@@ -57,12 +58,17 @@ const (
 	// KindDetectACID reads portal pages on a selected line without credentials.
 	KindDetectACID        Kind = "detect_acid"
 	KindDetectEnvironment Kind = "detect_environment"
+	KindDetectOperators   Kind = "detect_operators"
+	KindDetectIdentity    Kind = "detect_identity"
+	KindDetectVerify      Kind = "detect_verify"
 )
 
 var kinds = []Kind{KindLogin, KindLogout, KindRelogin, KindSwitchCampus,
-	KindSwitchHotspot, KindMaintain, KindForcedLogout, KindPresetsRefresh, KindDetectACID, KindDetectEnvironment}
+	KindSwitchHotspot, KindMaintain, KindForcedLogout, KindPresetsRefresh, KindDetectACID, KindDetectEnvironment, KindDetectOperators, KindDetectIdentity, KindDetectVerify}
 
-func (k Kind) Discovery() bool { return k == KindDetectACID || k == KindDetectEnvironment }
+func (k Kind) Discovery() bool {
+	return k == KindDetectACID || k == KindDetectEnvironment || k == KindDetectOperators || k == KindDetectIdentity || k == KindDetectVerify
+}
 
 func (k Kind) Valid() bool { return slices.Contains(kinds, k) }
 
@@ -145,7 +151,13 @@ type Request struct {
 	ProbeSSID   string
 	ProbeMode   string
 	ProbeSchool string
+	ProbeACID   string
 	Owner       string
+	// PrivateJSON carries an unsaved wizard draft to its worker only. Readers
+	// and observers receive a redacted copy; terminal history keeps only its
+	// digest so duplicate submissions remain comparable after erasure.
+	PrivateJSON   string `json:"-"`
+	privateDigest [32]byte
 	// IdempotencyKey is supplied by the caller -- the LuCI click id, or the CLI
 	// invocation. Resubmitting the same key returns the same action instead of
 	// starting a second one, which is what makes a double-click harmless.
@@ -171,11 +183,14 @@ func (r Request) fingerprint() string {
 	if r.IgnoreQuiet {
 		quiet = "1"
 	}
-	return string(r.Kind) + "\x00" + r.AccountID + "\x00" + r.HotspotID + "\x00" + quiet + "\x00" + r.Interface + "\x00" + strconv.FormatBool(r.CheckRevision) + ":" + strconv.FormatUint(r.ConfigRevision, 10) + "\x00" + r.ProbeURL + "\x00" + r.ProbeSSID + "\x00" + r.ProbeMode + "\x00" + r.ProbeSchool + "\x00" + r.Owner
+	return string(r.Kind) + "\x00" + r.AccountID + "\x00" + r.HotspotID + "\x00" + quiet + "\x00" + r.Interface + "\x00" + strconv.FormatBool(r.CheckRevision) + ":" + strconv.FormatUint(r.ConfigRevision, 10) + "\x00" + r.ProbeURL + "\x00" + r.ProbeSSID + "\x00" + r.ProbeMode + "\x00" + r.ProbeSchool + "\x00" + r.ProbeACID + "\x00" + r.Owner + "\x00" + hex.EncodeToString(r.privateDigest[:])
 }
 
 // Validate refuses a request the coordinator could not act on.
 func (r Request) Validate() error {
+	if len(r.PrivateJSON) > 16<<10 || (r.PrivateJSON != "" && r.Kind != KindDetectIdentity && r.Kind != KindDetectVerify) {
+		return domain.Errorf(domain.CodeInvalidArgument, "此任务不接受私有参数或参数过长")
+	}
 	if !r.Kind.Valid() {
 		return domain.Errorf(domain.CodeInvalidArgument, "未知的动作类型：%q", string(r.Kind))
 	}
@@ -189,10 +204,10 @@ func (r Request) Validate() error {
 	} else if r.Interface != "" {
 		return domain.Errorf(domain.CodeInvalidArgument, "此动作不接受 iface")
 	}
-	if !r.Kind.Discovery() && (r.ProbeURL != "" || r.ProbeSSID != "" || r.ProbeMode != "" || r.ProbeSchool != "") {
+	if !r.Kind.Discovery() && (r.ProbeURL != "" || r.ProbeSSID != "" || r.ProbeMode != "" || r.ProbeSchool != "" || r.ProbeACID != "") {
 		return domain.Errorf(domain.CodeInvalidArgument, "此动作不接受探测参数")
 	}
-	if r.Kind.Discovery() && ((r.Kind == KindDetectACID && r.ProbeURL == "") || len(r.ProbeURL) > 2048 || len(r.ProbeSSID) > 32 || len(r.ProbeSchool) > 128 || strings.ContainsAny(r.ProbeURL+r.ProbeSSID+r.ProbeMode+r.ProbeSchool, "\x00\r\n")) {
+	if r.Kind.Discovery() && ((r.Kind != KindDetectEnvironment && r.ProbeURL == "") || len(r.ProbeURL) > 2048 || len(r.ProbeSSID) > 32 || len(r.ProbeSchool) > 128 || len(r.ProbeACID) > 64 || strings.ContainsAny(r.ProbeURL+r.ProbeSSID+r.ProbeMode+r.ProbeSchool+r.ProbeACID, "\x00\r\n")) {
 		return domain.Errorf(domain.CodeInvalidArgument, "探测参数无效")
 	}
 	if r.AccountID == "" && r.Kind != KindSwitchHotspot && r.Kind != KindPresetsRefresh && !r.Kind.Discovery() {

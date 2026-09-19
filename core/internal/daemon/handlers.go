@@ -42,6 +42,9 @@ func (d *Daemon) register(registry *control.Registry) {
 	registry.Register("action.cancel", d.actionCancel)
 	registry.Register("detect.acid", d.detectACID)
 	registry.Register("detect.environment", d.detectEnvironment)
+	registry.Register("detect.operators", d.detectOperators)
+	registry.Register("detect.identity", d.detectIdentity)
+	registry.Register("detect.verify", d.detectVerify)
 	registry.Register("log.tail", d.logTail)
 	registry.Register("log.download", d.logDownload)
 	registry.Register("log.clear", d.logClear)
@@ -162,6 +165,9 @@ var schedulerOnly = map[application.Kind]bool{
 	application.KindPresetsRefresh:    true, // submitted through presets.refresh
 	application.KindDetectACID:        true, // submitted through detect.acid
 	application.KindDetectEnvironment: true, // submitted through detect.environment
+	application.KindDetectOperators:   true,
+	application.KindDetectIdentity:    true,
+	application.KindDetectVerify:      true,
 }
 
 func (d *Daemon) actionSubmit(ctx context.Context, raw json.RawMessage) (any, error) {

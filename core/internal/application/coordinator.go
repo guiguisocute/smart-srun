@@ -426,7 +426,7 @@ func (c *Coordinator) Action(ctx context.Context, actionID string) (Action, erro
 	ready := make(chan struct{})
 	err := c.call(ctx, func() {
 		if action, ok := c.index[actionID]; ok {
-			found = *action
+			found = action.publicCopy()
 		} else {
 			failure = domain.Errorf(domain.CodeNotFound, "没有编号为 %s 的动作", actionID)
 		}

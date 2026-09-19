@@ -81,3 +81,21 @@ connection.wiz.accessMode = 'wifi';
 assert.strictEqual(connection.wizConnection().ssid, 'preset-campus');
 assert.strictEqual(connection.wizConnection().iface, 'wwan');
 console.log('PASS discovery task client: submit, poll, terminal result, completed retry, cancel, failure, environment');
+
+// Execute the shipped wizard handler: reading the online account must not send
+// a password even if the user already typed it in the credentials step.
+var drafts = [];
+var wizard = {wiz: {userId: 'student', password: 'draft-secret', selectedSuffix: '', ops: [], shape: {}, baseUrl: 'http://portal.invalid', acId: '9'},
+  WIZ_SHAPE_KEYS: [], wizConnection: function() { return {access_mode: 'wired', iface: 'wan'}; },
+  wizInvalidate: function() {}, wizRender: function() {}, wizError: function(message) { throw Error(message); },
+  wizPost: function(endpoint, payload) { drafts.push({endpoint: endpoint, payload: payload}); }};
+vm.createContext(wizard);
+vm.runInContext(source.slice(source.indexOf('  function wizRunOperatorProbe('), source.indexOf('  function wizSummary(')), wizard);
+wizard.wizRunOperatorProbe(true);
+assert.strictEqual(drafts[0].payload.read_only, '1');
+assert.strictEqual(drafts[0].payload.password, undefined);
+assert.strictEqual(drafts[0].payload.candidates, undefined);
+wizard.wizRunOperatorProbe(false);
+assert.strictEqual(drafts[1].payload.read_only, '0');
+assert.strictEqual(drafts[1].payload.password, 'draft-secret');
+assert.strictEqual(drafts[1].payload.candidates, '[""]', 'explicit empty suffix is a real candidate');

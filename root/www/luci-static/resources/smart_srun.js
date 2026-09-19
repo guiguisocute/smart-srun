@@ -1814,7 +1814,7 @@
   // the bounded job. Polling reads cached action state; it never probes again.
   function postDiscovery(path, values, done) {
     var stopped = false, active = null, timer = null, actionId = '';
-    var deadline = Date.now() + 65000;
+    var deadline = Date.now() + (path === 'detect_operator' ? 225000 : 65000);
     var tokenNode = document.querySelector('input[name="token"]');
     var token = tokenNode ? tokenNode.value : ((window.L && L.env) ? L.env.token : '');
     values.idempotency_key = 'luci-probe-' + Date.now() + '-' + Math.random().toString(16).slice(2);
@@ -1870,7 +1870,7 @@
 
   function wizPost(path, values, done, timeout) {
     var owner = wiz;
-    if (path === 'detect_acid' || path === 'detect_env') {
+    if (path === 'detect_acid' || path === 'detect_env' || path === 'discover_operators' || path === 'detect_operator') {
       var job = postDiscovery(path, values, function(err, data) {
         if (wiz !== owner || owner.xhr !== job) return;
         owner.xhr = null;
@@ -2348,8 +2348,11 @@
     if (!readOnly && !suffixes.length) { wizError('请选择认证后缀后验证登录。'); return; }
     var payload = wizConnection();
     payload.base_url = wiz.baseUrl; payload.ac_id = wiz.acId || '1'; payload.school = wiz.school;
-    payload.user_id = wiz.userId; payload.password = readOnly ? '' : wiz.password;
-    payload.max_attempts = suffixes.length; payload.candidates = JSON.stringify(suffixes);
+    payload.user_id = wiz.userId; payload.read_only = readOnly ? '1' : '0';
+    if (!readOnly) {
+      payload.password = wiz.password;
+      payload.max_attempts = suffixes.length; payload.candidates = JSON.stringify(suffixes);
+    }
     WIZ_SHAPE_KEYS.forEach(function(key) { payload[key] = wiz.shape[key] || ''; });
     wizInvalidate(); wiz.verifyExpanded = true; wiz.busy = 'operator'; wiz.error = '';
     wiz.opLog = readOnly ? '正在读取在线账号信息…' : '正在验证登录，请稍候…'; wizRender();

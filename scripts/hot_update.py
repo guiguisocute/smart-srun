@@ -135,6 +135,10 @@ LUA_AND_SERVICE_TARGETS = [
         "remote": "/usr/lib/lua/luci/controller/smart_srun.lua",
     },
     {
+        "local": "root/usr/share/smart-srun/third-party-licenses.txt",
+        "remote": "/usr/share/smart-srun/third-party-licenses.txt",
+    },
+    {
         "local": "root/usr/lib/lua/luci/smart_srun/schema.lua",
         "remote": "/usr/lib/lua/luci/smart_srun/schema.lua",
     },

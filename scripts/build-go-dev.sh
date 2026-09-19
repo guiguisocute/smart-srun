@@ -38,7 +38,8 @@ sed 's/\r$//' "$project_dir/root/etc/init.d/smart_srun" > "$stage_dir/etc/init.d
 cp "$project_dir/doc/school-presets.json" "$stage_dir/usr/share/smart-srun/school-presets.json"
 # The interface is part of what has to be installed to try anything through it.
 # Same files the package will install; the packaging itself is batch C.
-luci_files="usr/lib/lua/luci/controller/smart_srun.lua
+luci_files="usr/share/smart-srun/third-party-licenses.txt
+usr/lib/lua/luci/controller/smart_srun.lua
 usr/lib/lua/luci/model/cbi/smart_srun.lua
 usr/lib/lua/luci/smart_srun/schema.lua
 usr/lib/lua/luci/smart_srun/rpc.lua
