@@ -40,6 +40,9 @@ func Begin(paths Paths, candidate Candidate, wasRunning bool, executable string,
 	if err := Guard(paths); err != nil {
 		return Task{}, err
 	}
+	if held, err := WorkerActive(paths); err != nil || held {
+		return Task{}, domain.Errorf(domain.CodeBusy, "上一更新进程仍在收尾，请稍后再试").Wrap(err)
+	}
 	if err := ValidatePlan(candidate.Plan); err != nil {
 		return Task{}, err
 	}
@@ -48,8 +51,25 @@ func Begin(paths Paths, candidate Candidate, wasRunning bool, executable string,
 		return Task{}, err
 	}
 	candidate.Recovery.Assets = assets
+	previous, err := ReadStatus(paths)
+	if err != nil {
+		return Task{}, err
+	}
+	if err := pruneCompleted(paths, previous.JobID); err != nil {
+		return Task{}, err
+	}
 	task := Task{SchemaVersion: 1, JobID: newID(), Plan: candidate.Plan, Recovery: candidate.Recovery,
 		Phase: "queued", CreatedAt: time.Now().UTC(), WasRunning: wasRunning, Local: candidate.Local}
+	journalWritten := false
+	defer func() {
+		if !journalWritten {
+			r := receiptFor(task)
+			// Preparation failures before a durable journal have not installed
+			// anything. Delete only this fresh task's explicitly owned files.
+			_ = removeOwnedFiles(paths.Temporary(task.JobID), r.TemporaryFiles, true)
+			_ = removeOwnedFiles(paths.Backup(task.JobID), r.BackupFiles, true)
+		}
+	}()
 	if err := privateDir(paths.Runtime); err != nil {
 		return Task{}, err
 	}
@@ -71,8 +91,13 @@ func Begin(paths Paths, candidate Candidate, wasRunning bool, executable string,
 		return Task{}, err
 	}
 	if err := writeState(paths.Journal(), task); err != nil {
+		// Rename may have succeeded before directory fsync failed. Never
+		// remove recovery inputs when even a damaged journal remains.
+		_, statErr := os.Lstat(paths.Journal())
+		journalWritten = !errors.Is(statErr, os.ErrNotExist)
 		return Task{}, err
 	}
+	journalWritten = true
 	if err := launch(); err != nil {
 		return task, domain.Errorf(domain.CodeRecoveryRequired, "独立更新服务未启动；原安装未改动，请运行 srunnet update recover").Wrap(err)
 	}
@@ -349,10 +374,22 @@ func (w Worker) finish(task Task, version string, assets []Asset, phase, message
 	if err := writeState(w.Paths.Status(), status); err != nil {
 		return err
 	}
+	if err := writeState(filepath.Join(w.Paths.Backup(task.JobID), "result.json"), receiptFor(task)); err != nil {
+		return w.fail(task, err)
+	}
 	if err := os.Remove(w.Paths.Journal()); err != nil {
 		return storageError(err)
 	}
-	return syncDirectory(filepath.Dir(w.Paths.Journal()))
+	if err := syncDirectory(filepath.Dir(w.Paths.Journal())); err != nil {
+		return err
+	}
+	if err := pruneCompleted(w.Paths, task.JobID); err != nil {
+		// Installed versions and health have passed. Cleanup failure is not
+		// an installation failure; retain evidence and retry before next Begin.
+		status.Message += "；旧更新文件清理未完成，下次更新前会重试"
+		return writeState(w.Paths.Status(), status)
+	}
+	return nil
 }
 
 func QueueRecovery(paths Paths, executable string, launch func() error) (Task, error) {
