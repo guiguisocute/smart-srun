@@ -168,7 +168,7 @@ func TestTheCursorReturnsOnlyWhatIsNew(t *testing.T) {
 // rather than everything that happened before the button was pressed.
 func TestSinceHidesWhatHappenedBeforeIt(t *testing.T) {
 	service := start(t, nil)
-	future := time.Now().Add(time.Hour).Unix()
+	future := service.status().WrittenAt.Add(time.Hour).Unix()
 
 	page := tailLog(t, service, LogTailParams{Since: future})
 	if len(page.Lines) != 0 {

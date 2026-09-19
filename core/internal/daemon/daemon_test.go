@@ -15,6 +15,7 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/config"
 	"github.com/matthewlu070111/smart-srun/core/internal/control"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/policy/faketime"
 )
 
 // patience bounds a wait on a real goroutine. Nothing reaches it on the happy
@@ -45,6 +46,9 @@ func start(t *testing.T, configure func(*Options)) *running {
 		Paths:   paths,
 		Version: "2.0.0rc1",
 		Ready:   sync.OnceFunc(func() { close(ready) }),
+		// RPC/log fixtures must not enter quiet hours according to the host's
+		// wall clock. Scheduling tests can override this clock explicitly.
+		Clock: faketime.New(time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)),
 		Observer: func(action application.Action) {
 			select {
 			case service.actions <- action:
