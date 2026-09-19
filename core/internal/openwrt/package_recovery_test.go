@@ -43,8 +43,8 @@ case "$1" in adbdump)
 esac
 test "${SMARTSRUN_INSTALL_WORKER}" = 1 || exit 90
 case " $* " in *' --network=no '*) ;; *) exit 91;; esac
-case " $* " in *' --repositories-file /dev/null '*) ;; *) exit 92;; esac
 case " $* " in *' add '*) exit ` + addExit + `;; esac
+case " $* " in *' --repositories-file /dev/null '*) ;; *) exit 92;; esac
 cache=
 while [ "$#" -gt 0 ]; do
   if [ "$1" = --cache-dir ]; then shift; cache=$1; fi
