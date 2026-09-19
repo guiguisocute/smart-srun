@@ -45,6 +45,13 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
+      - name: Require the legacy runtime tree
+        run: |
+          if [ -f core/go.mod ]; then
+            echo 'Use build-go.yml for Go SDK artifacts. This legacy workflow does not publish 2.0.' >&2
+            exit 1
+          fi
+
       - name: Install dependencies
         run: |
           sudo apt-get update

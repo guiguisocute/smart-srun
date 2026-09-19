@@ -12,8 +12,8 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 KEEP_PATH = "/lib/upgrade/keep.d/smart-srun"
-CONFIG_PATH = "/usr/lib/smart_srun/config.json"
-USER_PRESETS_PATH = "/usr/lib/smart_srun/user_presets.json"
+CONFIG_PATH = "/etc/smart-srun/config.json"
+USER_PRESETS_PATH = "/etc/smart-srun/user-presets.json"
 
 
 def read_source(relative_path):
@@ -39,13 +39,12 @@ class SysupgradeBackupTests(unittest.TestCase):
                 for target in node.targets
             )
         )
-        self.assertEqual(config_path, CONFIG_PATH)
+        self.assertEqual(config_path, "/usr/lib/smart_srun/config.json")
         # The LuCI tree no longer names either path. It reaches both files
         # through the daemon, which owns them, so a page that is open while an
         # upgrade restores them cannot write a stale copy over the restore.
-        # The paths above remain the Python runtime's and the keep list's.
-        # (M00 ledger: approved_behavior_change -> T46, the config moves to
-        # /etc/smart-srun/config.json with the packaging work in batch C.)
+        # The Python oracle retains its old path. The installed keep list now
+        # follows Go v2; there is deliberately no automatic 1.x migration.
         for relative_path in (
             "root/usr/lib/lua/luci/controller/smart_srun.lua",
             "root/usr/lib/lua/luci/model/cbi/smart_srun.lua",
@@ -66,7 +65,11 @@ class SysupgradeBackupTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(install)
                 body = " ".join(install.group(1).replace("\\\n", "").split())
-                self.assertIn("$(INSTALL_DIR) $(1)/lib/upgrade/keep.d", body)
+                self.assertIn("$(call SmartSrun/InstallCore,$(1))", body)
+                shared = re.search(r"^define SmartSrun/InstallCore\n(.*?)^endef$", makefile, re.MULTILINE | re.DOTALL)
+                self.assertIsNotNone(shared)
+                body = " ".join(shared.group(1).replace("\\\n", "").split())
+                self.assertIn("$(1)/lib/upgrade/keep.d", body)
                 self.assertIn(
                     "$(INSTALL_DATA) $(CURDIR)/root%s $(1)%s"
                     % (KEEP_PATH, KEEP_PATH), body,

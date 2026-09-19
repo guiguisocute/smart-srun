@@ -19,3 +19,20 @@
 - Go 门禁：`scripts/verify-go.sh`（gofmt + vet + 打乱顺序的单元测试 + 覆盖率 + race）。缺少工具链或 `core/` 时该脚本失败而不是跳过。
 - 开发节奏按当前维护者要求及 `.codex/go-loop/next.md` / D22：按完整用户流程分批实现，开发时保留编译、相关已有测试和危险副作用的针对性检查；逐卡补覆盖率、变异测试和独立验收后移至批次加固/发布验收，不再阻挡后续实现。延期检查要明确记录，未经独立审查不得标 passed；界面冻结、数据/网络及最终发布契约仍适用。
 - 面向 2.0 的 PR 请说明对应的任务卡编号、执行过的门禁命令与退出码。
+
+### Go SDK 开发包
+
+`targets.json` 锁定 SDK 下载哈希、feeds 提交和 Go 工具链。当前录入的 x86_64 目标用于验证 IPK/APK 安装链，`pending_architectures` 仍是待完成的架构，不能宣称已经支持。只有纯 LuCI 包使用 `all`/`noarch`，核心和 bundle 使用实际 SDK 架构。
+
+在 Linux（Python 3.12+、OpenWrt SDK 主机依赖及现有 Go 引导工具链）运行：
+
+```sh
+python3 scripts/build_go_sdk.py --target x86_64-opkg-24.10.8 \
+  --version 2.0.0rc1 --work-dir /tmp/smart-srun-sdk --bootstrap /usr/local/go
+```
+
+工作目录不能有空格。脚本保留构建日志，并输出包、`SHA256SUMS` 和包含源码文件哈希、实际包版本、架构、大小的 `build-record.json`。已记录的同版本产物不会覆盖；构建通过不等于安装或独立验收通过。开发载荷限制为 10 MiB。
+
+APK 目标可通过 `--sign-key` 和 `--public-key` 传入维护者控制的密钥。私钥不得入库或上传到构建产物。脚本对自己的未签名输入执行离线签名，然后必须用公钥通过原生 `apk verify`，不能只相信签名命令的退出码。公钥信任引导、固件安装和发布验收是另外的步骤；不能在安装时加 `--allow-untrusted`。
+
+`.github/workflows/build-go.yml` 是按上述目标生成矩阵的手动构建流程，不发布 Release，默认 APK 未签名。旧的两个发布流程拒绝 Go 源码树，避免生成未经 2.0 验收的公开产物。首个公开 RC 仍需完成剩余架构、更新恢复、资源、真机和独立审查。

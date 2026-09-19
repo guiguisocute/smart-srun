@@ -66,12 +66,18 @@ def smoke_runtime(packages):
 
 
 class RuntimeDependencyTests(unittest.TestCase):
-    def test_declared_dependencies_supply_idna_and_verified_https(self):
+    def test_go_package_declares_device_tools_and_no_python(self):
         makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
         match = re.search(r"^RUNTIME_DEPENDS:=(.*)$", makefile, re.MULTILINE)
         self.assertIsNotNone(match)
         packages = {name.lstrip("+") for name in match.group(1).split()}
-        result = smoke_runtime(packages)
+        self.assertFalse(any(name.startswith("python") for name in packages))
+        self.assertTrue({"ca-bundle", "uci", "ubus", "procd", "rpcd-mod-iwinfo"} <= packages)
+
+    def test_legacy_oracle_dependencies_supply_idna_and_verified_https(self):
+        # Python remains the parity oracle on development hosts through M22;
+        # the Go device package deliberately no longer supplies its runtime.
+        result = smoke_runtime(set(OPTIONAL_MODULES))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_smoke_exposes_missing_implicit_http_dependencies(self):

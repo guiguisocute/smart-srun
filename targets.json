@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "go_version": "1.27.1",
+  "go_source_sha256": "4e408abae126d916b6164627193f2c54f0e3ca1312d693b86db45f862ab238b1",
+  "golang_framework_commit": "d0106a08c903fb3e02436021917c4d7ce9b19705",
+  "development_payload_limit_bytes": 10485760,
+  "targets": [
+    {
+      "id": "x86_64-opkg-24.10.8",
+      "openwrt_arch": "x86_64",
+      "target": "x86/64",
+      "goos": "linux",
+      "goarch": "amd64",
+      "goamd64": "v1",
+      "package_manager": "opkg",
+      "format": "ipk",
+      "sdk_release": "24.10.8",
+      "sdk_url": "https://downloads.openwrt.org/releases/24.10.8/targets/x86/64/openwrt-sdk-24.10.8-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst",
+      "sdk_sha256": "ac4a0405d2eea821b06f93c14ba13ffa90ad0457648903df7dde02570027ab21",
+      "feeds": {
+        "base": "0b795ce79e23b553aa184080c390f9ce92a2b6d4",
+        "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
+        "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
+      }
+    },
+    {
+      "id": "x86_64-apk-25.12.2",
+      "openwrt_arch": "x86_64",
+      "target": "x86/64",
+      "goos": "linux",
+      "goarch": "amd64",
+      "goamd64": "v1",
+      "package_manager": "apk",
+      "format": "apk",
+      "sdk_release": "25.12.2",
+      "base_feed_subdir": "package",
+      "sdk_url": "https://downloads.openwrt.org/releases/25.12.2/targets/x86/64/openwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst",
+      "sdk_sha256": "4abb32a6dd05f80c24fc1a487a94b1f5f0a5d4cd560ff3dd8c1bf77793a2d5dc",
+      "feeds": {
+        "base": "d266501ad6188cce279a487b1ce61f4f327cd496",
+        "packages": "268d92d3d46147efe1e81892e3a618f8bbd4806b",
+        "luci": "067535eaf51a59582b775a8b588a9b05810f8030"
+      }
+    }
+  ],
+  "pending_architectures": [
+    "aarch64_cortex-a53",
+    "aarch64_generic",
+    "aarch64_cortex-a72",
+    "aarch64_cortex-a76",
+    "arm_cortex-a7_neon-vfpv4",
+    "arm_cortex-a9_vfpv3-d16",
+    "arm_cortex-a15_neon-vfpv4",
+    "mips_24kc",
+    "mipsel_24kc",
+    "mipsel_24kc_24kf",
+    "mipsel_74kc"
+  ],
+  "validation_policy": "Targets pin build inputs only. Per-artifact build, ELF, emulation, installation, hardware and campus authentication evidence belongs in the release manifest. Pending architectures remain required work; they are not published as supported artifacts."
+}
