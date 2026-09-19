@@ -35,6 +35,7 @@ else
 fi
 # Normalize text resource line endings when building a Windows checkout.
 sed 's/\r$//' "$project_dir/root/etc/init.d/smart_srun" > "$stage_dir/etc/init.d/smart_srun"
+sed 's/\r$//' "$project_dir/root/etc/init.d/smart_srun_update" > "$stage_dir/etc/init.d/smart_srun_update"
 cp "$project_dir/doc/school-presets.json" "$stage_dir/usr/share/smart-srun/school-presets.json"
 # The interface is part of what has to be installed to try anything through it.
 # Same files the package will install; the packaging itself is batch C.
@@ -50,14 +51,16 @@ for relative in $luci_files; do
     chmod 644 "$stage_dir/$relative"
 done
 chmod 755 "$stage_dir/usr/bin/srunnet" "$stage_dir/etc/init.d/smart_srun"
+chmod 755 "$stage_dir/etc/init.d/smart_srun_update"
 chmod 644 "$stage_dir/usr/share/smart-srun/school-presets.json"
 
 (
     cd "$stage_dir"
-    sha256sum usr/bin/srunnet etc/init.d/smart_srun \
+    sha256sum usr/bin/srunnet etc/init.d/smart_srun etc/init.d/smart_srun_update \
         usr/share/smart-srun/school-presets.json $luci_files > manifest.sha256
     payload_bytes=$(wc -c < usr/bin/srunnet)
     payload_bytes=$((payload_bytes + $(wc -c < etc/init.d/smart_srun) + $(wc -c < usr/share/smart-srun/school-presets.json)))
+    payload_bytes=$((payload_bytes + $(wc -c < etc/init.d/smart_srun_update)))
     for relative in $luci_files; do
         payload_bytes=$((payload_bytes + $(wc -c < "$relative")))
     done
@@ -68,7 +71,7 @@ chmod 644 "$stage_dir/usr/share/smart-srun/school-presets.json"
     printf 'version=%s\narch=%s\ninstalled_payload_bytes=%s\nformat=development-tar-not-sdk-package\n' \
         "$version" "$arch" "$payload_bytes" > build-info.txt
     tar -czf "$output_dir/smart-srun-dev-$arch.tar.gz" \
-        manifest.sha256 build-info.txt usr/bin/srunnet etc/init.d/smart_srun \
+        manifest.sha256 build-info.txt usr/bin/srunnet etc/init.d/smart_srun etc/init.d/smart_srun_update \
         usr/share/smart-srun/school-presets.json $luci_files
     cat build-info.txt
 )

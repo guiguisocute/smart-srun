@@ -274,6 +274,37 @@ func (r Runner) run(ctx context.Context, program, input string, args ...string) 
 	return result, nil
 }
 
+// RunInstall owns the one non-cancellable system operation: a native package
+// transaction. Its caller is the independent update worker. Output and pipe
+// draining stay bounded, while a live installer is never killed by a timeout.
+func (r Runner) RunInstall(program string, args ...string) (Result, error) {
+	result := Result{Program: program}
+	if program != "opkg" && program != "apk" {
+		return result, domain.Errorf(domain.CodeInvalidArgument, "不可中断执行仅用于原生安装器")
+	}
+	resolved, err := r.Resolve(program)
+	if err != nil {
+		return result, err
+	}
+	cmd := exec.Command(resolved, args...)
+	cmd.Env = append(append([]string(nil), fixedEnvironment...), "SMARTSRUN_INSTALL_WORKER=1")
+	setProcessGroup(cmd)
+	output := &boundedBuffer{limit: 64 << 10}
+	cmd.Stdout, cmd.Stderr = output, output
+	cmd.WaitDelay = time.Second
+	started := time.Now()
+	err = cmd.Run()
+	result.Duration = time.Since(started)
+	result.Stdout, result.StdoutTruncated = output.Bytes(), output.truncated
+	if err != nil {
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
+			result.ExitCode = exit.ExitCode()
+		}
+		return result, domain.Errorf(domain.CodeInstallFailed, "包管理器安装未成功完成，请查看恢复状态").Wrap(err)
+	}
+	return result, nil
+}
+
 // boundedBuffer keeps at most limit bytes and counts the rest.
 //
 // Write always reports success. Returning an error would make the copier stop

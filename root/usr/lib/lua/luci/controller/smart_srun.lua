@@ -97,7 +97,14 @@ local function write_json_response(payload)
 end
 
 local function run_srunnet_json(args)
-    local output = sys.exec("/usr/bin/srunnet " .. args .. " 2>&1") or ""
+    -- opkg briefly removes execute permission while replacing /usr/bin/srunnet.
+    -- The private worker copy remains executable throughout that interval and
+    -- reads exactly the same fixed, bounded status files without starting RPC.
+    local program = "/usr/bin/srunnet"
+    if args == "update status" and fs.access("/var/run/smart-srun/update-worker", "x") then
+        program = "/var/run/smart-srun/update-worker"
+    end
+    local output = sys.exec(program .. " " .. args .. " 2>&1") or ""
     local parsed = jsonc.parse(output)
     if type(parsed) == "table" then
         return parsed
@@ -109,14 +116,35 @@ local function run_srunnet_json(args)
 end
 
 function action_update_check()
-    write_json_response(run_srunnet_json("update check"))
+    -- A cold page must not start a stopped service just to check a release.
+    local payload, err = rpc.call("update.check", nil)
+    write_json_response(payload or { ok = false, message = rpc.message(err, "无法检查更新") })
 end
 
 function action_update_start()
-    write_json_response(run_srunnet_json("update run --background"))
+    local dispatcher = require "luci.dispatcher"
+    if not dispatcher.test_post_security() then return end
+    local ok, err = rpc.start_update(tostring(http.formvalue("plan_id") or ""))
+    if not ok then
+        write_json_response({ ok = false, message = rpc.message(err, "无法提交更新") })
+        return
+    end
+    write_json_response(run_srunnet_json("update status"))
 end
 
 function action_update_status()
+    local job_id = tostring(http.formvalue("job_id") or "")
+    if job_id ~= "" then
+        if #job_id ~= 32 or not job_id:match("^[0-9a-f]+$") then
+            write_json_response({ ok = false, message = "更新任务编号无效" })
+            return
+        end
+        local payload, err = rpc.call("update.status", { job_id = job_id })
+        write_json_response(payload or { ok = false, message = rpc.message(err, "无法读取检查结果") })
+        return
+    end
+    -- The helper only reads bounded, validated fixed-path files. It does not
+    -- call ensure-running while the worker owns installation and restart.
     write_json_response(run_srunnet_json("update status"))
 end
 

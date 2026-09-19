@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Create immutable Go release metadata from measured SDK build records.
+
+Additional validation is accepted only as a report keyed by the package's
+actual SHA256. A successful build never implies installation or campus testing.
+Dirty builds require an explicit internal-test option and are not publishable.
+"""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+
+REPOSITORY = "matthewlu070111/smart-srun"
+KINDS = {"smart-srun": "core", "luci-app-smart-srun": "luci", "luci-app-smart-srun-bundle": "bundle"}
+CHECKS = ("build", "elf", "emulated_core", "openwrt_install", "hardware_core", "campus_auth")
+
+
+def generate(records, evidence=None, internal=False):
+    evidence = evidence or {"schema_version": 1, "assets": {}}
+    if evidence.get("schema_version") != 1 or not isinstance(evidence.get("assets"), dict):
+        raise ValueError("Invalid validation evidence")
+    manifest = None
+    selections, names = {}, {}
+    for path in records:
+        path = Path(path)
+        record = json.loads(path.read_text(encoding="utf-8"))
+        version = record["display_version"]
+        if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:rc[1-9]\d*)?", version):
+            raise ValueError("Invalid display version")
+        if int(version.split(".")[0]) < 2 or not re.fullmatch("[0-9a-f]{40}", record["source_commit"]):
+            raise ValueError("Not a Go release source")
+        if record.get("source_dirty") is not False and not internal:
+            raise ValueError("Dirty source is allowed only for explicit internal tests")
+        if manifest is None:
+            manifest = dict(schema_version=1, release=version, channel="rc" if "rc" in version else "stable",
+                            source_commit=record["source_commit"], assets=[])
+        if manifest["release"] != version or manifest["source_commit"] != record["source_commit"]:
+            raise ValueError("Build records do not share a release and source commit")
+        target = record["target"]
+        manager, fmt = target["package_manager"], target["format"]
+        if (manager, fmt) not in (("opkg", "ipk"), ("apk", "apk")):
+            raise ValueError("Inconsistent package format")
+        sdk = target["sdk_release"]
+        if not re.fullmatch(r"\d{2}\.\d{2}\.\d+", sdk):
+            raise ValueError("Unpinned SDK release")
+        family = sdk.rsplit(".", 1)[0]
+        for artifact in record["artifacts"]:
+            name = artifact["file"]
+            if Path(name).name != name or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.~+-]{0,199}", name):
+                raise ValueError("Unsafe artifact filename")
+            file = path.parent / name
+            if not file.is_file() or file.is_symlink():
+                raise ValueError("Missing regular artifact")
+            with file.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            size = file.stat().st_size
+            if digest != artifact["sha256"] or size != artifact["bytes"] or not 0 < size <= 16 * 1024**2:
+                raise ValueError("Artifact bytes or checksum changed after build")
+            installed = artifact["installed_payload_bytes"]
+            if sum(artifact["files"].values()) != installed or not 0 < installed <= 10 * 1024**2:
+                raise ValueError("Invalid measured installed payload")
+            kind = KINDS[artifact["name"]]
+            separator = "_" if fmt == "ipk" else "-"
+            if not name.startswith(artifact["name"] + separator) or not name.endswith("." + fmt):
+                raise ValueError("Artifact filename does not match package identity")
+            architecture = artifact["architecture"]
+            expected = ("all" if manager == "opkg" else "noarch") if kind == "luci" else target["openwrt_arch"]
+            if architecture != expected:
+                raise ValueError("Package architecture does not match its target/kind")
+            native = version.replace("rc", "~rc" if manager == "opkg" else "_rc")
+            if not re.fullmatch(re.escape(native) + r"-r[1-9]\d{0,8}", artifact["package_version"]):
+                raise ValueError("Unexpected native package version")
+            if manager == "apk" and not re.fullmatch("[0-9a-f]{64}", artifact.get("signature_spki_sha256") or ""):
+                raise ValueError("APK must have verified signing evidence")
+            if artifact.get("validation", {}).get("build") is not True:
+                raise ValueError("Build did not pass")
+            checked = evidence["assets"].get(digest, {})
+            if any(key not in CHECKS or type(value) is not bool for key, value in checked.items()):
+                raise ValueError("Invalid validation levels")
+            validation = {key: checked.get(key, False) for key in CHECKS}
+            validation["build"] = True
+            identifier = f"{kind}-{manager}-{architecture}-{family}"
+            asset = dict(id=identifier, kind=kind, package_manager=manager, format=fmt,
+                         openwrt_arch=architecture, package_version=artifact["package_version"],
+                         sdk_release=sdk, target=target["target"], goos=target["goos"], goarch=target["goarch"],
+                         url=f"https://github.com/{REPOSITORY}/releases/download/{version}/{name}",
+                         sha256=digest, bytes=size, installed_bytes=installed,
+                         firmware_compat=[family], validation=validation)
+            if identifier in selections:
+                previous = selections[identifier]
+                if kind != "luci" or any(previous[key] != asset[key] for key in
+                                        ("sha256", "package_version", "installed_bytes", "validation")):
+                    raise ValueError("Ambiguous packages for the same device selection")
+                continue  # identical architecture-neutral LuCI from another SDK target
+            if name in names:
+                raise ValueError("Duplicate release asset filename")
+            selections[identifier], names[name] = asset, digest
+            manifest["assets"].append(asset)
+    if manifest is None or not manifest["assets"]:
+        raise ValueError("No artifacts")
+    return manifest, "".join(f"{digest}  {name}\n" for name, digest in sorted(names.items()))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("records", nargs="+", type=Path)
+    parser.add_argument("--evidence", type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--internal-test", action="store_true")
+    args = parser.parse_args()
+    evidence = json.loads(args.evidence.read_text()) if args.evidence else None
+    manifest, sums = generate(args.records, evidence, args.internal_test)
+    args.output.mkdir(parents=True, exist_ok=True)
+    document = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    manifest_hash = hashlib.sha256(document.encode()).hexdigest()
+    outputs = {"release-manifest.json": document, "SHA256SUMS": sums + f"{manifest_hash}  release-manifest.json\n"}
+    if any((args.output / name).exists() for name in outputs):
+        raise ValueError("Refusing to replace existing release metadata")
+    for name, content in outputs.items():
+        with (args.output / name).open("x", encoding="utf-8", newline="\n") as stream:
+            stream.write(content)
+    print(f"{manifest['release']}: {len(manifest['assets'])} measured assets -> {args.output}")
+
+
+if __name__ == "__main__":
+    main()

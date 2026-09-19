@@ -736,7 +736,7 @@ class HotUpdateScriptTests(unittest.TestCase):
             mock.patch.object(hot_update, "connect_ssh") as connect_ssh,
             mock.patch.object(hot_update, "run_dry_run", return_value=0) as run_dry_run,
         ):
-            code = hot_update.main(["--probe", "--dry-run"])
+            code = hot_update.legacy_main(["--probe", "--dry-run"])
 
         self.assertEqual(code, 0)
         ensure_files.assert_called_once_with()

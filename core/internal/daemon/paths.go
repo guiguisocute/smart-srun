@@ -11,6 +11,8 @@ package daemon
 import (
 	"io/fs"
 	"path/filepath"
+
+	"github.com/matthewlu070111/smart-srun/core/internal/update"
 )
 
 // Modes fixed by spec 02. The runtime directory holds a socket that accepts
@@ -93,6 +95,8 @@ func (p Paths) PresetCacheFile() string {
 // interrupted wireless transaction, an interrupted install. It is under Config
 // rather than Runtime for exactly that reason.
 func (p Paths) Recovery() string { return filepath.Join(p.Config, "recovery") }
+
+func (p Paths) Update() update.Paths { return update.Paths{Runtime: p.Runtime, Config: p.Config} }
 
 // WirelessStaging is where a wireless change is built before it is published.
 //

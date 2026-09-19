@@ -11,6 +11,7 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 	"github.com/matthewlu070111/smart-srun/core/internal/openwrt"
 	"github.com/matthewlu070111/smart-srun/core/internal/policy"
+	"github.com/matthewlu070111/smart-srun/core/internal/update"
 )
 
 // DefaultInitScript is the procd service this project owns.
@@ -97,6 +98,12 @@ func (l Lifecycle) Running(ctx context.Context) bool {
 // button on the page they are looking at: the explicit action starts the
 // service, waits, and then submits its own request.
 func (l Lifecycle) EnsureRunning(ctx context.Context) error {
+	if err := update.Guard(l.Paths.Update()); err != nil {
+		if intentErr := update.RecordServiceIntent(l.Paths.Update(), true); intentErr != nil {
+			return intentErr
+		}
+		return err
+	}
 	if l.Running(ctx) {
 		return nil
 	}
@@ -142,6 +149,7 @@ func (l Lifecycle) EnsureRunning(ctx context.Context) error {
 // worker runs under its own procd service precisely so that stopping this one
 // cannot kill an install.
 func (l Lifecycle) Stop(ctx context.Context) (StopReport, error) {
+	intentErr := update.RecordServiceIntent(l.Paths.Update(), false)
 	report := StopReport{AlreadyStopped: !l.Running(ctx)}
 	if !report.AlreadyStopped {
 		report.CancelledActions = l.cancelInFlight(ctx)
@@ -160,7 +168,7 @@ func (l Lifecycle) Stop(ctx context.Context) (StopReport, error) {
 	// A stop script that complained about a service which is now demonstrably
 	// gone was complaining about it already being gone.
 
-	return report, l.recordStopped()
+	return report, errors.Join(intentErr, l.recordStopped())
 }
 
 // StopReport is what a stop did, so the caller can say so rather than printing

@@ -229,7 +229,9 @@ local ALLOWED_HELPER_ARGS = {
 
 local function run_helper(argv)
     local joined = table.concat(argv, " ")
-    if not ALLOWED_HELPER_ARGS[joined] then
+    local update_start = #argv == 4 and argv[1] == "update" and argv[2] == "run"
+        and #argv[3] == 64 and argv[3]:match("^[0-9a-f]+$") and argv[4] == "--background"
+    if not ALLOWED_HELPER_ARGS[joined] and not update_start then
         return fail("InvalidArgument", "不允许的服务命令")
     end
 
@@ -282,6 +284,13 @@ end
 
 function M.stop_service()
     return run_helper({ "service", "stop" })
+end
+
+function M.start_update(plan_id)
+    if type(plan_id) ~= "string" or #plan_id ~= 64 or not plan_id:match("^[0-9a-f]+$") then
+        return fail("InvalidArgument", "更新计划无效，请重新检查更新")
+    end
+    return run_helper({ "update", "run", plan_id, "--background" })
 end
 
 -- call_started is the mutating path: make sure the service is there, then make

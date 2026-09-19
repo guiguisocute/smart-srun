@@ -56,6 +56,7 @@ define SmartSrun/InstallCore
 	$(INSTALL_DIR) $(1)/etc/smart-srun $(1)/etc/init.d
 	chmod 0700 $(1)/etc/smart-srun
 	$(INSTALL_BIN) $(CURDIR)/root/etc/init.d/smart_srun $(1)/etc/init.d/smart_srun
+	$(INSTALL_BIN) $(CURDIR)/root/etc/init.d/smart_srun_update $(1)/etc/init.d/smart_srun_update
 	$(INSTALL_DIR) $(1)/usr/share/smart-srun $(1)/lib/upgrade/keep.d
 	$(INSTALL_DATA) $(CURDIR)/doc/school-presets.json $(1)/usr/share/smart-srun/school-presets.json
 	$(INSTALL_DATA) $(CURDIR)/root/usr/share/smart-srun/third-party-licenses.txt $(1)/usr/share/smart-srun/third-party-licenses.txt

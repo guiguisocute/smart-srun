@@ -7,6 +7,7 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/config"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 	"github.com/matthewlu070111/smart-srun/core/internal/openwrt"
+	"github.com/matthewlu070111/smart-srun/core/internal/update"
 )
 
 // ConfigWriteResult never includes credentials, including after an account edit.
@@ -118,6 +119,9 @@ func (d *Daemon) changeConfig(ctx context.Context, expected *uint64, kind, id st
 	}
 	var result ConfigWriteResult
 	err := d.actions.ChangeConfiguration(ctx, func() error {
+		if err := update.Guard(d.paths.Update()); err != nil {
+			return err
+		}
 		if d.wizard.configBlocked() {
 			return domain.Errorf(domain.CodeBusy, "无线向导尚未完成，请先保存向导账号或取消临时连接")
 		}

@@ -36,3 +36,20 @@ python3 scripts/build_go_sdk.py --target x86_64-opkg-24.10.8 \
 APK 目标可通过 `--sign-key` 和 `--public-key` 传入维护者控制的密钥。私钥不得入库或上传到构建产物。脚本对自己的未签名输入执行离线签名，然后必须用公钥通过原生 `apk verify`，不能只相信签名命令的退出码。公钥信任引导、固件安装和发布验收是另外的步骤；不能在安装时加 `--allow-untrusted`。
 
 `.github/workflows/build-go.yml` 是按上述目标生成矩阵的手动构建流程，不发布 Release，默认 APK 未签名。旧的两个发布流程拒绝 Go 源码树，避免生成未经 2.0 验收的公开产物。首个公开 RC 仍需完成剩余架构、更新恢复、资源、真机和独立审查。
+
+### Go 更新与开发部署
+
+`srunnet update check` 异步检查官方发布清单，`update run 计划ID` 启动独立 procd Worker。`update status` 只读固定状态，即使主服务停止也可使用；等待命令被取消不会终止已经开始的原生安装。安装失败时先读取状态和实际包版本，再使用 `update recover` 恢复保留的原版本包；配置备份独立保存，不自动覆盖当前配置。APK 必须通过设备已有受信公钥验证。
+
+发布清单由 `scripts/make_go_manifest.py` 从真实 SDK `build-record.json` 生成。验证报告按包 SHA256 关联，构建通过不会自动变成真机或校园验收通过。未提交源码的构建只能用 `--internal-test` 生成内部测试清单，不得公开发布。
+
+Go 树中的 `scripts/hot_update.py` 已转为 SDK 包部署入口，需要设备已安装支持 `update inventory` 的 Go 版本。首次安装使用原生包管理器。开发主机使用 Python 3.11+ 与 OpenSSH，设备无需 Python；SSH 认证、跳板与主机密钥沿用本机配置：
+
+```sh
+python3 scripts/hot_update.py --host router \
+  --manifest new/release-manifest.json --assets new/packages \
+  --recovery-manifest old/release-manifest.json --recovery-assets old/packages \
+  --probe
+```
+
+`--dry-run` 只校验本地文件；`--probe` 读取设备安装信息并选择包，不上传或安装；`--prepare` 上传并完成设备端核验但不安装。去掉这些参数后执行更新，或加 `--background` 提交后返回。必须同时提供当前精确版本的恢复包，不能混用 bundle 与 split，也不能降级成逐文件覆盖。实际安装仍由独立 Worker 处理，主服务停止不会中断它。

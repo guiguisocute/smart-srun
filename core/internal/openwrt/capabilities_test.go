@@ -162,10 +162,25 @@ func TestEmptyArchitectureOutputIsNotAWorkingPackageManager(t *testing.T) {
 func TestAPKIsDetectedWhenItIsTheOneThatAnswers(t *testing.T) {
 	runner := &recordingRunner{missing: []string{"opkg"}}
 	runner.respond([]byte("apk-tools 3.0.0\n"), "apk", "--version")
+	runner.respond([]byte("x86_64\n"), "apk", "--print-arch")
 
 	capabilities := Detect(t.Context(), runner)
 	if capabilities.PackageManager != PackageManagerAPK {
 		t.Errorf("PackageManager = %q, want apk", capabilities.PackageManager)
+	}
+	if !slices.Equal(capabilities.PackageArchitectures, []string{"x86_64", "noarch"}) {
+		t.Fatalf("APK native architectures: %v", capabilities.PackageArchitectures)
+	}
+}
+
+func TestAPKDoesNotGuessAnArchitectureFromMalformedOutput(t *testing.T) {
+	for _, output := range []string{"", "all", "x86_64\narm64\n", "/x86_64", "x86_64;other"} {
+		runner := &recordingRunner{missing: []string{"opkg"}}
+		runner.respond([]byte("apk-tools 3.0.5\n"), "apk", "--version")
+		runner.respond([]byte(output), "apk", "--print-arch")
+		if len(Detect(t.Context(), runner).PackageArchitectures) != 0 {
+			t.Fatalf("accepted %q", output)
+		}
 	}
 }
 

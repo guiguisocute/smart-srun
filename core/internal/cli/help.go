@@ -54,6 +54,16 @@ func WriteHelp(out *os.File) {
                            默认跟随日志；单独 -n N 只读最后 N 行
   log tail [--json]        一次读取日志，JSON 只输出一个结果
   log runtime [--json]     查看当前认证策略与生效参数（隐藏凭据）
+  update check [--channel stable|rc] [--no-wait]
+                           检查兼容更新，返回已验证的计划 ID（JSON）
+  update run 计划ID [--background]
+                           独立安装任务；停止主服务不会中断安装
+  update status           从固定快照读取进度，不启动服务（JSON）
+  update inventory        读取实际安装包、架构和固件系列（JSON）
+  update recover [--background]
+                           恢复未完成的安装；配置备份独立保留
+  update prepare-local     SSH 部署入口；从标准输入读取新旧清单，
+                           核验固定 update-inbox 目录中的安装包（JSON）
   version                  显示版本
   help                     显示本帮助
   man                      显示本帮助及输入示例

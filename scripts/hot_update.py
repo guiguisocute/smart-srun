@@ -666,7 +666,7 @@ def run_hot_update(ssh, sftp):
     return 0
 
 
-def main(argv=None):
+def legacy_main(argv=None):
     args = build_arg_parser().parse_args(argv)
     ensure_local_files()
     if args.dry_run:
@@ -684,6 +684,18 @@ def main(argv=None):
     finally:
         sftp.close()
         ssh.close()
+
+
+def main(argv=None):
+    if (REPO_ROOT / "core" / "go.mod").is_file():
+        # The baseline uploader remains an oracle for 1.x tests only. A Go
+        # checkout always uses native packages and the independent worker.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("go_hot_update", REPO_ROOT / "scripts" / "hot_update_go.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.main(argv)
+    return legacy_main(argv)
 
 
 if __name__ == "__main__":

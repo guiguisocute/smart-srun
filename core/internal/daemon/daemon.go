@@ -19,6 +19,7 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/portal"
 	"github.com/matthewlu070111/smart-srun/core/internal/presets"
 	"github.com/matthewlu070111/smart-srun/core/internal/transport"
+	"github.com/matthewlu070111/smart-srun/core/internal/update"
 )
 
 // readBudget bounds an internal read of the coordinator's state.
@@ -41,6 +42,9 @@ type Options struct {
 	// PresetRefresh overrides the bound refresh worker for lifecycle tests.
 	// Nil builds the real adapter/transport path, independent of authentication.
 	PresetRefresh application.Runner
+	UpdateSource  update.ReleaseSource
+	UpdateDevice  update.Device
+	UpdateLaunch  func() error
 
 	// PublicPresets reads the current merged public catalogue, including drafts.
 	// Nil uses the installed built-in file and the tmpfs cache. Reading this
@@ -96,6 +100,7 @@ type Daemon struct {
 	publicPresets func() ([]presets.School, error)
 	configChanged func(uint64)
 	wizard        *wifiWizard
+	updater       *updateController
 
 	// published is the last state an action was logged in, so a republication
 	// -- a cancellation arriving while the action is still running -- does not
@@ -203,8 +208,10 @@ func Run(ctx context.Context, options Options) error {
 			// never confirmed is either still meaningful or has to be undone,
 			// and spec 04 will not have that decided while a switch is already
 			// running against the same radio.
-			if err := device.RecoverInterrupted(ctx); err != nil {
-				report(err)
+			if update.Guard(paths.Update()) == nil {
+				if err := device.RecoverInterrupted(ctx); err != nil {
+					report(err)
+				}
 			}
 		}
 		runner = newDeviceRunner(repository, pool, clock, radio)
@@ -230,6 +237,8 @@ func Run(ctx context.Context, options Options) error {
 		published:     map[string]string{},
 		dirty:         make(chan struct{}, 1),
 	}
+	service.initUpdater(ctx, options)
+	defer service.updater.close()
 	service.openProbe = options.OpenProbe
 	service.probeGateways = options.ProbeGateways
 	if service.probeGateways == nil {
@@ -242,8 +251,10 @@ func Run(ctx context.Context, options Options) error {
 	service.store.SetRevision(repository.Revision())
 	if wizardDevice != nil {
 		service.wizard = newWifiWizard(service, wizardDevice)
-		if err := service.wizard.recover(ctx); err != nil {
-			report(err)
+		if update.Guard(paths.Update()) == nil {
+			if err := service.wizard.recover(ctx); err != nil {
+				report(err)
+			}
 		}
 	}
 
@@ -309,6 +320,9 @@ func Run(ctx context.Context, options Options) error {
 		Lines:    service.lineOf,
 		Finalize: service.finishSwitch,
 		Check: func(request application.Request) error {
+			if err := update.Guard(paths.Update()); err != nil {
+				return err
+			}
 			if request.CheckRevision && request.ConfigRevision != repository.Revision() {
 				return domain.Errorf(domain.CodeConflict, "配置已变化，请刷新后重试")
 			}

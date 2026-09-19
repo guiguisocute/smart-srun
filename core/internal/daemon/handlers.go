@@ -53,6 +53,9 @@ func (d *Daemon) register(registry *control.Registry) {
 	registry.Register("log.tail", d.logTail)
 	registry.Register("log.download", d.logDownload)
 	registry.Register("log.clear", d.logClear)
+	registry.Register("update.check", d.updateCheck)
+	registry.Register("update.start", d.updateStart)
+	registry.Register("update.status", d.updateStatus)
 }
 
 // VersionResult is what version.get answers.

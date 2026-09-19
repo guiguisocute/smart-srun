@@ -46,6 +46,14 @@ func run(ctx context.Context, args []string, stdout, stderr *os.File) int {
 		return cli.RunOnline(ctx, args, os.Stdin, stdout, stderr)
 	case "daemon":
 		return cli.RunDaemon(ctx, args[1:], stdout, stderr)
+	case "update":
+		return cli.RunUpdate(ctx, args[1:], stdout, stderr)
+	case "_update-worker":
+		return cli.RunUpdateWorker(ctx, args[1:], stdout, stderr)
+	case "_update-intent":
+		return cli.RunUpdateIntent(args[1:], stderr)
+	case "_update-worker-active":
+		return cli.UpdateWorkerActive()
 	case "service":
 		return cli.RunService(ctx, args[1:], stdout, stderr)
 	case "status":

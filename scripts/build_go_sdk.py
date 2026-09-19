@@ -30,6 +30,7 @@ PACKAGES = ("smart-srun", "luci-app-smart-srun", "luci-app-smart-srun-bundle")
 SOURCE_PATHS = (
     "Makefile", "core/go.mod", "core/go.sum", "core/cmd", "core/internal",
     "root/etc/init.d/smart_srun", "root/lib/upgrade/keep.d/smart-srun",
+    "root/etc/init.d/smart_srun_update",
     "root/usr/share/smart-srun/third-party-licenses.txt",
     "root/usr/lib/lua/luci/controller/smart_srun.lua",
     "root/usr/lib/lua/luci/model/cbi/smart_srun.lua",
@@ -43,6 +44,7 @@ FEED_URLS = {
 }
 CORE_FILES = {
     "usr/bin/srunnet", "etc/init.d/smart_srun", "lib/upgrade/keep.d/smart-srun",
+    "etc/init.d/smart_srun_update",
     "usr/share/smart-srun/school-presets.json", "usr/share/smart-srun/third-party-licenses.txt",
 }
 LUCI_FILES = {

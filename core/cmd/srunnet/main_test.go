@@ -65,15 +65,14 @@ func TestVersionAndHelpAnswerOnStdout(t *testing.T) {
 	}
 }
 
-// A reserved command this build cannot perform exits 6, and one that does not
-// exist exits 2. A user who typed `srunnet lgoin` and a user who asked for
-// something not written yet need different answers.
-func TestUnimplementedAndUnknownCommandsDiffer(t *testing.T) {
+// A known command missing its subcommand gets actionable usage, while a typo
+// still reports an unknown command.
+func TestIncompleteAndUnknownCommandsDiffer(t *testing.T) {
 	code, _, stderr := capture(t, []string{"update"})
-	if code != cli.ExitUnsupported {
-		t.Errorf("a reserved command exited %d, want %d", code, cli.ExitUnsupported)
+	if code != cli.ExitInvalidInput {
+		t.Errorf("incomplete update exited %d, want %d", code, cli.ExitInvalidInput)
 	}
-	if !strings.Contains(stderr, "尚未包含") {
+	if !strings.Contains(stderr, "update check") {
 		t.Errorf("stderr = %q", stderr)
 	}
 

@@ -164,9 +164,27 @@ func Detect(ctx context.Context, runner commandRunner) Capabilities {
 	if capabilities.PackageManager == PackageManagerNone && capabilities.Has(ToolAPK) {
 		if _, err := runner.Run(ctx, string(ToolAPK), "--version"); err == nil {
 			capabilities.PackageManager = PackageManagerAPK
+			capabilities.PackageArchitectures = apkArchitectures(ctx, runner)
 		}
 	}
 	return capabilities
+}
+
+func apkArchitectures(ctx context.Context, runner commandRunner) []string {
+	result, err := runner.Run(ctx, string(ToolAPK), "--print-arch")
+	if err != nil || result.StdoutTruncated {
+		return nil
+	}
+	fields := strings.Fields(string(result.Stdout))
+	if len(fields) != 1 || len(fields[0]) > 128 || fields[0] == "all" || fields[0] == "noarch" {
+		return nil
+	}
+	for _, c := range fields[0] {
+		if !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != '_' && c != '-' && c != '.' {
+			return nil
+		}
+	}
+	return []string{fields[0], "noarch"}
 }
 
 // listUbusObjects reads `ubus list`, one object name per line.

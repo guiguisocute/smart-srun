@@ -8,6 +8,7 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/control"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 	"github.com/matthewlu070111/smart-srun/core/internal/presets"
+	"github.com/matthewlu070111/smart-srun/core/internal/update"
 )
 
 // UserPresetsResult returns the editable source plus a deduplicated shortcut
@@ -62,7 +63,15 @@ func (d *Daemon) userPresetsSet(ctx context.Context, raw json.RawMessage) (any, 
 	if err != nil {
 		return nil, err
 	}
-	document, err := d.users.Set(ctx, *params.ExpectedRevision, params.Document, public)
+	var document presets.UserDocument
+	err = d.actions.ChangeConfiguration(ctx, func() error {
+		if err := update.Guard(d.paths.Update()); err != nil {
+			return err
+		}
+		var err error
+		document, err = d.users.Set(ctx, *params.ExpectedRevision, params.Document, public)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}

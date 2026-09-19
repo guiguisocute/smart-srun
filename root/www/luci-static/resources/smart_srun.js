@@ -89,6 +89,20 @@
     xhr.send(null);
   }
 
+  function startUpdate(planId, callback) {
+    var xhr = new XMLHttpRequest();
+    var tokenNode = document.querySelector('input[name="token"]');
+    var token = tokenNode ? tokenNode.value : ((window.L && L.env) ? L.env.token : '');
+    xhr.open('POST', UPDATE_START_URL, true);
+    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      if (xhr.status !== 200) { callback(new Error('http_' + xhr.status)); return; }
+      try { callback(null, JSON.parse(xhr.responseText || '{}')); } catch (err) { callback(err); }
+    };
+    xhr.send('plan_id=' + encodeURIComponent(planId || '') + '&token=' + encodeURIComponent(token || ''));
+  }
+
   function isPageHidden() {
     return document.hidden === true || document.webkitHidden === true;
   }
@@ -159,13 +173,14 @@
         if (!confirm('确认自动更新到 ' + target + '？更新过程中请不要刷新或断电。')) return;
         updateBtn.disabled = true;
         output.textContent = '正在提交后台更新任务...';
-        fetchJson(UPDATE_START_URL, function(err, data) {
+        startUpdate(plan.plan_id, function(err, data) {
           if (err || !data) {
             output.textContent = '提交更新失败';
             updateBtn.disabled = false;
             return;
           }
           output.textContent = formatUpdateStatus(data);
+          if (!data.running) { updateBtn.disabled = false; return; }
           pollUpdateStatus(output);
         });
       }
@@ -193,12 +208,19 @@
       openUpdateModal(updatePlan);
     });
 
-    fetchJson(UPDATE_CHECK_URL, function(err, data) {
+    function checked(err, data) {
+      if (!err && data && data.running && data.job_id) {
+        setTimeout(function() {
+          fetchJson(UPDATE_STATUS_URL + '?job_id=' + encodeURIComponent(data.job_id), checked);
+        }, 1000);
+        return;
+      }
       if (err || !data || !data.ok || !data.update_available) return;
       updatePlan = data;
       dot.style.display = 'inline-block';
       link.title = '发现新版本：' + (data.latest_tag || data.latest_version || '');
-    });
+    }
+    fetchJson(UPDATE_CHECK_URL, checked);
   }
 
   window.smartFetchJson = fetchJson;

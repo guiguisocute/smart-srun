@@ -89,7 +89,16 @@ func TestSwitchRPCPersistsSelectionWithoutChangingDefaultsOrEnabled(t *testing.T
 
 func TestSwitchRPCReportsRecoveryWhenSelectionCannotBeSaved(t *testing.T) {
 	faults := make(chan error, 1)
-	r := setupSwitchRPC(t, func(o *Options) { o.OnError = func(err error) { faults <- err } })
+	worker := blockingRunner{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	r := setupSwitchRPC(t, func(o *Options) {
+		o.OnError = func(err error) { faults <- err }
+		o.Runner = worker
+	})
+	var receipt SubmitResult
+	json.Unmarshal(r.call("action.submit", SubmitParams{Kind: "switch_campus", AccountID: "c2", IdempotencyKey: "save-failure"}), &receipt)
+	<-worker.entered
+	// Fail persistence after dispatch. An already unreadable recovery parent
+	// is now correctly refused by the updater guard before a switch begins.
 	backup := r.paths.Config + "-saved"
 	if err := os.Rename(r.paths.Config, backup); err != nil {
 		t.Fatal(err)
@@ -97,8 +106,7 @@ func TestSwitchRPCReportsRecoveryWhenSelectionCannotBeSaved(t *testing.T) {
 	if err := os.WriteFile(r.paths.Config, []byte("block config directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var receipt SubmitResult
-	json.Unmarshal(r.call("action.submit", SubmitParams{Kind: "switch_campus", AccountID: "c2", IdempotencyKey: "save-failure"}), &receipt)
+	close(worker.release)
 	got := r.awaitTerminal(receipt.ActionID)
 	if got.State != application.StateFailed || got.Code != domain.CodeRecoveryRequired {
 		t.Fatalf("save failure reported success: %+v", got)
