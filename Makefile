@@ -19,10 +19,12 @@ include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
 # Keep the SDK's architecture mapping and Go package lifecycle, but produce a
 # static Go binary. The framework defaults to cgo and an external C linker.
-GO_PKG_TARGET_VARS:=$(filter-out CGO_ENABLED=1,$(GO_PKG_TARGET_VARS)) CGO_ENABLED=0
-GO_PKG_DEFAULT_LDFLAGS:=-s -w -buildid '$(SOURCE_DATE_EPOCH)' -linkmode internal
 GO_ARM64:=v8.0
 GO_MIPS:=softfloat
+# Set ABI baselines BEFORE := expands the framework's recursive target vars;
+# otherwise cortex-a76 keeps v8.2 and hardware-FPU MIPS keeps hardfloat.
+GO_PKG_TARGET_VARS:=$(filter-out CGO_ENABLED=1,$(GO_PKG_TARGET_VARS)) CGO_ENABLED=0
+GO_PKG_DEFAULT_LDFLAGS:=-s -w -buildid '$(SOURCE_DATE_EPOCH)' -linkmode internal
 
 # MIPS needs the smaller non-inlined build to fit the complete 10 MiB payload.
 # Other architectures retain normal inlining. No runtime feature is removed.
