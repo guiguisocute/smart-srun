@@ -73,12 +73,7 @@ coverage_of() {
 require_coverage() {
     pkg_path=$1
     floor=$2
-    if [ ! -d "$core_dir/$pkg_path" ]; then
-        # Not written yet. Said out loud rather than passed over: a floor for a
-        # package nobody has built is not met, it is not yet applicable.
-        printf '  %-30s not built yet\n' "$pkg_path"
-        return 0
-    fi
+    [ -d "$core_dir/$pkg_path" ] || fail "required package $pkg_path is missing"
     value=$(coverage_of "$pkg_path")
     [ -n "$value" ] || fail "no coverage was reported for $pkg_path; a floor cannot be met by a package the run did not measure"
     if ! awk -v v="$value" -v f="$floor" 'BEGIN { exit (v + 0 >= f + 0) ? 0 : 1 }'; then
@@ -90,7 +85,9 @@ require_coverage() {
 require_coverage internal/protocol/srun 90
 require_coverage internal/policy 90
 require_coverage internal/config 90
-require_coverage internal/discovery 90
+# Portal discovery/parsing was implemented under portal, not the provisional
+# discovery directory in the architecture plan. A stale path must not skip it.
+require_coverage internal/portal 90
 
 total=$(go tool cover -func=coverage.out |
     awk '$1 == "total:" { sub(/%/, "", $NF); print $NF }')

@@ -8,6 +8,9 @@ import (
 	"testing"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
+
+	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/transport"
 )
 
 func TestRealOptionsPreserveSuffixesAndDoNotInferIdentity(t *testing.T) {
@@ -20,6 +23,33 @@ func TestRealOptionsPreserveSuffixesAndDoNotInferIdentity(t *testing.T) {
 	want := []Operator{{"Research.Example.edu", "研究网络"}, {"Lab_42", "学生 & 教职工"}, {"", "校园网"}, {"42", "编号后缀"}, {"xn", "别名"}}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("%+v / %v", got, err)
+	}
+}
+
+func TestOperatorDecodeBoundsExpandedCharsetBeforeAcceptingOptions(t *testing.T) {
+	// A valid selector before padding must not make an oversized decoded page
+	// acceptable. GBK bytes can fit the wire budget while their UTF-8 output does not.
+	body := `<select name="realm"><option value="@stu">学生</option></select>` + strings.Repeat("学", transport.MaxPortalBody/3)
+	encoded, err := simplifiedchinese.GBK.NewEncoder().Bytes([]byte(body))
+	if err != nil || len(encoded) >= transport.MaxPortalBody {
+		t.Fatalf("fixture does not fit the wire budget: %d %v", len(encoded), err)
+	}
+	operators, err := ReadOperators(encoded, "text/html; charset=gbk")
+	if code, _ := domain.CodeOf(err); code != domain.CodeProtocolInvalid || len(operators) != 0 {
+		t.Fatalf("accepted partial operators after charset expansion: %+v %v", operators, err)
+	}
+	client := environmentFetcher(func(*http.Request) (*http.Response, error) {
+		r := page(200, string(encoded), "")
+		r.Header.Set("Content-Type", "text/html; charset=gbk")
+		return r, nil
+	})
+	result, err := ProbeOperators(t.Context(), client, "http://portal.invalid/", "")
+	if code, _ := domain.CodeOf(err); code != domain.CodeProtocolInvalid || result.OK || len(result.Operators) != 0 {
+		t.Fatalf("probe accepted partial operators: %+v %v", result, err)
+	}
+	operators, err = ReadOperators(nil, "text/html")
+	if err != nil || len(operators) != 0 {
+		t.Fatalf("empty page invented operators: %+v %v", operators, err)
 	}
 }
 
