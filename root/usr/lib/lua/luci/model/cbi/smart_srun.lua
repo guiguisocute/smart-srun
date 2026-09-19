@@ -326,15 +326,7 @@ local schools = {}
 
 -- 学校参数预设来自守护进程的合并目录（内置 + 缓存 + 用户自定义）。
 -- 只读、不联网：远程刷新是独立任务，不在页面渲染里发起。
-local school_presets = {}
-local presets_list = rpc.call("presets.list", { include_inactive = false })
-if type(presets_list) == "table" then
-    for _, group in ipairs({ presets_list.public, presets_list.user }) do
-        for _, item in ipairs(type(group) == "table" and group or {}) do
-            school_presets[#school_presets + 1] = item
-        end
-    end
-end
+local school_presets = bridge.presets() or {}
 
 local school_runtime_contract = parse_school_runtime_contract("")
 if type(school_runtime_contract.school_extra) == "table" then

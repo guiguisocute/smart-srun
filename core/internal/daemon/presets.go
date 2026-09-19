@@ -13,6 +13,7 @@ import (
 type PresetRefreshParams struct {
 	Interface      string `json:"iface"`
 	IdempotencyKey string `json:"idempotency_key"`
+	Session        string `json:"session,omitempty"`
 }
 
 func (d *Daemon) presetsRefresh(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -21,7 +22,7 @@ func (d *Daemon) presetsRefresh(ctx context.Context, raw json.RawMessage) (any, 
 		return nil, err
 	}
 	receipt, err := d.actions.Submit(ctx, application.Request{Kind: application.KindPresetsRefresh,
-		Interface: params.Interface, IdempotencyKey: params.IdempotencyKey})
+		Interface: params.Interface, IdempotencyKey: params.IdempotencyKey, Owner: probeOwner(params.Session)})
 	if err != nil {
 		return nil, err
 	}

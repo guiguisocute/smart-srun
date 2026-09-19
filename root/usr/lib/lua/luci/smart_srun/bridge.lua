@@ -13,6 +13,30 @@ local rpc = require "luci.smart_srun.rpc"
 
 local M = {}
 
+-- Read the local catalogue completely. Rendering and task polling never fetch
+-- remote data; presets.refresh is the separate bounded network operation.
+function M.presets()
+    local schools, offset, revision = {}, 0, nil
+    for page_number = 1, 128 do
+        local page, err = rpc.call("presets.list", { include_inactive = false, offset = offset, limit = 100 })
+        if not page then return nil, err end
+        if revision and revision ~= page.revision then
+            return nil, { code = "Conflict", message = "预设读取期间发生编辑，请刷新页面" }
+        end
+        revision = page.revision
+        for _, group in ipairs({ page.public or {}, page.user or {} }) do
+            for _, item in ipairs(group) do schools[#schools + 1] = item end
+        end
+        if page.next_offset == nil then return schools end
+        local next_offset = tonumber(page.next_offset)
+        if not next_offset or next_offset <= offset then
+            return nil, { code = "ProtocolInvalid", message = "预设分页响应无效" }
+        end
+        offset = next_offset
+    end
+    return nil, { code = "ProtocolInvalid", message = "预设超过分页上限" }
+end
+
 -- Baseline scalar -> config v2 destination, from
 -- .codex/go-loop/baseline/field-mapping.json. Keys the mapping records as
 -- dropped (developer_mode, the three backoff factors, the two superseded

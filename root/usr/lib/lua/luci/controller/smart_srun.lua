@@ -120,10 +120,6 @@ function action_update_status()
     write_json_response(run_srunnet_json("update status"))
 end
 
-function action_presets_refresh()
-    write_json_response(run_srunnet_json("presets refresh"))
-end
-
 -- 状态改为从 Go 守护进程的组合快照读取。
 -- 轮询只读缓存：不启动服务，也不触发认证或同步探测（规范 02/03）。
 function action_status()
@@ -291,7 +287,7 @@ local function discovery_job(method)
             params.user_id = fv("user_id")
         end
         if method == "detect.verify" then
-            params.password = fv("password")
+            params.password = tostring(http.formvalue("password") or "")
             params.candidates = jsonc.parse(fv("candidates"))
             params.max_attempts = tonumber(fv("max_attempts")) or 5
             params.login = {
@@ -299,6 +295,14 @@ local function discovery_job(method)
                 os = fv("login_os"), name = fv("login_name"),
             }
             if fv("double_stack") ~= "" then params.login.double_stack = fv("double_stack") == "1" end
+        end
+        if method == "presets.refresh" then
+            local iface = fv("iface")
+            if iface == "" then
+                local status = bridge.status()
+                iface = type(status) == "table" and tostring(status.current_iface or "") or ""
+            end
+            params = { iface = iface, idempotency_key = fv("idempotency_key"), session = session }
         end
         payload, err = rpc.call_started(method, params)
     else
@@ -309,12 +313,24 @@ local function discovery_job(method)
         write_json_response({ ok = false, code = err and err.code, message = rpc.message(err, "探测失败") })
         return
     end
+    if method == "presets.refresh" and action == "status" and payload.state == "succeeded" then
+        local schools, list_err = bridge.presets()
+        if not schools then
+            write_json_response({ ok = false, message = rpc.message(list_err, "无法读取刷新后的预设") })
+            return
+        end
+        payload.result = { ok = true, schools = schools, message = payload.message }
+    end
     payload.ok = true
     if type(payload.result) == "table" then
         payload.result.value = tostring(payload.result.acid or "")
         payload.result.ac_id = tostring(payload.result.acid or "")
     end
     write_json_response(payload)
+end
+
+function action_presets_refresh()
+    discovery_job("presets.refresh")
 end
 
 function action_detect_acid()

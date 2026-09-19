@@ -476,7 +476,7 @@
     var node = document.getElementById('smart-school-preset-data');
     if (!node || window.__smartPresetsRefresh) return;
     window.__smartPresetsRefresh = true;
-    fetchJson('/cgi-bin/luci/admin/services/smart_srun/presets_refresh?_=' + Date.now(), function(err, data) {
+    postDiscovery('presets_refresh', {}, function(err, data) {
       if (err || !data || !data.ok || !data.schools) return;
       node.value = JSON.stringify(data.schools);
       node.textContent = node.value;
@@ -1814,7 +1814,7 @@
   // the bounded job. Polling reads cached action state; it never probes again.
   function postDiscovery(path, values, done) {
     var stopped = false, active = null, timer = null, actionId = '';
-    var deadline = Date.now() + (path === 'detect_operator' ? 225000 : 65000);
+    var deadline = Date.now() + (path === 'detect_operator' ? 225000 : (path === 'presets_refresh' ? 75000 : 65000));
     var tokenNode = document.querySelector('input[name="token"]');
     var token = tokenNode ? tokenNode.value : ((window.L && L.env) ? L.env.token : '');
     values.idempotency_key = 'luci-probe-' + Date.now() + '-' + Math.random().toString(16).slice(2);

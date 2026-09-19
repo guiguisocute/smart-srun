@@ -47,6 +47,14 @@ func runOnline(ctx context.Context, client onlineClient, args []string, stdin io
 		return onlineError(stderr, domain.Errorf(domain.CodeInvalidArgument, "需要命令"))
 	}
 	switch args[0] {
+	case "detect":
+		return onlineDetect(ctx, client, args[1:], stdin, stdout, stderr)
+	case "schools":
+		return onlineSchools(args[1:], stdout, stderr)
+	case "presets":
+		return onlinePresets(ctx, client, args, stdout, stderr)
+	case "log":
+		return onlineLog(ctx, client, args[1:], stdout, stderr)
 	case "config":
 		return onlineConfig(ctx, client, args[1:], stdin, stdout, stderr)
 	case "enable", "disable":
@@ -316,6 +324,16 @@ func onlineAction(ctx context.Context, client onlineClient, args []string, stdou
 }
 
 func waitAction(ctx context.Context, client onlineClient, id string, stderr *os.File) (daemon.ActionView, error) {
+	view, err := waitTask(ctx, client, id, stderr)
+	return view.ActionView, err
+}
+
+type taskView struct {
+	daemon.ActionView
+	Result json.RawMessage `json:"result,omitempty"`
+}
+
+func waitTask(ctx context.Context, client onlineClient, id string, stderr *os.File) (taskView, error) {
 	phase := ""
 	for {
 		raw, err := client.call(ctx, "action.get", daemon.ActionParams{ActionID: id})
@@ -331,12 +349,12 @@ func waitAction(ctx context.Context, client onlineClient, id string, stderr *os.
 			if ctx.Err() == context.DeadlineExceeded {
 				code = domain.CodeDeadlineExceeded
 			}
-			return daemon.ActionView{}, domain.Errorf(code, "等待动作结束已中止")
+			return taskView{}, domain.Errorf(code, "等待动作结束已中止")
 		}
 		if err != nil {
-			return daemon.ActionView{}, err
+			return taskView{}, err
 		}
-		var view daemon.ActionView
+		var view taskView
 		if err := json.Unmarshal(raw, &view); err != nil || view.ID != id {
 			return view, domain.Errorf(domain.CodeProtocolInvalid, "服务返回的动作格式无效")
 		}
@@ -348,7 +366,7 @@ func waitAction(ctx context.Context, client onlineClient, id string, stderr *os.
 		}
 		if view.Phase != phase {
 			phase = view.Phase
-			labels := map[string]string{"waiting_link": "等待线路", "challenge": "获取认证挑战", "login": "正在认证", "verify": "验证连接", "logout": "正在退出", "switch": "切换连接"}
+			labels := map[string]string{"waiting_link": "等待线路", "challenge": "获取认证挑战", "login": "正在认证", "verify": "验证连接", "logout": "正在退出", "switch": "切换连接", "fetch": "正在读取"}
 			if label := labels[phase]; label != "" {
 				fmt.Fprintln(stderr, label)
 			}

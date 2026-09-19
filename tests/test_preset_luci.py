@@ -104,21 +104,29 @@ const nodes = {
   'smart-user-preset-data': textarea({presets: scenario.custom, operators: []})
 };
 const pending = [];
+const timers = [];
 const urls = [];
 function XHR() {}
 XHR.prototype.open = function(method, url, async) {
+  if (method !== 'POST') throw new Error('Refresh and polling must use POST');
   this.url = url;
   this.async = async;
   urls.push(url);
 };
-XHR.prototype.send = function() { pending.push(this); };
+XHR.prototype.setRequestHeader = function() {};
+XHR.prototype.send = function(body) {
+  if (!body.includes('token=csrf-token')) throw new Error('Missing CSRF');
+  pending.push(this);
+};
 const context = {
   window: {},
   document: {
     readyState: 'loading', addEventListener() {},
+    querySelector() { return {value: 'csrf-token'}; },
     getElementById(id) { return nodes[id] || null; }
   },
   XMLHttpRequest: XHR,
+  setTimeout(fn) { timers.push(fn); return timers.length; }, clearTimeout() {},
   Date, JSON
 };
 vm.runInNewContext(source, context);
@@ -145,8 +153,13 @@ scenario.refreshes.forEach(payload => {
   if (!xhr.async) throw new Error('Preset request must be asynchronous');
   xhr.readyState = 4;
   xhr.status = 200;
-  xhr.responseText = JSON.stringify(payload);
-  xhr.onreadystatechange();
+  xhr.responseText = JSON.stringify({ok:true, action_id:'refresh1', state:'queued'});
+  xhr.onload();
+  timers.shift()();
+  const poll = pending.shift();
+  poll.status = 200;
+  poll.responseText = JSON.stringify({ok:true, id:'refresh1', state:'succeeded', result:payload});
+  poll.onload();
   states.push(snapshot());
 });
 console.log(JSON.stringify({states, beforeResponses, urls}));
@@ -211,8 +224,8 @@ console.log(JSON.stringify({states, beforeResponses, urls}));
         self.assertEqual(states[2]["textContent"], "[]")
         self.assertIsNone(states[2]["found"]["new-school"])
         self.assertEqual(states[2]["found"]["custom-123"], custom)
-        self.assertEqual(len(rendered["urls"]), 2)
-        self.assertTrue(all("/presets_refresh?" in url for url in rendered["urls"]))
+        self.assertEqual(len(rendered["urls"]), 4)
+        self.assertTrue(all(url.endswith("/presets_refresh") for url in rendered["urls"]))
 
 
 if __name__ == "__main__":

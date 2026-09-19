@@ -18,6 +18,16 @@ PROBE_DIR = Path(__file__).resolve().parent / "lua"
 
 
 class LuciRpcBridgeTests(unittest.TestCase):
+    def test_discovery_and_refresh_controller(self):
+        lua = shutil.which("lua")
+        if not lua:
+            self.skipTest("lua is not installed")
+        result = subprocess.run(
+            [lua, str(PROBE_DIR / "controller_discovery.lua"), str(REPO_ROOT)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_acid_job_client(self):
         node = shutil.which("node")
         if not node:
