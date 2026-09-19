@@ -374,7 +374,8 @@ func waitTask(ctx context.Context, client onlineClient, id string, stderr *os.Fi
 		}
 		if view.Phase != phase {
 			phase = view.Phase
-			labels := map[string]string{"waiting_link": "等待线路", "challenge": "获取认证挑战", "login": "正在认证", "verify": "验证连接", "logout": "正在退出", "switch": "切换连接", "fetch": "正在读取"}
+			labels := map[string]string{"waiting_link": "等待线路", "challenge": "获取认证挑战", "login": "正在认证", "verify": "验证连接", "logout": "正在退出", "switch": "切换连接", "fetch": "正在读取",
+				"prepare": "准备连接", "activate": "应用连接设置", "association": "等待无线关联", "address": "等待网络地址", "commit": "确认连接设置", "rollback": "恢复原设置", "retire": "退出旧无线连接", "reuse": "复用当前连接"}
 			if label := labels[phase]; label != "" {
 				fmt.Fprintln(stderr, label)
 			}

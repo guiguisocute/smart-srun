@@ -124,14 +124,14 @@ func (w *deviceWireless) Association(ctx context.Context, radio string) (
 	if err != nil {
 		return wifi.Association{}, err
 	}
-	association := wifi.Association{SSID: info.SSID, BSSID: info.BSSID}
+	association := wifi.Association{SSID: info.SSID, BSSID: info.BSSID, Encrypted: info.Encrypted}
 	if !association.Joined() {
 		// No point asking netifd for an address on a client that joined
 		// nothing, and an address left over from the previous network would
 		// make one look usable.
 		return association, nil
 	}
-	association.HasIPv4 = w.hasAddress(ctx, firstNetwork(iface.Network))
+	association.HasIPv4 = w.hasAddress(ctx, firstNetwork(iface.Network), iface.IfName)
 	return association, nil
 }
 
@@ -200,7 +200,7 @@ func toCandidates(radio string, results []openwrt.ScanResult) []wifi.Candidate {
 // A failure is "no", not an error: the caller is deciding whether an existing
 // association can be reused, and "I could not tell" has to mean "do not reuse
 // it". Getting that backwards would authenticate over a line with no way out.
-func (w *deviceWireless) hasAddress(ctx context.Context, iface string) bool {
+func (w *deviceWireless) hasAddress(ctx context.Context, iface, device string) bool {
 	if iface == "" {
 		return false
 	}
@@ -208,7 +208,7 @@ func (w *deviceWireless) hasAddress(ctx context.Context, iface string) bool {
 	if err != nil {
 		return false
 	}
-	return status.Up && len(status.IPv4) > 0
+	return status.Up && len(status.IPv4) > 0 && device != "" && status.L3Device == device
 }
 
 func firstNetwork(names []string) string {

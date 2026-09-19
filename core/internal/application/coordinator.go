@@ -140,8 +140,10 @@ type run struct {
 }
 
 type completion struct {
-	id      string
-	outcome Outcome
+	id                 string
+	outcome            Outcome
+	timings            []PhaseTiming
+	workerMilliseconds int64
 }
 
 type phaseReport struct {

@@ -166,7 +166,7 @@ func TestSwitchingToAHotspotAppliesThePlan(t *testing.T) {
 func TestARadioAlreadyOnTheTargetNetworkIsNotReapplied(t *testing.T) {
 	radio := &fakeWireless{
 		association: wifi.Association{SSID: "phone",
-			BSSID: "aa:bb:cc:dd:ee:ff", HasIPv4: true},
+			BSSID: "aa:bb:cc:dd:ee:ff", HasIPv4: true, Encrypted: true},
 	}
 	worker := switcherFor(t, switchWorld(true), radio)
 

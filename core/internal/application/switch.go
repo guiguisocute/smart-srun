@@ -60,7 +60,7 @@ func (a *Authenticator) switchCampus(ctx context.Context, action Action, report 
 		a.mu.Lock()
 		before := a.seen[account.ID]
 		a.mu.Unlock()
-		report(PhaseSwitch)
+		report(PhaseRetire)
 		if err := a.wireless.Retire(ctx); err != nil {
 			outcome.State = StateFailed
 			outcome.Code = domain.CodeRecoveryRequired
@@ -196,6 +196,7 @@ func (a *Authenticator) moveTo(ctx context.Context, dest destination,
 	// therefore a fresh authentication, to arrive where the radio already is.
 	observed, err := a.wireless.Association(ctx, dest.plan.Radio)
 	if err == nil && !wifi.ShouldReselect(dest.want, observed) {
+		report(PhaseReuse)
 		return nil
 	}
 

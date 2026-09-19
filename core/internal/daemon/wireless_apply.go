@@ -46,6 +46,7 @@ func (w *deviceWireless) Apply(ctx context.Context, plan application.WirelessPla
 	}
 
 	section := stationSection(plan.Radio)
+	application.ReportPhase(ctx, application.PhasePrepare)
 	changes, err := w.changesFor(ctx, section, plan)
 	if err != nil {
 		return err
@@ -67,6 +68,7 @@ func (w *deviceWireless) applyChanges(ctx context.Context, changes []wireless.Ch
 		return err
 	}
 
+	application.ReportPhase(ctx, application.PhaseActivate)
 	if err := transaction.Apply(ctx, changes); err != nil {
 		// Applied or not, the journal says where it got to, and rollback reads
 		// that rather than guessing. A failure before the commit has nothing to
@@ -80,6 +82,7 @@ func (w *deviceWireless) applyChanges(ctx context.Context, changes []wireless.Ch
 	if err := verify(); err != nil {
 		return w.undo(ctx, transaction, err)
 	}
+	application.ReportPhase(ctx, application.PhaseCommit)
 	return transaction.Confirm()
 }
 
@@ -135,6 +138,7 @@ const UndoBudget = 8 * time.Second
 // for whoever has to fix it, and the second must not hide the first.
 func (w *deviceWireless) undo(ctx context.Context, transaction *wireless.Transaction,
 	cause error) error {
+	application.ReportPhase(ctx, application.PhaseRollback)
 
 	if ctx.Err() != nil {
 		var cancel context.CancelFunc
@@ -159,16 +163,29 @@ func (w *deviceWireless) undo(ctx context.Context, transaction *wireless.Transac
 // associated and got nothing is a request that goes nowhere.
 func (w *deviceWireless) awaitLine(ctx context.Context, plan application.WirelessPlan) error {
 	deadline := w.clock.Now().Add(w.settleWait)
+	application.ReportPhase(ctx, application.PhaseAssociation)
+	target := wifi.Target{SSID: plan.SSID, Security: wifi.ParseSecurity(plan.Encryption), Policy: domain.APSelectionAuto}
+	if plan.BSSID != "" {
+		target.Policy, target.PinnedBSSID = domain.APSelectionFixed, plan.BSSID
+	}
 	var last error
 	for {
 		observed, err := w.Association(ctx, plan.Radio)
 		switch {
 		case err != nil:
 			last = err
-		case observed.Joined() && observed.SSID == plan.SSID && observed.HasIPv4:
+		case target.Satisfied(observed):
 			return nil
+		case observed.Joined() && observed.SSID == plan.SSID &&
+			((target.Security.Protected() && !observed.Encrypted) || (plan.BSSID != "" && !strings.EqualFold(plan.BSSID, observed.BSSID))):
+			last = domain.Errorf(domain.CodeBindingChanged, "实际无线关联与所选接入点或加密要求不符")
 		default:
 			last = describeWait(plan, observed)
+		}
+		if err == nil && observed.Joined() && observed.SSID == plan.SSID {
+			application.ReportPhase(ctx, application.PhaseAddress)
+		} else {
+			application.ReportPhase(ctx, application.PhaseAssociation)
 		}
 
 		if !w.clock.Now().Before(deadline) {

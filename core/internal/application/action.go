@@ -259,6 +259,10 @@ type Action struct {
 	QueuedAt  time.Time
 	StartedAt time.Time
 	EndedAt   time.Time
+	// Timings are complete only after the worker exits, including cancellation
+	// cleanup. They do not infer packet loss or connection continuity.
+	Timings            []PhaseTiming
+	WorkerMilliseconds int64
 
 	// Sequence is assigned at dispatch and increases forever. A result carrying
 	// an older sequence belongs to a worker that was cancelled and finished

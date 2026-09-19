@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/matthewlu070111/smart-srun/core/internal/application"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 	"github.com/matthewlu070111/smart-srun/core/internal/openwrt"
 	"github.com/matthewlu070111/smart-srun/core/internal/wireless"
@@ -60,7 +61,10 @@ func (w *deviceWireless) Retire(ctx context.Context) error {
 			}
 		}
 	}
-	return w.applyChanges(ctx, changes, func() error { return w.awaitRetired(ctx, sections, iface) })
+	return w.applyChanges(ctx, changes, func() error {
+		application.ReportPhase(ctx, application.PhaseRetire)
+		return w.awaitRetired(ctx, sections, iface)
+	})
 }
 
 func exclusiveNetwork(section openwrt.UCISection, iface string) bool {

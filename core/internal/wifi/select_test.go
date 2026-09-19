@@ -295,7 +295,7 @@ func TestAScanResultIsNotAnAssociation(t *testing.T) {
 // that produces points at the gateway rather than at the lease.
 func TestAnAssociationWithNoAddressIsNotReusable(t *testing.T) {
 	target := campusTarget()
-	joined := Association{SSID: "campus", BSSID: "bb:bb:bb:bb:bb:bb"}
+	joined := Association{SSID: "campus", BSSID: "bb:bb:bb:bb:bb:bb", Encrypted: true}
 
 	if target.Satisfied(joined) {
 		t.Fatal("an association with no IPv4 was accepted as usable")
@@ -315,7 +315,7 @@ func TestAnAssociationWithNoAddressIsNotReusable(t *testing.T) {
 // one in use precisely so that a policy which re-evaluated would move.
 func TestAnOnlineClientIsNotReselectedEveryTick(t *testing.T) {
 	target := campusTarget()
-	online := Association{SSID: "campus", BSSID: "bb:bb:bb:bb:bb:bb", HasIPv4: true}
+	online := Association{SSID: "campus", BSSID: "bb:bb:bb:bb:bb:bb", HasIPv4: true, Encrypted: true}
 
 	if ShouldReselect(target, online) {
 		t.Fatal("a working association asked to be reselected")
@@ -334,7 +334,7 @@ func TestFixedRequiresTheAssociationToBeThePinnedAP(t *testing.T) {
 	target.Policy = domain.APSelectionFixed
 	target.PinnedBSSID = "bb:bb:bb:bb:bb:bb"
 
-	wrong := Association{SSID: "campus", BSSID: "cc:cc:cc:cc:cc:cc", HasIPv4: true}
+	wrong := Association{SSID: "campus", BSSID: "cc:cc:cc:cc:cc:cc", HasIPv4: true, Encrypted: true}
 	if target.Satisfied(wrong) {
 		t.Error("a pinned account accepted an association with another access point")
 	}
@@ -342,8 +342,20 @@ func TestFixedRequiresTheAssociationToBeThePinnedAP(t *testing.T) {
 		t.Error("a pinned account on the wrong access point did not reselect")
 	}
 
-	right := Association{SSID: "campus", BSSID: "BB:BB:BB:BB:BB:BB", HasIPv4: true}
+	right := Association{SSID: "campus", BSSID: "BB:BB:BB:BB:BB:BB", HasIPv4: true, Encrypted: true}
 	if !target.Satisfied(right) {
 		t.Error("a pinned account rejected its own access point over letter case")
+	}
+}
+
+func TestProtectedTargetNeverReusesAnOpenAssociation(t *testing.T) {
+	target := campusTarget()
+	observed := Association{SSID: target.SSID, BSSID: "02:00:00:00:00:01", HasIPv4: true}
+	if target.Satisfied(observed) {
+		t.Fatal("open same-name AP reused for protected target")
+	}
+	observed.Encrypted = true
+	if !target.Satisfied(observed) {
+		t.Fatal("protected association not reusable")
 	}
 }

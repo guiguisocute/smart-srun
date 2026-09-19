@@ -15,7 +15,11 @@ import (
 
 // publish announces a change. The observer sees the action as it now stands,
 // by value, so it cannot alter what the next reader will see.
-func (a Action) publicCopy() Action           { a.Request.PrivateJSON = ""; return a }
+func (a Action) publicCopy() Action {
+	a.Request.PrivateJSON = ""
+	a.Timings = append([]PhaseTiming(nil), a.Timings...)
+	return a
+}
 func (c *Coordinator) publish(action *Action) { c.observer(action.publicCopy()) }
 
 // onSubmit queues an action, or hands back the one an identical key already
@@ -109,6 +113,8 @@ func (c *Coordinator) onFinish(done completion) {
 		// This result has already been accounted for.
 		return
 	}
+	action.Timings = append([]PhaseTiming(nil), done.timings...)
+	action.WorkerMilliseconds = done.workerMilliseconds
 
 	delete(c.running, done.id)
 	if state.line != "" && c.busyLines[state.line] == done.id {
@@ -171,6 +177,9 @@ func (c *Coordinator) onFinish(done completion) {
 // completion first. Recording it then would put "challenge" back on top of a
 // finished login.
 func (c *Coordinator) onPhase(report phaseReport) {
+	if !knownPhase(report.phase) {
+		return
+	}
 	action, known := c.index[report.id]
 	if !known || action.State.Terminal() {
 		return
@@ -313,16 +322,29 @@ func (c *Coordinator) startAction(parent context.Context, action *Action) {
 	snapshot := *action
 	c.workers.Go(func() {
 		defer cancel()
-
-		outcome := c.runner.Run(ctx, snapshot, func(phase Phase) {
+		started := c.clock.Now()
+		trace := phaseTrace{now: c.clock.Now}
+		trace.change(PhaseWaitingLink)
+		report := func(phase Phase) {
+			if !knownPhase(phase) {
+				return
+			}
+			trace.change(phase)
 			select {
 			case c.phases <- phaseReport{id: snapshot.ID, phase: phase}:
 			case <-ctx.Done():
 			case <-c.done:
 			}
-		})
+		}
+		workerCtx := context.WithValue(ctx, phaseReporterKey{}, report)
+		outcome := c.runner.Run(workerCtx, snapshot, report)
+		timings := trace.finish()
+		elapsed := c.clock.Now().Sub(started).Milliseconds()
+		if elapsed < 0 {
+			elapsed = 0
+		}
 		select {
-		case c.finish <- completion{id: snapshot.ID, outcome: outcome}:
+		case c.finish <- completion{id: snapshot.ID, outcome: outcome, timings: timings, workerMilliseconds: elapsed}:
 		case <-c.done:
 		}
 	})

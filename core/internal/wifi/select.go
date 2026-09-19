@@ -236,8 +236,9 @@ func byStrength(a, b Candidate) int {
 
 // Association is what a radio reports about itself right now.
 type Association struct {
-	SSID  string
-	BSSID string
+	SSID      string
+	BSSID     string
+	Encrypted bool
 	// HasIPv4 records that the line actually carries an address.
 	HasIPv4 bool
 }
@@ -259,6 +260,9 @@ func (t Target) Satisfied(observed Association) bool {
 		return false
 	}
 	if observed.SSID != t.SSID {
+		return false
+	}
+	if t.Security.Protected() && !observed.Encrypted {
 		return false
 	}
 	if t.Policy == domain.APSelectionFixed {

@@ -39,17 +39,21 @@ const (
 // format: adding a field to the coordinator's record should not silently change
 // what LuCI receives.
 type ActionView struct {
-	ID        string           `json:"id"`
-	Kind      string           `json:"kind"`
-	AccountID string           `json:"account_id,omitempty"`
-	HotspotID string           `json:"hotspot_id,omitempty"`
-	Interface string           `json:"iface,omitempty"`
-	State     string           `json:"state"`
-	Phase     string           `json:"phase,omitempty"`
-	Message   string           `json:"message,omitempty"`
-	Code      domain.ErrorCode `json:"code,omitempty"`
-	QueuedAt  time.Time        `json:"queued_at"`
-	EndedAt   *time.Time       `json:"ended_at,omitempty"`
+	ID                 string                    `json:"id"`
+	Kind               string                    `json:"kind"`
+	AccountID          string                    `json:"account_id,omitempty"`
+	HotspotID          string                    `json:"hotspot_id,omitempty"`
+	Interface          string                    `json:"iface,omitempty"`
+	State              string                    `json:"state"`
+	Phase              string                    `json:"phase,omitempty"`
+	Message            string                    `json:"message,omitempty"`
+	Code               domain.ErrorCode          `json:"code,omitempty"`
+	QueuedAt           time.Time                 `json:"queued_at"`
+	StartedAt          *time.Time                `json:"started_at,omitempty"`
+	EndedAt            *time.Time                `json:"ended_at,omitempty"`
+	QueueMilliseconds  int64                     `json:"queue_ms"`
+	WorkerMilliseconds int64                     `json:"worker_ms"`
+	Timings            []application.PhaseTiming `json:"timings,omitempty"`
 }
 
 // Snapshot is the one combined picture spec 03 requires of status.get, and the
@@ -77,16 +81,23 @@ type Snapshot struct {
 // ViewOf converts a coordinator action into the wire shape.
 func ViewOf(action application.Action) ActionView {
 	view := ActionView{
-		ID:        action.ID,
-		Kind:      string(action.Request.Kind),
-		AccountID: action.Request.AccountID,
-		HotspotID: action.Request.HotspotID,
-		Interface: action.Request.Interface,
-		State:     string(action.State),
-		Phase:     string(action.Phase),
-		Message:   action.Message,
-		Code:      action.Code,
-		QueuedAt:  action.QueuedAt,
+		ID:                 action.ID,
+		Kind:               string(action.Request.Kind),
+		AccountID:          action.Request.AccountID,
+		HotspotID:          action.Request.HotspotID,
+		Interface:          action.Request.Interface,
+		State:              string(action.State),
+		Phase:              string(action.Phase),
+		Message:            action.Message,
+		Code:               action.Code,
+		QueuedAt:           action.QueuedAt,
+		WorkerMilliseconds: action.WorkerMilliseconds,
+		Timings:            append([]application.PhaseTiming(nil), action.Timings...),
+	}
+	if !action.StartedAt.IsZero() {
+		started := action.StartedAt
+		view.StartedAt = &started
+		view.QueueMilliseconds = max(0, started.Sub(action.QueuedAt).Milliseconds())
 	}
 	if !action.EndedAt.IsZero() {
 		ended := action.EndedAt

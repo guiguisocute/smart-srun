@@ -514,9 +514,44 @@ func TestAScanFallsBackToTheAccessPointOnTheRadio(t *testing.T) {
 // address, so Apply's wait finishes on its first look.
 func (f *wirelessFixture) settled() {
 	f.device.answer(statusWithStation, "ubus", "call", "network.wireless", "status")
-	f.device.answer(associatedInfo, "ubus", iwinfoInfo("phy1-sta0")...)
+	f.device.answer(strings.Replace(associatedInfo, `"enabled": false`, `"enabled": true`, 1), "ubus", iwinfoInfo("phy1-sta0")...)
 	f.device.answer(wwanUp, "ubus", "call", "network.interface.wwan", "status")
 	f.device.answer(liveWirelessUCI, "uci", "show", "wireless")
+}
+
+func TestAssociationRejectsAddressFromAnotherDevice(t *testing.T) {
+	f := newWirelessFixture(t)
+	f.settled()
+	f.device.answer(strings.Replace(wwanUp, `"l3_device": "phy1-sta0"`, `"l3_device": "eth0"`, 1), "ubus", "call", "network.interface.wwan", "status")
+	got, err := f.radio.Association(t.Context(), "radio1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HasIPv4 {
+		t.Fatal("stale address on another L3 device accepted")
+	}
+}
+
+func TestAwaitLineRefusesWrongPinnedAPOrOpenDowngrade(t *testing.T) {
+	for _, mode := range []string{"pinned", "encryption"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newWirelessFixture(t)
+			f.settled()
+			plan := campusPlan()
+			if mode == "pinned" {
+				plan.BSSID = "02:00:00:00:00:01"
+			} else {
+				f.device.answer(associatedInfo, "ubus", iwinfoInfo("phy1-sta0")...)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			// A matching SSID/address must not return success before noticing
+			// cancellation when the actual pin/security is wrong.
+			if err := f.radio.awaitLine(ctx, plan); err == nil {
+				t.Fatal("wrong association marked ready")
+			}
+		})
+	}
 }
 
 func campusPlan() application.WirelessPlan {
