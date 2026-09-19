@@ -22,7 +22,7 @@
 
 ### Go SDK 开发包
 
-`targets.json` 锁定 SDK 下载哈希、feeds 提交和 Go 工具链。当前录入 x86_64 的 IPK/APK，以及 aarch64_cortex-a53、mips_24kc 的 IPK 构建目标；录入不等于真机验收。`pending_architectures` 仍是待完成的架构，不能宣称已经支持。只有纯 LuCI 包使用 `all`/`noarch`，核心和 bundle 使用实际 SDK 架构。
+`targets.json` 锁定 SDK 下载哈希、feeds 提交和 Go 工具链。已检查 x86_64 两格式以及 aarch64_cortex-a53、mips_24kc 的 IPK 产物，正在扩展 ARM64 APK 和 ARMv7 IPK；录入目标不等于构建或真机验收。`pending_architectures` 仍是待完成的架构，不能宣称已经支持。只有纯 LuCI 包使用 `all`/`noarch`，核心和 bundle 使用实际 SDK 架构。
 
 在 Linux（Python 3.12+、OpenWrt SDK 主机依赖及现有 Go 引导工具链）运行：
 

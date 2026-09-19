@@ -52,6 +52,12 @@ def inspect_binary(binary, target, go, execute, qemu, version):
             # a trailing space when combining its package/compiler flags.
             settings[key] = json.loads(value) if value.startswith('"') else value
     expected = {"CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": target["goarch"]}
+    if target["goarch"] == "amd64":
+        expected["GOAMD64"] = "v1"
+    if target["goarch"] == "arm64":
+        expected["GOARM64"] = "v8.0"
+    if target["goarch"] == "arm" and settings.get("GOARM") not in ("7", "7,hardfloat"):
+        raise ValueError("ARMv7 package requires the SDK's ARMv7 hardware-float baseline")
     if target["goarch"] in ("mips", "mipsle"):
         expected.update(GOMIPS="softfloat", **{"-gcflags": "all=-l"})
     for key, value in expected.items():

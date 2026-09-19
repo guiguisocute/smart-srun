@@ -75,6 +75,41 @@
         "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
         "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
       }
+    },
+    {
+      "id": "aarch64_cortex-a53-apk-25.12.2",
+      "openwrt_arch": "aarch64_cortex-a53",
+      "target": "mediatek/filogic",
+      "goos": "linux",
+      "goarch": "arm64",
+      "package_manager": "apk",
+      "format": "apk",
+      "sdk_release": "25.12.2",
+      "sdk_url": "https://downloads.openwrt.org/releases/25.12.2/targets/mediatek/filogic/openwrt-sdk-25.12.2-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst",
+      "sdk_sha256": "56e60bb1bfac3eb379cbabc3fff126ac2b749b746b007268b27aba2df9d31a4f",
+      "feeds": {
+        "base": "d266501ad6188cce279a487b1ce61f4f327cd496",
+        "packages": "268d92d3d46147efe1e81892e3a618f8bbd4806b",
+        "luci": "067535eaf51a59582b775a8b588a9b05810f8030"
+      },
+      "base_feed_subdir": "package"
+    },
+    {
+      "id": "arm_cortex-a7_neon-vfpv4-opkg-24.10.8",
+      "openwrt_arch": "arm_cortex-a7_neon-vfpv4",
+      "target": "ipq40xx/generic",
+      "goos": "linux",
+      "goarch": "arm",
+      "package_manager": "opkg",
+      "format": "ipk",
+      "sdk_release": "24.10.8",
+      "sdk_url": "https://downloads.openwrt.org/releases/24.10.8/targets/ipq40xx/generic/openwrt-sdk-24.10.8-ipq40xx-generic_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst",
+      "sdk_sha256": "b1b6a4a0d18305431c005af5b3750bedcdc4f5578eb757c53a4ce5956337f9f2",
+      "feeds": {
+        "base": "0b795ce79e23b553aa184080c390f9ce92a2b6d4",
+        "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
+        "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
+      }
     }
   ],
   "pending_architectures": [
