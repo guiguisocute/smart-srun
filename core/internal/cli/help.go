@@ -31,6 +31,9 @@ func WriteHelp(out *os.File) {
                            读取账号或热点，隐藏密码（JSON）
   config account|hotspot add|edit|rm|default
                            从 JSON 标准输入保存账号或热点（JSON 结果）
+  config account|hotspot add|edit [ID] --interactive
+                           终端交互输入；密码不回显，编辑时留空保留
+                           TTY 中 add/edit 自动进入交互；管道仍读取 JSON
   schools list|inspect ID [--json]  查看内置认证策略（不联网）
   presets list [--all --json]      查看本地学校参数预设
   presets inspect ID [--json]      查看一个学校参数预设

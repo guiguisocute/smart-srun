@@ -78,6 +78,15 @@ func runOnline(ctx context.Context, client onlineClient, args []string, stdin io
 }
 
 func onlineConfig(ctx context.Context, client onlineClient, args []string, stdin io.Reader, stdout, stderr *os.File) int {
+	explicit := len(args) > 0 && args[len(args)-1] == "--interactive"
+	if explicit {
+		return runInteractiveConfig(ctx, client, args[:len(args)-1], stdin, stdout, stderr)
+	}
+	if len(args) >= 2 && (args[1] == "add" || args[1] == "edit") {
+		if file, ok := stdin.(*os.File); ok && isTerminal(file) {
+			return runInteractiveConfig(ctx, client, args, stdin, stdout, stderr)
+		}
+	}
 	badUsage := func() int {
 		return onlineError(stderr, domain.Errorf(domain.CodeInvalidArgument,
 			"用法：config show|get [字段路径]|set；config account|hotspot list|get ID|add|edit|rm|default（写操作从标准输入读取含 expected_revision 的 JSON）"))
@@ -141,8 +150,7 @@ func onlineConfig(ctx context.Context, client onlineClient, args []string, stdin
 	default:
 		return badUsage()
 	}
-	// A terminal without piped input must not hang waiting for an invisible JSON
-	// document. Interactive forms belong to the fuller CLI in batch B.
+	// Other operations require JSON; a terminal must not wait invisibly for it.
 	if file, ok := stdin.(*os.File); ok {
 		if info, err := file.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
 			return onlineError(stderr, domain.Errorf(domain.CodeInvalidArgument, "请通过管道或重定向提供 JSON 配置"))
