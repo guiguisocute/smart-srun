@@ -184,6 +184,19 @@ func (r Runner) Resolve(program string) (string, error) {
 // A non-zero exit is reported as an *ExitError, so ignoring it takes a
 // deliberate line of code. The Result is filled in either way.
 func (r Runner) Run(ctx context.Context, program string, args ...string) (Result, error) {
+	return r.run(ctx, program, "", args...)
+}
+
+// RunInput supplies a bounded document through a pipe, so secrets never need
+// to appear in argv. It retains Run's environment, time and process-group limits.
+func (r Runner) RunInput(ctx context.Context, program, input string, args ...string) (Result, error) {
+	if len(input) > DefaultMaxOutput {
+		return Result{Program: program}, domain.Errorf(domain.CodeInvalidArgument, "命令输入超过大小上限")
+	}
+	return r.run(ctx, program, input, args...)
+}
+
+func (r Runner) run(ctx context.Context, program, input string, args ...string) (Result, error) {
 	result := Result{Program: program}
 
 	resolved, err := r.Resolve(program)
@@ -209,10 +222,11 @@ func (r Runner) Run(ctx context.Context, program string, args ...string) (Result
 	cmd.Env = slices.Clone(fixedEnvironment)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	// Nothing this package runs reads stdin. Leaving it nil gives the child
-	// /dev/null, so a tool that decides to prompt gets EOF instead of hanging
-	// until the timeout.
-	cmd.Stdin = nil
+	// The reader reaches EOF after the supplied document; no interactive prompt
+	// can borrow the daemon's terminal or wait forever for more input.
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
 	// A tool that forks keeps the group, so cancelling reaps the children too
 	// rather than leaving them attached to the pipe.
 	setProcessGroup(cmd)

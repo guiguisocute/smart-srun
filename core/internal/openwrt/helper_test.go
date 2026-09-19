@@ -2,6 +2,7 @@ package openwrt
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -48,6 +49,14 @@ func runHelper(args []string) int {
 		return 2
 	}
 	switch args[0] {
+	case "stdin":
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return 2
+		}
+		fmt.Println(strings.Join(args[1:], "|"))
+		fmt.Print(string(data))
+		return 0
 	case "echo":
 		// Each argument on its own line, so a test can see exactly how the
 		// operating system split them.

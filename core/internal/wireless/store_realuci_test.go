@@ -162,6 +162,31 @@ func TestTheStoreAgainstRealUCI(t *testing.T) {
 	if !strings.Contains(string(body), "jxnu_stu") {
 		t.Errorf("removing one section took another's options with it:\n%s", body)
 	}
+
+	// The real batch parser, including shell-looking input that must remain data.
+	for _, secret := range []string{"quote'back\\slash", " double\" space ", "$(touch /tmp/should-not-exist);`id`", "中文密码&<>"} {
+		if err := store.Stage(t.Context(), "wireless", []Change{{Key: key, Text: secret}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Commit(t.Context(), "wireless"); err != nil {
+			t.Fatal(err)
+		}
+		values, err := store.Read(t.Context(), "wireless", []Key{key})
+		if err != nil || values[key].Text != secret {
+			t.Fatal("batch did not round-trip literal input", err)
+		}
+	}
+	beforeNoop, _ := os.ReadFile(live)
+	if err := store.Stage(t.Context(), "wireless", []Change{{Key: ssid, Text: "jxnu_stu"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Commit(t.Context(), "wireless"); err != nil {
+		t.Fatal(err)
+	}
+	afterNoop, _ := os.ReadFile(live)
+	if string(beforeNoop) != string(afterNoop) {
+		t.Fatal("no-op rewrote configuration")
+	}
 }
 
 // And against a copy of the device's own wireless configuration.

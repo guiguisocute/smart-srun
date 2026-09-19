@@ -36,7 +36,8 @@ type fakeUCI struct {
 	t *testing.T
 	// calls is every argv, so a test can assert on what was not run as well as
 	// on what was.
-	calls [][]string
+	calls  [][]string
+	inputs []string
 	// failOn makes one sub-command fail, to drive the error paths.
 	failOn string
 	// missing makes `show` and `changes` report no such package.
@@ -45,7 +46,48 @@ type fakeUCI struct {
 	// produces more than the runner will hold.
 	truncate bool
 	// reloads counts the network service restarts.
-	reloads int
+	reloads     int
+	ignoreBatch bool
+}
+
+func (f *fakeUCI) RunInput(ctx context.Context, program, input string, args ...string) (openwrt.Result, error) {
+	f.calls = append(f.calls, append([]string{program}, args...))
+	f.inputs = append(f.inputs, input)
+	if f.ignoreBatch {
+		return openwrt.Result{}, nil
+	}
+	count := len(f.calls)
+	defer func() { f.calls = f.calls[:count] }() // Emulation below is not a process argv.
+	flags, rest := splitFlags(args)
+	if len(rest) != 1 || rest[0] != "batch" {
+		f.t.Fatal("unexpected stdin command")
+	}
+	for _, line := range splitLines(input) {
+		command, argument, _ := strings.Cut(line, " ")
+		if command == "set" {
+			name, _, _ := strings.Cut(argument, "=")
+			pkg, rest, _ := strings.Cut(name, ".")
+			sectionName, option, _ := strings.Cut(rest, ".")
+			prefix := ""
+			if option != "" {
+				prefix = pkg + "." + sectionName + "=wifi-iface\n"
+			}
+			parsed, err := openwrt.ParseUCIShow(pkg, []byte(prefix+argument+"\n"))
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			section, _ := parsed.Section(sectionName)
+			value := section.Type
+			if option != "" {
+				value = section.Get(option)
+			}
+			argument = name + "=" + value
+		}
+		if _, err := f.Run(ctx, program, "-q", "-c", flags["-c"], "-t", flags["-t"], command, argument); err != nil {
+			return openwrt.Result{}, err
+		}
+	}
+	return openwrt.Result{}, nil
 }
 
 func (f *fakeUCI) Run(_ context.Context, program string, args ...string) (
@@ -241,6 +283,13 @@ func replaceOrAppend(lines []string, name, line string) []string {
 }
 
 func (f *fakeUCI) ran(command string) bool {
+	for _, input := range f.inputs {
+		for _, line := range splitLines(input) {
+			if strings.HasPrefix(line, command+" ") {
+				return true
+			}
+		}
+	}
 	for _, call := range f.calls {
 		if slices.Contains(call, command) {
 			return true
@@ -312,6 +361,48 @@ var campusChanges = []Change{
 	{Key: ssid, Text: "jxnu_stu"},
 	{Key: enc, Text: "psk2"},
 	{Key: key, Text: passphrase},
+}
+
+func TestBatchSecretsNeverEnterProcessArguments(t *testing.T) {
+	f := newFixture(t)
+	if err := f.store.Stage(t.Context(), "wireless", campusChanges); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range f.uci.calls {
+		if strings.Contains(strings.Join(args, " "), passphrase) {
+			t.Fatal("secret in process arguments")
+		}
+	}
+	if !strings.Contains(strings.Join(f.uci.inputs, ""), passphrase) {
+		t.Fatal("secret never reached stdin")
+	}
+}
+
+func TestFailedReplacementInvalidatesPreviousCandidate(t *testing.T) {
+	f := newFixture(t)
+	if err := f.store.Stage(t.Context(), "wireless", campusChanges); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Stage(t.Context(), "wireless", []Change{{Key: key, Text: "bad\ninput"}}); err == nil {
+		t.Fatal("accepted newline")
+	}
+	if err := f.store.Commit(t.Context(), "wireless"); err == nil {
+		t.Fatal("published stale candidate")
+	}
+	if f.liveText(t) != liveWireless {
+		t.Fatal("changed live configuration")
+	}
+}
+
+func TestSuccessfulBatchExitWithoutAppliedChangesIsRefused(t *testing.T) {
+	f := newFixture(t)
+	f.uci.ignoreBatch = true
+	if err := f.store.Stage(t.Context(), "wireless", campusChanges); err == nil {
+		t.Fatal("trusted exit status without effect")
+	}
+	if err := f.store.Commit(t.Context(), "wireless"); err == nil {
+		t.Fatal("published incomplete candidate")
+	}
 }
 
 // Nothing the system reads has moved when the candidate is ready.
@@ -727,7 +818,7 @@ func TestAFailureWhileStagingPublishesNothing(t *testing.T) {
 	}
 }
 
-// The value is on the uci command line; the failure report is not.
+// Neither the UCI command line nor the failure report carries the value.
 func TestAStagingFailureDoesNotQuoteThePassphrase(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.uci.failOn = "set"
@@ -974,7 +1065,7 @@ func TestStagingNothingIsRefused(t *testing.T) {
 func TestAnIdenticalCandidateIsNotRepublished(t *testing.T) {
 	fixture := newFixture(t)
 	// A change that sets the options to what they already are.
-	unchanged := []Change{{Key: ssid, Text: "'old-network'"}}
+	unchanged := []Change{{Key: ssid, Text: "old-network"}}
 	if err := fixture.store.Stage(t.Context(), "wireless", unchanged); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}

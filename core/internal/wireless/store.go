@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 	"github.com/matthewlu070111/smart-srun/core/internal/openwrt"
@@ -19,6 +20,7 @@ import (
 // tested against real ones.
 type commandRunner interface {
 	Run(ctx context.Context, program string, args ...string) (openwrt.Result, error)
+	RunInput(ctx context.Context, program, input string, args ...string) (openwrt.Result, error)
 }
 
 // SystemConfigDir and SystemDeltaDir are uci's own defaults.
@@ -174,6 +176,7 @@ func (s *UCIStore) Stage(ctx context.Context, pkg string, changes []Change) erro
 	if err := checkName(pkg, "配置包"); err != nil {
 		return err
 	}
+	delete(s.staged, pkg) // A failed replacement must not leave a publishable candidate.
 	if len(changes) == 0 {
 		return domain.Errorf(domain.CodeInvalidArgument,
 			"没有要暂存的改动")
@@ -218,25 +221,40 @@ func (s *UCIStore) Stage(ctx context.Context, pkg string, changes []Change) erro
 	if err != nil {
 		return err
 	}
+	unchanged, err := s.show(ctx, s.staging, delta, pkg)
+	if err != nil {
+		return err
+	}
+	if candidateMatches(unchanged, changes) {
+		s.staged[pkg] = before
+		return nil
+	}
 
+	var batch strings.Builder
+	var keys []string
 	for _, change := range ordered(changes) {
 		if err := checkKey(change.Key); err != nil {
 			return err
 		}
 		name := pkg + "." + keyString(change.Key)
+		keys = append(keys, name)
 		if change.Delete && !existing[keyString(change.Key)] {
 			// Already the state this change asks for.
 			continue
 		}
-		args := []string{"-q", "-c", s.staging, "-t", delta, "set", name + "=" + change.Text}
 		if change.Delete {
-			args = []string{"-q", "-c", s.staging, "-t", delta, "delete", name}
+			batch.WriteString("delete " + name + "\n")
+		} else {
+			quoted, err := quoteBatch(change.Text)
+			if err != nil {
+				return err
+			}
+			batch.WriteString("set " + name + "=" + quoted + "\n")
 		}
-		if _, err := s.runner.Run(ctx, "uci", args...); err != nil {
-			// The value is on that command line. Reporting the key alone says
-			// enough to act on without putting a passphrase in a log.
-			return domain.Errorf(domain.CodeInternal,
-				"暂存 %s 失败", name).Wrap(err)
+	}
+	if batch.Len() > 0 {
+		if _, err := s.runner.RunInput(ctx, "uci", batch.String(), "-q", "-c", s.staging, "-t", delta, "batch"); err != nil {
+			return domain.Errorf(domain.CodeInternal, "无法暂存 UCI 改动（%s）", strings.Join(keys, ", ")).Wrap(err)
 		}
 	}
 
@@ -245,8 +263,43 @@ func (s *UCIStore) Stage(ctx context.Context, pkg string, changes []Change) erro
 		return domain.Errorf(domain.CodeInternal,
 			"无法生成 %s 的候选配置", pkg).Wrap(err)
 	}
+	// Some UCI batch failures do not produce a failing exit status. Verify the
+	// isolated candidate before marking it publishable, without exposing values.
+	candidate, err := s.show(ctx, s.staging, delta, pkg)
+	if err != nil {
+		return err
+	}
+	if !candidateMatches(candidate, changes) {
+		return domain.Errorf(domain.CodeInternal, "UCI 批处理未应用完整的候选配置")
+	}
 	s.staged[pkg] = before
 	return nil
+}
+
+func candidateMatches(candidate openwrt.UCIConfig, changes []Change) bool {
+	for _, change := range changes {
+		section, present := candidate.Section(change.Key.Section)
+		text := section.Type
+		if !change.Key.IsSection() {
+			var value openwrt.UCIValue
+			value, present = section.Lookup(change.Key.Option)
+			text = value.Text
+			if value.IsList {
+				return false
+			}
+		}
+		if change.Delete && present || !change.Delete && (!present || text != change.Text) {
+			return false
+		}
+	}
+	return true
+}
+
+func quoteBatch(text string) (string, error) {
+	if strings.ContainsAny(text, "\x00\r\n") {
+		return "", domain.Errorf(domain.CodeInvalidArgument, "UCI 值不能包含换行或空字符")
+	}
+	return "'" + strings.ReplaceAll(text, "'", "'\\''") + "'", nil
 }
 
 // Commit publishes the candidate, if the live file is still the one it was

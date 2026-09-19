@@ -23,6 +23,19 @@ func codeOf(t *testing.T, err error) domain.ErrorCode {
 	return code
 }
 
+func TestBoundedInputUsesPipeAndClosesIt(t *testing.T) {
+	program, args := helperCommand(t, "stdin", "public-argument")
+	input := "private-value ; $(never-run) ' \\\n"
+	result, err := (Runner{}).RunInput(t.Context(), program, input, args...)
+	if err != nil || string(result.Stdout) != "public-argument\n"+input {
+		t.Fatalf("stdin transport failed: %v", err)
+	}
+	_, err = (Runner{}).RunInput(t.Context(), program, strings.Repeat("x", DefaultMaxOutput+1), args...)
+	if codeOf(t, err) != domain.CodeInvalidArgument {
+		t.Fatal(err)
+	}
+}
+
 // T28 -- the injection case, against a real execve.
 //
 // Everything this package runs can be handed a value the user typed: an SSID, a
