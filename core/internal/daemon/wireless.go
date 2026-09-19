@@ -36,11 +36,12 @@ const SettlePoll = 2 * time.Second
 
 // deviceWireless is application.Wireless over a real router.
 type deviceWireless struct {
-	adapter  *openwrt.Adapter
-	store    wireless.Store
-	paths    wireless.Paths
-	settings application.Settings
-	clock    policy.Clock
+	adapter     *openwrt.Adapter
+	store       wireless.Store
+	wizardStore wireless.Store // Test override; production also reloads firewall.
+	paths       wireless.Paths
+	settings    application.Settings
+	clock       policy.Clock
 
 	settleWait time.Duration
 	settlePoll time.Duration

@@ -194,6 +194,11 @@ func (s *UCIStore) Stage(ctx context.Context, pkg string, changes []Change) erro
 		return err
 	}
 	delete(s.staged, pkg) // A failed replacement must not leave a publishable candidate.
+	defer func() {
+		if _, ready := s.staged[pkg]; !ready {
+			_ = os.Remove(filepath.Join(s.staging, pkg))
+		}
+	}()
 	if len(changes) == 0 {
 		return domain.Errorf(domain.CodeInvalidArgument,
 			"没有要暂存的改动")
@@ -384,13 +389,13 @@ func (s *UCIStore) Commit(ctx context.Context, pkg string) error {
 		// the identical file would still bump the mtime and make a later "was
 		// this touched" answer wrongly.
 		delete(s.staged, pkg)
-		return nil
+		return os.Remove(filepath.Join(s.staging, pkg))
 	}
 	if err := replaceFile(live, candidate); err != nil {
 		return err
 	}
 	delete(s.staged, pkg)
-	return nil
+	return os.Remove(filepath.Join(s.staging, pkg))
 }
 
 // PendingChanges reports the system's own uncommitted changes.

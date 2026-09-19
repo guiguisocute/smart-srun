@@ -348,9 +348,11 @@ function action_detect_operator()
 end
 
 function action_setup_wifi()
-    local nixio = require "nixio"
-    if http.getenv("REQUEST_METHOD") ~= "POST" then
-        write_json_response({ ok = false, message = "仅支持 POST" })
+    local dispatcher = require "luci.dispatcher"
+    if not dispatcher.test_post_security() then return end
+    local session = dispatcher.context.authsession
+    if type(session) ~= "string" or session == "" then
+        write_json_response({ ok = false, message = "LuCI 登录已失效，请重新登录" })
         return
     end
     local job = fv("job")
@@ -359,31 +361,22 @@ function action_setup_wifi()
         return
     end
     local action = fv("action")
-    if action == "status" or action == "cancel" then
-        write_json_response(run_srunnet_json("detect wifi --" .. action .. " " .. util.shellquote(job)))
-        return
-    end
-    if action ~= "start" then
+    if action ~= "start" and action ~= "status" and action ~= "cancel" then
         write_json_response({ ok = false, message = "无线操作无效" })
         return
     end
-    local path = "/tmp/smart_srun_setup_wifi." .. nixio.getpid() .. ".json"
-    local handle = nixio.open(path, nixio.open_flags("wronly", "creat", "excl"), "600")
-    if not handle then
-        write_json_response({ ok = false, message = "无法写入无线连接参数" })
-        return
+    local params = { job = job, session = session }
+    if action == "start" then
+        params.ssid = tostring(http.formvalue("ssid") or "")
+        params.key = tostring(http.formvalue("key") or "")
+        params.encryption = fv("encryption")
+        params.iface = fv("iface")
+        params.radio = fv("radio")
     end
-    local content = jsonc.stringify({job = job, ssid = fv("ssid"), key = fv("key"), encryption = fv("encryption"), iface = fv("iface"), radio = fv("radio")})
-    local written = handle:write(content)
-    handle:close()
-    if written ~= #content then
-        fs.unlink(path)
-        write_json_response({ ok = false, message = "无法完整写入无线连接参数" })
-        return
-    end
-    local result = run_srunnet_json("detect wifi --payload " .. util.shellquote(path))
-    fs.unlink(path)
-    write_json_response(result)
+    local invoke = action == "start" and rpc.call_started or rpc.call
+    local result, err = invoke("setup_wifi." .. action, params)
+    write_json_response(result or { ok = false, state = action == "status" and "missing" or "failed",
+        code = err and err.code, message = rpc.message(err, "无线连接操作失败") })
 end
 
 function action_discover_operators()
@@ -551,14 +544,16 @@ function action_enqueue()
         return
     end
 
-    if fv("setup_job") ~= "" then
-        -- 向导的临时无线连接仍属于旧后端，还没有接到新的 setup_wifi 任务上。
-        write_json_response({
-            ok = false,
-            message = "无线连接向导尚未接入新的认证服务，请先连接 Wi-Fi 后再保存账号",
-            action = action,
-        })
-        return
+    local setup_job = fv("setup_job")
+    local setup_session
+    if setup_job ~= "" then
+        local dispatcher = require "luci.dispatcher"
+        if not dispatcher.test_post_security() then return end
+        setup_session = dispatcher.context.authsession
+        if action ~= "add_campus" or type(setup_session) ~= "string" or setup_session == "" then
+            write_json_response({ ok = false, message = "无线向导会话或保存操作无效", action = action })
+            return
+        end
     end
 
     local config, err = rpc.call_started("config.get", nil)
@@ -580,8 +575,13 @@ function action_enqueue()
         if not creating and tostring(patch.id or "") == "" then
             ok, message = false, "未找到 ID: " .. id
         else
-            ok, message = config_write("campus.upsert",
-                { expected_revision = revision, account = patch },
+            local params = { expected_revision = revision, account = patch }
+            local method = "campus.upsert"
+            if setup_job ~= "" then
+                method = "setup_wifi.account"
+                params.job, params.session = setup_job, setup_session
+            end
+            ok, message = config_write(method, params,
                 creating and "已添加" or "已更新")
         end
 

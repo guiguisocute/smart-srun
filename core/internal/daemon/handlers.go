@@ -45,6 +45,11 @@ func (d *Daemon) register(registry *control.Registry) {
 	registry.Register("detect.operators", d.detectOperators)
 	registry.Register("detect.identity", d.detectIdentity)
 	registry.Register("detect.verify", d.detectVerify)
+	registry.Register("setup_wifi.start", d.setupWifiStart)
+	registry.Register("setup_wifi.status", d.setupWifiStatus)
+	registry.Register("setup_wifi.cancel", d.setupWifiCancel)
+	registry.Register("setup_wifi.account", d.setupWifiAccount)
+	registry.Register("setup_wifi.commit", d.setupWifiCommit)
 	registry.Register("log.tail", d.logTail)
 	registry.Register("log.download", d.logDownload)
 	registry.Register("log.clear", d.logClear)
@@ -168,6 +173,8 @@ var schedulerOnly = map[application.Kind]bool{
 	application.KindDetectOperators:   true,
 	application.KindDetectIdentity:    true,
 	application.KindDetectVerify:      true,
+	application.KindWifiSetupStart:    true,
+	application.KindWifiSetupCancel:   true,
 }
 
 func (d *Daemon) actionSubmit(ctx context.Context, raw json.RawMessage) (any, error) {

@@ -61,10 +61,14 @@ const (
 	KindDetectOperators   Kind = "detect_operators"
 	KindDetectIdentity    Kind = "detect_identity"
 	KindDetectVerify      Kind = "detect_verify"
+	KindWifiSetupStart    Kind = "wifi_setup_start"
+	KindWifiSetupCancel   Kind = "wifi_setup_cancel"
 )
 
 var kinds = []Kind{KindLogin, KindLogout, KindRelogin, KindSwitchCampus,
-	KindSwitchHotspot, KindMaintain, KindForcedLogout, KindPresetsRefresh, KindDetectACID, KindDetectEnvironment, KindDetectOperators, KindDetectIdentity, KindDetectVerify}
+	KindSwitchHotspot, KindMaintain, KindForcedLogout, KindPresetsRefresh, KindDetectACID, KindDetectEnvironment, KindDetectOperators, KindDetectIdentity, KindDetectVerify, KindWifiSetupStart, KindWifiSetupCancel}
+
+func (k Kind) WifiSetup() bool { return k == KindWifiSetupStart || k == KindWifiSetupCancel }
 
 func (k Kind) Discovery() bool {
 	return k == KindDetectACID || k == KindDetectEnvironment || k == KindDetectOperators || k == KindDetectIdentity || k == KindDetectVerify
@@ -72,7 +76,9 @@ func (k Kind) Discovery() bool {
 
 func (k Kind) Valid() bool { return slices.Contains(kinds, k) }
 
-func (k Kind) switches() bool { return k == KindSwitchCampus || k == KindSwitchHotspot }
+func (k Kind) switches() bool {
+	return k == KindSwitchCampus || k == KindSwitchHotspot || k.WifiSetup()
+}
 
 // Priority is where this kind sits in spec 04's order.
 func (k Kind) Priority() policy.Priority {
@@ -153,6 +159,7 @@ type Request struct {
 	ProbeSchool string
 	ProbeACID   string
 	Owner       string
+	SetupJob    string
 	// PrivateJSON carries an unsaved wizard draft to its worker only. Readers
 	// and observers receive a redacted copy; terminal history keeps only its
 	// digest so duplicate submissions remain comparable after erasure.
@@ -183,16 +190,23 @@ func (r Request) fingerprint() string {
 	if r.IgnoreQuiet {
 		quiet = "1"
 	}
-	return string(r.Kind) + "\x00" + r.AccountID + "\x00" + r.HotspotID + "\x00" + quiet + "\x00" + r.Interface + "\x00" + strconv.FormatBool(r.CheckRevision) + ":" + strconv.FormatUint(r.ConfigRevision, 10) + "\x00" + r.ProbeURL + "\x00" + r.ProbeSSID + "\x00" + r.ProbeMode + "\x00" + r.ProbeSchool + "\x00" + r.ProbeACID + "\x00" + r.Owner + "\x00" + hex.EncodeToString(r.privateDigest[:])
+	return string(r.Kind) + "\x00" + r.AccountID + "\x00" + r.HotspotID + "\x00" + quiet + "\x00" + r.Interface + "\x00" + strconv.FormatBool(r.CheckRevision) + ":" + strconv.FormatUint(r.ConfigRevision, 10) + "\x00" + r.ProbeURL + "\x00" + r.ProbeSSID + "\x00" + r.ProbeMode + "\x00" + r.ProbeSchool + "\x00" + r.ProbeACID + "\x00" + r.Owner + "\x00" + hex.EncodeToString(r.privateDigest[:]) + "\x00" + r.SetupJob
 }
 
 // Validate refuses a request the coordinator could not act on.
 func (r Request) Validate() error {
-	if len(r.PrivateJSON) > 16<<10 || (r.PrivateJSON != "" && r.Kind != KindDetectIdentity && r.Kind != KindDetectVerify) {
+	if len(r.PrivateJSON) > 16<<10 || (r.PrivateJSON != "" && r.Kind != KindDetectIdentity && r.Kind != KindDetectVerify && r.Kind != KindWifiSetupStart) {
 		return domain.Errorf(domain.CodeInvalidArgument, "此任务不接受私有参数或参数过长")
 	}
 	if !r.Kind.Valid() {
 		return domain.Errorf(domain.CodeInvalidArgument, "未知的动作类型：%q", string(r.Kind))
+	}
+	if r.Kind.WifiSetup() {
+		if len(r.SetupJob) != 32 || strings.Trim(r.SetupJob, "0123456789abcdef") != "" || r.AccountID != "" || r.HotspotID != "" || r.IgnoreQuiet {
+			return domain.Errorf(domain.CodeInvalidArgument, "无线向导参数无效")
+		}
+	} else if r.SetupJob != "" {
+		return domain.Errorf(domain.CodeInvalidArgument, "此动作不接受无线向导任务")
 	}
 	if r.Kind == KindPresetsRefresh || r.Kind.Discovery() {
 		if r.Interface == "" || len(r.Interface) > 64 || strings.ContainsAny(r.Interface, "\x00\r\n\t /\\") {
@@ -210,7 +224,7 @@ func (r Request) Validate() error {
 	if r.Kind.Discovery() && ((r.Kind != KindDetectEnvironment && r.ProbeURL == "") || len(r.ProbeURL) > 2048 || len(r.ProbeSSID) > 32 || len(r.ProbeSchool) > 128 || len(r.ProbeACID) > 64 || strings.ContainsAny(r.ProbeURL+r.ProbeSSID+r.ProbeMode+r.ProbeSchool+r.ProbeACID, "\x00\r\n")) {
 		return domain.Errorf(domain.CodeInvalidArgument, "探测参数无效")
 	}
-	if r.AccountID == "" && r.Kind != KindSwitchHotspot && r.Kind != KindPresetsRefresh && !r.Kind.Discovery() {
+	if r.AccountID == "" && r.Kind != KindSwitchHotspot && r.Kind != KindPresetsRefresh && !r.Kind.Discovery() && !r.Kind.WifiSetup() {
 		return domain.Errorf(domain.CodeInvalidArgument, "动作 %s 需要指定账号", string(r.Kind))
 	}
 	if r.Kind == KindSwitchHotspot && r.HotspotID == "" {

@@ -32,6 +32,9 @@ func onlineDetect(ctx context.Context, client onlineClient, args []string, stdin
 	if len(args) == 0 {
 		return usage()
 	}
+	if args[0] == "wifi" {
+		return onlineWifi(ctx, client, args[1:], stdin, stdout, stderr)
+	}
 	if args[0] == "status" || args[0] == "cancel" {
 		if len(args) != 2 {
 			return usage()

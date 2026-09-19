@@ -42,6 +42,11 @@ func WriteHelp(out *os.File) {
   detect operator|verify --stdin [--json --no-wait]
                            从 JSON 标准输入读取凭据与最多五个已知后缀
   detect status|cancel 任务ID      查询或取消任务（JSON）
+  detect wifi start --stdin [--json --no-wait]
+                           临时连接 Wi-Fi，15 分钟内保存或自动恢复
+  detect wifi status|cancel 任务ID [--json]
+  detect wifi account|commit --stdin
+                           用无线任务结果保存账号并确认连接
   log [tail|follow] [-n N] [--channel plugin|network]
                            默认跟随日志；单独 -n N 只读最后 N 行
   log tail [--json]        一次读取日志，JSON 只输出一个结果

@@ -1779,7 +1779,9 @@
       var cancel = new XMLHttpRequest();
       cancel.open('POST', '/cgi-bin/luci/admin/services/smart_srun/setup_wifi', true);
       cancel.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-      cancel.send('action=cancel&job=' + encodeURIComponent(old.wifiJob));
+      var tokenNode = document.querySelector('input[name="token"]');
+      var token = tokenNode ? tokenNode.value : ((window.L && L.env) ? L.env.token : '');
+      cancel.send('action=cancel&job=' + encodeURIComponent(old.wifiJob) + '&token=' + encodeURIComponent(token || ''));
     }
     wiz = null;
     if (old && old.xhr) old.xhr.abort();
@@ -1887,7 +1889,9 @@
     xhr.open('POST', '/cgi-bin/luci/admin/services/smart_srun/' + path, true);
     xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
     xhr.timeout = timeout || 120000;
-    var encoded = [];
+    var tokenNode = document.querySelector('input[name="token"]');
+    var token = tokenNode ? tokenNode.value : ((window.L && L.env) ? L.env.token : '');
+    var encoded = ['token=' + encodeURIComponent(token || '')];
     for (var key in values) {
       if (Object.prototype.hasOwnProperty.call(values, key)) encoded.push(encodeURIComponent(key) + '=' + encodeURIComponent(values[key]));
     }
@@ -2039,7 +2043,10 @@
         owner.busy = 'wifi'; owner.wifiTimer = setTimeout(check, 2000);
       }, 10000);
     }
-    wizPost('setup_wifi', {action: 'cancel', job: owner.wifiJob}, function() { check(); }, 10000);
+    wizPost('setup_wifi', {action: 'cancel', job: owner.wifiJob}, function(err, data) {
+      if (err || data.ok === false) { wizError(err ? err.message : data.message); return; }
+      check();
+    }, 10000);
   }
 
   function wizConnectWifi() {

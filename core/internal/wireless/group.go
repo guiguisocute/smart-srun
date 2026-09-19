@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
@@ -123,6 +124,9 @@ func LoadGroup(store Store, paths Paths, now func() time.Time) (*Group, bool, er
 	if g.record.Version != 1 || g.record.TaskID == "" || g.record.Salt == "" || len(g.record.Packages) == 0 || len(g.record.Packages) > 3 {
 		return nil, true, domain.Errorf(domain.CodeRecoveryRequired, "无线组合事务日志无效")
 	}
+	if !slices.Contains([]Phase{PhasePlanned, PhaseBackedUp, PhaseApplied, PhaseAwaitingConfirm, PhaseRollingBack, PhaseRolledBack, PhaseCommitted, PhaseRecoveryRequired}, g.record.Phase) {
+		return nil, true, domain.Errorf(domain.CodeRecoveryRequired, "无线组合事务阶段无法识别")
+	}
 	seen := map[string]bool{}
 	for _, pkg := range g.record.Packages {
 		if pkg != "network" && pkg != "wireless" && pkg != "firewall" || seen[pkg] {
@@ -191,6 +195,36 @@ func (g *Group) PrepareSave(revision uint64, config []byte) error {
 	g.record.SaveRevision = revision
 	g.record.SaveHash = g.configurationHash(config)
 	return g.save()
+}
+
+// CheckApplied refuses to confirm options edited outside this transaction.
+func (g *Group) CheckApplied(ctx context.Context) error {
+	if g.record.Phase != PhaseAwaitingConfirm {
+		return domain.Errorf(domain.CodeConflict, "无线组合事务尚未就绪")
+	}
+	for _, pkg := range g.record.Packages {
+		tx, found, err := g.transaction(pkg)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return domain.Errorf(domain.CodeRecoveryRequired, "无线组合事务缺少记录")
+		}
+		var keys []Key
+		for _, entry := range tx.journal.Entries {
+			keys = append(keys, entry.Key)
+		}
+		values, err := g.store.Read(ctx, pkg, keys)
+		if err != nil {
+			return err
+		}
+		for _, entry := range tx.journal.Entries {
+			if !stillOurs(tx.journal, entry, values[entry.Key]) {
+				return domain.Errorf(domain.CodeConflict, "无线配置已被其他操作修改，请取消向导后重新连接")
+			}
+		}
+	}
+	return nil
 }
 
 // Confirm records the durable group decision before removing any child's

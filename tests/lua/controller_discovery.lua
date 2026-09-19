@@ -52,4 +52,30 @@ h.responses["presets.list"] = function(p)
 end
 local result, err = h.bridge.presets()
 assert(result == nil and err.code == "ProtocolInvalid", "non-advancing pagination accepted")
-print("PASS discovery controller: exact password, read-only, CSRF, refresh receipt and pagination")
+h.reset()
+h.form = { action = "start", job = string.rep("a", 32), ssid = " exact SSID ", key = " exact wifi key ", encryption = "psk2" }
+h.responses["setup_wifi.start"] = { ok = true, state = "starting" }
+h.controller.action_setup_wifi()
+params = h.last_call("setup_wifi.start").params
+assert(params.ssid == " exact SSID " and params.key == " exact wifi key " and params.session == "browser-session")
+assert(h.last_call("setup_wifi.start").started and #h.writes == 0 and #h.commands == 0)
+h.reset()
+h.form.action = "status"
+h.responses["setup_wifi.status"] = { ok = true, state = "ready" }
+h.controller.action_setup_wifi()
+assert(not h.last_call("setup_wifi.status").started and h.last_call("setup_wifi.status").params.key == nil)
+h.reset()
+allowed = false
+h.form.action = "cancel"
+h.controller.action_setup_wifi()
+assert(#h.calls == 0, "wifi cancel ignored CSRF rejection")
+allowed = true
+h.reset()
+h.form = { action = "add_campus", setup_job = string.rep("a", 32), user_id = "student", password = "secret", access_mode = "wifi", ssid = "draft" }
+h.responses["config.get"] = { revision = 7 }
+h.responses["setup_wifi.account"] = { config_revision = 8, id = "c1" }
+h.controller.action_enqueue()
+params = h.last_call("setup_wifi.account").params
+assert(params.job == string.rep("a", 32) and params.session == "browser-session" and params.expected_revision == 7)
+assert(h.last_call("campus.upsert") == nil and #h.writes == 0 and #h.commands == 0)
+print("PASS discovery controller: secrets, read-only, CSRF, refresh, wifi lifecycle and account save")

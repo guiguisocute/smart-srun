@@ -200,9 +200,13 @@ controller.action_enqueue()
 assert(harness.output.ok == false, "a conflict must not report success")
 assert(harness.output.message == "配置已变化，请重新读取后再保存", harness.output.message)
 
--- The wizard's temporary Wi-Fi connection is not on the new backend yet, so a
--- save that depends on one is refused instead of storing half an account.
+-- A temporary Wi-Fi account goes through the owned wizard transaction. A
+-- missing/rejected job must not fall back to an ordinary account save.
+package.preload["luci.dispatcher"] = function()
+    return { context = { authsession = "browser-session" }, test_post_security = function() return true end }
+end
 harness.reset()
+harness.responses["setup_wifi.account"] = { error = { code = "NotFound", message = "没有当前会话的无线任务" } }
 harness.form = { action = "add_campus", setup_job = string.rep("a", 32), access_mode = "wifi" }
 controller.action_enqueue()
 assert(harness.output.ok == false, "a wizard save must not pretend to work")

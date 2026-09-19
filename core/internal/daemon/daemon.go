@@ -36,7 +36,8 @@ type Options struct {
 	// Runner performs actions. Nil means the real one: an authenticator wired
 	// to this device's adapter and connection pool. A test supplies its own so
 	// that the lifecycle can be exercised without a router.
-	Runner application.Runner
+	Runner       application.Runner
+	wizardDevice *deviceWireless // Synthetic device for daemon integration tests.
 	// PresetRefresh overrides the bound refresh worker for lifecycle tests.
 	// Nil builds the real adapter/transport path, independent of authentication.
 	PresetRefresh application.Runner
@@ -94,6 +95,7 @@ type Daemon struct {
 	users         *presets.UserStore
 	publicPresets func() ([]presets.School, error)
 	configChanged func(uint64)
+	wizard        *wifiWizard
 
 	// published is the last state an action was logged in, so a republication
 	// -- a cancellation arriving while the action is still running -- does not
@@ -180,6 +182,7 @@ func Run(ctx context.Context, options Options) error {
 	// business knowing which adapter or which pool the service authenticates
 	// through, and a test supplies its own through Options.
 	runner := options.Runner
+	wizardDevice := options.wizardDevice
 	if runner == nil {
 		// Written out rather than passed straight through: a nil
 		// *deviceWireless in an interface is not a nil interface, and the check
@@ -195,6 +198,7 @@ func Run(ctx context.Context, options Options) error {
 			report(err)
 		} else {
 			radio = device
+			wizardDevice = device
 			// Before anything is scheduled. A change the last run applied and
 			// never confirmed is either still meaningful or has to be undone,
 			// and spec 04 will not have that decided while a switch is already
@@ -236,6 +240,12 @@ func Run(ctx context.Context, options Options) error {
 			openwrt.NewAdapter(openwrt.Runner{}).ResolveBinding)
 	}
 	service.store.SetRevision(repository.Revision())
+	if wizardDevice != nil {
+		service.wizard = newWifiWizard(service, wizardDevice)
+		if err := service.wizard.recover(ctx); err != nil {
+			report(err)
+		}
+	}
 
 	// The threshold is the user's setting, applied before the first line: a log
 	// that started at the default and changed level a moment later would open
@@ -261,6 +271,9 @@ func Run(ctx context.Context, options Options) error {
 	}
 	runner = presetRoutingRunner{actions: runner, refresh: refresh}
 	runner = probeRoutingRunner{actions: runner, daemon: service}
+	if service.wizard != nil {
+		runner = wifiRoutingRunner{actions: runner, wizard: service.wizard}
+	}
 
 	// The maintenance loop is built before the coordinator and submits through
 	// a closure, because each needs the other: the loop submits actions, and
@@ -299,9 +312,10 @@ func Run(ctx context.Context, options Options) error {
 			if request.CheckRevision && request.ConfigRevision != repository.Revision() {
 				return domain.Errorf(domain.CodeConflict, "配置已变化，请刷新后重试")
 			}
-			return nil
+			return service.wizard.check(request)
 		},
 		Observer: func(action application.Action) {
+			service.wizard.observe(action)
 			service.onAction(action)
 			// The loop learns what happened from the same publication the
 			// status projection does, rather than polling for it.
@@ -326,6 +340,9 @@ func Run(ctx context.Context, options Options) error {
 	loops.Go(func() { coordinatorErr = service.actions.Run(background) })
 	loops.Go(func() { maintainerErr = maintainer.Run(background) })
 	loops.Go(func() { service.writeSnapshots(background) })
+	if service.wizard != nil {
+		loops.Go(func() { service.wizard.runExpiry(background) })
+	}
 
 	listener, err := control.Listen(paths.Socket())
 	if err != nil {
@@ -345,6 +362,9 @@ func Run(ctx context.Context, options Options) error {
 
 	stopBackground()
 	loops.Wait()
+	if service.wizard != nil {
+		service.wizard.shutdown()
+	}
 
 	// The socket is already gone: closing a Unix listener unlinks the path it
 	// created, and Serve closes its listener on every return. An explicit
@@ -384,6 +404,9 @@ const wirelessLine = "wireless"
 // lock spec 04 requires. It keeps this process from dispatching two wireless
 // actions at once; the lock is what protects the radio from everything else.
 func (d *Daemon) lineOf(request application.Request) string {
+	if request.Kind.WifiSetup() {
+		return wirelessLine
+	}
 	if request.Kind == application.KindPresetsRefresh || request.Kind.Discovery() {
 		if request.ProbeMode == "wifi" {
 			return wirelessLine

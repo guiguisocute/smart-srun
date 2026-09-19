@@ -118,6 +118,9 @@ func (d *Daemon) changeConfig(ctx context.Context, expected *uint64, kind, id st
 	}
 	var result ConfigWriteResult
 	err := d.actions.ChangeConfiguration(ctx, func() error {
+		if d.wizard.configBlocked() {
+			return domain.Errorf(domain.CodeBusy, "无线向导尚未完成，请先保存向导账号或取消临时连接")
+		}
 		before := d.config.Snapshot()
 		updated, err := d.config.Update(*expected, change)
 		// A rename followed by a failed directory fsync still changes the
