@@ -103,7 +103,10 @@ func (d PackageDevice) install(files []update.LocalPackage, recover bool) error 
 		return err
 	}
 	if recover && d.Capabilities.PackageManager == PackageManagerOpkg {
-		args = append([]string{"--force-downgrade"}, args...)
+		args = append([]string{"--force-downgrade", "--force-reinstall"}, args...)
+	}
+	if recover && d.Capabilities.PackageManager == PackageManagerAPK {
+		return d.recoverAPK(files, args)
 	}
 	_, err = d.Runner.RunInstall(string(d.Capabilities.PackageManager), args...)
 	return err
