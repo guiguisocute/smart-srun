@@ -110,6 +110,144 @@
         "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
         "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
       }
+    },
+    {
+      "id": "aarch64_generic-opkg-24.10.8",
+      "openwrt_arch": "aarch64_generic",
+      "target": "armsr/armv8",
+      "goos": "linux",
+      "goarch": "arm64",
+      "package_manager": "opkg",
+      "format": "ipk",
+      "sdk_release": "24.10.8",
+      "sdk_url": "https://downloads.openwrt.org/releases/24.10.8/targets/armsr/armv8/openwrt-sdk-24.10.8-armsr-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst",
+      "sdk_sha256": "5f430f5b30c9ea6dc472710356c139abf916b7ebd5de14e108e9cc204f40a2a4",
+      "feeds": {
+        "base": "0b795ce79e23b553aa184080c390f9ce92a2b6d4",
+        "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
+        "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
+      }
+    },
+    {
+      "id": "aarch64_cortex-a72-opkg-24.10.8",
+      "openwrt_arch": "aarch64_cortex-a72",
+      "target": "bcm27xx/bcm2711",
+      "goos": "linux",
+      "goarch": "arm64",
+      "package_manager": "opkg",
+      "format": "ipk",
+      "sdk_release": "24.10.8",
+      "sdk_url": "https://downloads.openwrt.org/releases/24.10.8/targets/bcm27xx/bcm2711/openwrt-sdk-24.10.8-bcm27xx-bcm2711_gcc-13.3.0_musl.Linux-x86_64.tar.zst",
+      "sdk_sha256": "d97df62039b38cfea152de7c4c8981178dd3d078187f0cb00f95c0e86fb07ea0",
+      "feeds": {
+        "base": "0b795ce79e23b553aa184080c390f9ce92a2b6d4",
+        "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
+        "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
+      }
+    },
+    {
+      "id": "aarch64_cortex-a76-opkg-24.10.8",
+      "openwrt_arch": "aarch64_cortex-a76",
+      "target": "bcm27xx/bcm2712",
+      "goos": "linux",
+      "goarch": "arm64",
+      "package_manager": "opkg",
+      "format": "ipk",
+      "sdk_release": "24.10.8",
+      "sdk_url": "https://downloads.openwrt.org/releases/24.10.8/targets/bcm27xx/bcm2712/openwrt-sdk-24.10.8-bcm27xx-bcm2712_gcc-13.3.0_musl.Linux-x86_64.tar.zst",
+      "sdk_sha256": "7b5fd1f72047c09986c1c24191971bb7caebf276406c7ea6281d62a1931593c1",
+      "feeds": {
+        "base": "0b795ce79e23b553aa184080c390f9ce92a2b6d4",
+        "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
+        "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
+      }
+    },
+    {
+      "id": "arm_cortex-a9_vfpv3-d16-opkg-24.10.8",
+      "openwrt_arch": "arm_cortex-a9_vfpv3-d16",
+      "target": "mvebu/cortexa9",
+      "goos": "linux",
+      "goarch": "arm",
+      "goarm": "7",
+      "package_manager": "opkg",
+      "format": "ipk",
+      "sdk_release": "24.10.8",
+      "sdk_url": "https://downloads.openwrt.org/releases/24.10.8/targets/mvebu/cortexa9/openwrt-sdk-24.10.8-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst",
+      "sdk_sha256": "4a2ce19ffe18f615135849ba5e0a4b0b83aa324b2551984c38e2df782307860e",
+      "feeds": {
+        "base": "0b795ce79e23b553aa184080c390f9ce92a2b6d4",
+        "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
+        "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
+      }
+    },
+    {
+      "id": "arm_cortex-a15_neon-vfpv4-opkg-24.10.8",
+      "openwrt_arch": "arm_cortex-a15_neon-vfpv4",
+      "target": "ipq806x/generic",
+      "goos": "linux",
+      "goarch": "arm",
+      "goarm": "7",
+      "package_manager": "opkg",
+      "format": "ipk",
+      "sdk_release": "24.10.8",
+      "sdk_url": "https://downloads.openwrt.org/releases/24.10.8/targets/ipq806x/generic/openwrt-sdk-24.10.8-ipq806x-generic_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst",
+      "sdk_sha256": "ff3f75051f300ac6b846a02ada03afbddd8a677659f7df876f70f7a5e524e60b",
+      "feeds": {
+        "base": "0b795ce79e23b553aa184080c390f9ce92a2b6d4",
+        "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
+        "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
+      }
+    },
+    {
+      "id": "mipsel_24kc-opkg-24.10.8",
+      "openwrt_arch": "mipsel_24kc",
+      "target": "ramips/mt7621",
+      "goos": "linux",
+      "goarch": "mipsle",
+      "package_manager": "opkg",
+      "format": "ipk",
+      "sdk_release": "24.10.8",
+      "sdk_url": "https://downloads.openwrt.org/releases/24.10.8/targets/ramips/mt7621/openwrt-sdk-24.10.8-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst",
+      "sdk_sha256": "9dd11b0517883b016ad7684f5c408a3483eec5b2455b2ffe004c9edd84063e45",
+      "feeds": {
+        "base": "0b795ce79e23b553aa184080c390f9ce92a2b6d4",
+        "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
+        "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
+      }
+    },
+    {
+      "id": "mipsel_24kc_24kf-opkg-24.10.8",
+      "openwrt_arch": "mipsel_24kc_24kf",
+      "target": "pistachio/generic",
+      "goos": "linux",
+      "goarch": "mipsle",
+      "package_manager": "opkg",
+      "format": "ipk",
+      "sdk_release": "24.10.8",
+      "sdk_url": "https://downloads.openwrt.org/releases/24.10.8/targets/pistachio/generic/openwrt-sdk-24.10.8-pistachio-generic_gcc-13.3.0_musl.Linux-x86_64.tar.zst",
+      "sdk_sha256": "890633ef42b729f4f1c5238592c79f59490409f2f179c2f2caa47732929b2a88",
+      "feeds": {
+        "base": "0b795ce79e23b553aa184080c390f9ce92a2b6d4",
+        "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
+        "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
+      }
+    },
+    {
+      "id": "mipsel_74kc-opkg-24.10.8",
+      "openwrt_arch": "mipsel_74kc",
+      "target": "bcm47xx/mips74k",
+      "goos": "linux",
+      "goarch": "mipsle",
+      "package_manager": "opkg",
+      "format": "ipk",
+      "sdk_release": "24.10.8",
+      "sdk_url": "https://downloads.openwrt.org/releases/24.10.8/targets/bcm47xx/mips74k/openwrt-sdk-24.10.8-bcm47xx-mips74k_gcc-13.3.0_musl.Linux-x86_64.tar.zst",
+      "sdk_sha256": "251ec0f47f0fda3378db6c3f59f810881d34be3e61c2d32afc1fa75836975edf",
+      "feeds": {
+        "base": "0b795ce79e23b553aa184080c390f9ce92a2b6d4",
+        "packages": "23abaa6f3b0fdfd76b570031107e5718476ff0c8",
+        "luci": "cac97ed67cfbcad90db49f5f3b1245c2c4cbfae5"
+      }
     }
   ],
   "pending_architectures": [
