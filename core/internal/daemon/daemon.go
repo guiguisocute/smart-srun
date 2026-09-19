@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/config"
 	"github.com/matthewlu070111/smart-srun/core/internal/control"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/logstore"
 	"github.com/matthewlu070111/smart-srun/core/internal/observe"
 	"github.com/matthewlu070111/smart-srun/core/internal/openwrt"
 	"github.com/matthewlu070111/smart-srun/core/internal/policy"
@@ -75,11 +77,18 @@ type Daemon struct {
 
 	config        *config.Repository
 	store         *observe.Store
+	events        *logstore.Store
 	actions       *application.Coordinator
 	observer      func(application.Action)
 	users         *presets.UserStore
 	publicPresets func() ([]presets.School, error)
 	configChanged func(uint64)
+
+	// published is the last state an action was logged in, so a republication
+	// -- a cancellation arriving while the action is still running -- does not
+	// produce a second "started" line. Written only from the coordinator's
+	// goroutine, like everything else in onAction.
+	published map[string]string
 
 	// dirty is a one-slot signal, so a burst of changes coalesces into one
 	// write instead of one write per change.
@@ -110,6 +119,23 @@ func Run(ctx context.Context, options Options) error {
 	onError := options.OnError
 	if onError == nil {
 		onError = func(error) {}
+	}
+
+	// The event log is opened before anything that can fail, so a fault during
+	// startup is recorded and not only printed to whatever captured stderr.
+	events := logstore.New(paths.LogFile())
+	// Raw, not the wrapper below: a failure to write the log cannot be logged.
+	events.OnError(onError)
+	report := func(err error) {
+		if err == nil {
+			return
+		}
+		onError(err)
+		// The error's own text, which for this program's errors is a message it
+		// wrote. Wrapped causes stay out of it, exactly as they stay out of the
+		// wire envelope.
+		events.Emit(clock.Now(), domain.LogError, logstore.EventInternalError,
+			err.Error())
 	}
 
 	if err := EnsureRuntimeDir(paths); err != nil {
@@ -149,7 +175,7 @@ func Run(ctx context.Context, options Options) error {
 			// could not prepare a wireless staging directory would stop
 			// authenticating a wired line for a reason that has nothing to do
 			// with it. Without a radio, a switch is refused outright.
-			onError(err)
+			report(err)
 		} else {
 			radio = device
 			// Before anything is scheduled. A change the last run applied and
@@ -157,7 +183,7 @@ func Run(ctx context.Context, options Options) error {
 			// and spec 04 will not have that decided while a switch is already
 			// running against the same radio.
 			if err := device.RecoverInterrupted(ctx); err != nil {
-				onError(err)
+				report(err)
 			}
 		}
 		runner = newDeviceRunner(repository, pool, clock, radio)
@@ -173,15 +199,31 @@ func Run(ctx context.Context, options Options) error {
 		version:       options.Version,
 		clock:         clock,
 		capabilities:  options.Capabilities,
-		onError:       onError,
+		onError:       report,
 		config:        repository,
 		store:         observe.New(),
+		events:        events,
 		observer:      observer,
 		users:         presets.NewUserStore(paths.UserPresets()),
 		publicPresets: options.PublicPresets,
+		published:     map[string]string{},
 		dirty:         make(chan struct{}, 1),
 	}
 	service.store.SetRevision(repository.Revision())
+
+	// The threshold is the user's setting, applied before the first line: a log
+	// that started at the default and changed level a moment later would open
+	// every run with lines the user asked not to see.
+	initial := repository.Snapshot()
+	events.SetLevel(initial.Log.Level)
+	service.log(logstore.EventDaemonStart, "", logstore.F("version", options.Version),
+		logstore.F("pid", strconv.Itoa(os.Getpid())))
+	service.log(logstore.EventConfigLoaded, "",
+		logstore.F("revision", strconv.FormatUint(initial.Revision, 10)),
+		logstore.F("enabled", strconv.FormatBool(initial.Enabled)),
+		logstore.F("campus_accounts", strconv.Itoa(len(initial.CampusAccounts))),
+		logstore.F("hotspot_profiles", strconv.Itoa(len(initial.HotspotProfiles))))
+	defer service.log(logstore.EventDaemonStop, "")
 	refresh := options.PresetRefresh
 	if refresh == nil {
 		refresh = application.PresetRefresher{
@@ -213,6 +255,12 @@ func Run(ctx context.Context, options Options) error {
 		service.store.ResetConfiguration(revision)
 		pool.Close()
 		maintainer.ConfigurationChanged()
+		// The threshold follows the setting on the same transaction that
+		// changed it, so the first line after a save is already at the level
+		// the user just chose.
+		events.SetLevel(repository.Snapshot().Log.Level)
+		service.log(logstore.EventConfigApplied, "",
+			logstore.F("revision", strconv.FormatUint(revision, 10)))
 		service.markDirty()
 	}
 	service.actions = application.New(application.Options{
@@ -281,7 +329,7 @@ func Run(ctx context.Context, options Options) error {
 	current := repository.Snapshot()
 	if err := MarkStopped(paths, current.Enabled, repository.Revision(),
 		options.Version); err != nil {
-		onError(err)
+		report(err)
 	}
 	return errors.Join(serveErr, coordinatorErr, maintainerErr)
 }
@@ -351,6 +399,7 @@ func wirelessKind(kind application.Kind) bool {
 // every interval. Backoffs, pauses and queueings are ordinary progress and would
 // be noise on a stderr that procd captures.
 func (d *Daemon) onMaintenanceEvent(event application.MaintenanceEvent) {
+	d.logMaintenance(event)
 	if event.Kind == application.EventLineConflict {
 		d.onError(domain.Errorf(domain.CodeConflict, "%s", event.Message))
 	}
@@ -360,6 +409,7 @@ func (d *Daemon) onMaintenanceEvent(event application.MaintenanceEvent) {
 // goroutine, so it does no I/O: it updates the in-memory projection and rings a
 // bell for the writer.
 func (d *Daemon) onAction(action application.Action) {
+	d.logAction(action)
 	switch {
 	case action.State == application.StateRunning:
 		d.store.ActionStarted(action.Request.AccountID, action.ID)

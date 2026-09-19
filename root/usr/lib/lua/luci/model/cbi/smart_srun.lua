@@ -8,7 +8,6 @@ local schema = require "luci.smart_srun.schema"
 local rpc = require "luci.smart_srun.rpc"
 local bridge = require "luci.smart_srun.bridge"
 
-local LOG_FILE = "/var/log/smart_srun.log"
 local JS_ASSET_PATH = "/luci-static/resources/smart_srun.js"
 local GLOBAL_SCALAR_KEYS = schema.GLOBAL_SCALAR_KEYS
 local POINTER_KEYS = schema.POINTER_KEYS
@@ -40,32 +39,6 @@ local function render_js_asset_tag()
     return '<script src="' .. util.pcdata(asset_url) .. '"></script>'
 end
 
-local function read_file_tail(path, lines)
-    lines = tonumber(lines) or 0
-    local text = fs.readfile(path) or ""
-    if lines <= 0 or text == "" then
-        return text
-    end
-
-    local entries = {}
-    for line in text:gmatch("[^\n]+") do
-        entries[#entries + 1] = line
-    end
-    if #entries <= lines then
-        return table.concat(entries, "\n")
-    end
-
-    local kept = {}
-    for idx = #entries - lines + 1, #entries do
-        kept[#kept + 1] = entries[idx]
-    end
-    return table.concat(kept, "\n")
-end
-
--- 配置由守护进程持有：页面读一次组合快照，保存时只提交改过的字段。
---
--- 没有迁移路径。config v2 不读 1.x 文件，发现旧文件由 Go 侧明确报告，
--- 页面不再自己改写用户配置。
 local function load_cfg()
     local flat, err = bridge.config()
     if not flat then
@@ -996,7 +969,10 @@ bind_text(log_level, "log_level")
 log_text = s:taboption("log", DummyValue, "_log_text", "运行日志")
 log_text.rawhtml = true
 function log_text.cfgvalue(self, section)
-    local t = read_file_tail(LOG_FILE, 100)
+    -- 首屏的最近 100 行；之后由页面自己按游标增量轮询。
+    local page = rpc.call("log.tail", { lines = 100 })
+    local t = type(page) == "table" and type(page.lines) == "table"
+        and table.concat(page.lines, "\n") or ""
     if t ~= "" then
         t = log_controller.friendly_log_text(t)
     end

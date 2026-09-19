@@ -477,6 +477,17 @@ func checkInterval(cfg *domain.Config) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+// pauseReasonText is why automatic authentication is suspended, in the words a
+// user would use. The reason codes themselves stay as they are: they are what
+// the program branches on, and a log line still carries one in its own field.
+var pauseReasonText = map[policy.PauseReason]string{
+	policy.PauseUserDisabled:     "自动认证开关已关闭",
+	policy.PauseManual:           "手动暂停",
+	policy.PauseQuietHours:       "处于夜间停用时段",
+	policy.PauseServiceStopping:  "服务正在停止",
+	policy.PauseUpdateInstalling: "正在安装更新",
+}
+
 func pauseMessage(set policy.PauseSet) string {
 	if set.Empty() {
 		return "自动认证已恢复"
@@ -484,7 +495,13 @@ func pauseMessage(set policy.PauseSet) string {
 	reasons := set.Reasons()
 	names := make([]string, 0, len(reasons))
 	for _, reason := range reasons {
-		names = append(names, string(reason))
+		text, known := pauseReasonText[reason]
+		if !known {
+			// A reason added without wording still has to be reportable; the
+			// code is worse to read than a sentence, and better than silence.
+			text = string(reason)
+		}
+		names = append(names, text)
 	}
 	sort.Strings(names)
 	return "自动认证已暂停：" + joinReasons(names)

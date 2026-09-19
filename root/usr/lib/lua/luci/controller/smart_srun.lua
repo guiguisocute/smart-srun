@@ -8,7 +8,6 @@ local fs = require "nixio.fs"
 local rpc = require "luci.smart_srun.rpc"
 local bridge = require "luci.smart_srun.bridge"
 
-local LOG_FILE = "/var/log/smart_srun.log"
 local LOG_TAIL_SOURCE_LINES = 2000
 
 local NETWORK_EVENTS = {
@@ -124,8 +123,6 @@ end
 function action_presets_refresh()
     write_json_response(run_srunnet_json("presets refresh"))
 end
-
-local read_file_tail
 
 -- 状态改为从 Go 守护进程的组合快照读取。
 -- 轮询只读缓存：不启动服务，也不触发认证或同步探测（规范 02/03）。
@@ -665,6 +662,15 @@ local event_zh = {
     config_action_queued = "操作已入队",
     config_action_consumed = "操作已出队",
     config_loaded       = "配置已加载",
+    config_applied      = "配置已保存",
+    -- Go 事件目录新增的条目；每个都必须在这里有中文，见 tests/test_log_event_translations.py
+    action_phase        = "动作进度",
+    maintain_queued     = "已排队自动认证",
+    pause_changed       = "自动认证暂停状态",
+    quiet_logout_queued = "静默时段排队下线",
+    line_conflict       = "线路冲突",
+    internal_error      = "内部错误",
+    log_cleared         = "日志已清空",
     status_query        = "状态查询",
     update_status       = "更新状态",
     presets_refresh     = "学校预设刷新",
@@ -1121,16 +1127,26 @@ local function tail_text(text, lines)
     return table.concat(kept, "\n")
 end
 
-read_file_tail = function(path, lines)
-    return tail_text(fs.readfile(path) or "", lines)
-end
-
-local function read_plugin_log_text(lines)
-    return read_file_tail(LOG_FILE, lines)
+-- 插件日志由守护进程持有（/tmp 下有界的结构化事件日志），这里只读取。
+-- 解析和中文渲染仍在下面的 friendly_* 里：事件码由 Go 的目录定义，
+-- 文案留在页面这一层。
+local function read_plugin_log_text(lines, since)
+    local page = rpc.call("log.tail", {
+        lines = tonumber(lines) or 0,
+        since = tonumber(since) or 0,
+    })
+    if type(page) ~= "table" or type(page.lines) ~= "table" then
+        return ""
+    end
+    return table.concat(page.lines, "\n")
 end
 
 local function read_plugin_full_log_text()
-    return fs.readfile(LOG_FILE) or ""
+    local result = rpc.call("log.download", nil)
+    if type(result) ~= "table" then
+        return ""
+    end
+    return tostring(result.text or "")
 end
 
 local function filter_text_since(text, since)
@@ -1400,7 +1416,10 @@ local function build_log_text(channel, lines, since, download_mode)
             resolve_network_source_lines(lines, download_mode)
         )
     end
-    return filter_text_since(read_plugin_log_text(lines), since)
+    -- since is applied by the daemon, which holds the records with their own
+    -- timestamps; the local filter stays for the network channel, where the
+    -- system log's lines are merged in here.
+    return read_plugin_log_text(lines, since)
 end
 
 function action_log_tail()
@@ -1444,10 +1463,11 @@ function action_log_clear()
         write_json_response({ ok = false, message = "系统网络日志不能由插件清空", channel = channel })
         return
     end
-    local ok = fs.writefile(LOG_FILE, "")
+    -- 只清本项目的日志。系统全局日志不属于这里，守护进程也不会去动它。
+    local result, err = rpc.call_started("log.clear", nil)
     write_json_response({
-        ok = ok and true or false,
-        message = ok and "日志已清空" or "清空日志失败",
+        ok = result and true or false,
+        message = result and "日志已清空" or rpc.message(err, "清空日志失败"),
         channel = "plugin",
         ts = os.time(),
     })

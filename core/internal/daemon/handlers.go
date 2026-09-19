@@ -40,6 +40,9 @@ func (d *Daemon) register(registry *control.Registry) {
 	registry.Register("action.submit", d.actionSubmit)
 	registry.Register("action.get", d.actionGet)
 	registry.Register("action.cancel", d.actionCancel)
+	registry.Register("log.tail", d.logTail)
+	registry.Register("log.download", d.logDownload)
+	registry.Register("log.clear", d.logClear)
 }
 
 // VersionResult is what version.get answers.

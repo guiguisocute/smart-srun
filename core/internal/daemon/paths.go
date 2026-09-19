@@ -36,6 +36,7 @@ type Paths struct {
 	// Optional resource overrides; zero values use the device contract paths.
 	BuiltinPresets string
 	PresetsCache   string
+	Log            string
 }
 
 func DefaultPaths() Paths {
@@ -67,6 +68,18 @@ func (p Paths) PresetFile() string {
 		return p.BuiltinPresets
 	}
 	return "/usr/share/smart-srun/school-presets.json"
+}
+
+// LogFile is the structured event log.
+//
+// Under /tmp rather than Runtime, and deliberately not on flash: spec 02 puts
+// the log on tmpfs because it is the one file this service writes continuously,
+// and a router's flash is the part most likely to wear out.
+func (p Paths) LogFile() string {
+	if p.Log != "" {
+		return p.Log
+	}
+	return "/tmp/smart-srun/plugin.log"
 }
 
 func (p Paths) PresetCacheFile() string {

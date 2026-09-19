@@ -25,6 +25,10 @@ func tempPaths(t *testing.T) Paths {
 	return Paths{
 		Runtime: filepath.Join(root, "run"),
 		Config:  filepath.Join(root, "etc"),
+		// The log defaults to a fixed path under /tmp. A test that did not
+		// override it would write into the machine's real log, and two tests
+		// running in parallel would write into each other's.
+		Log: filepath.Join(root, "log", "plugin.log"),
 	}
 }
 
