@@ -43,6 +43,13 @@ APK 目标可通过 `--sign-key` 和 `--public-key` 传入维护者控制的密�
 
 发布清单由 `scripts/make_go_manifest.py` 从真实 SDK `build-record.json` 生成。验证报告按包 SHA256 关联，构建通过不会自动变成真机或校园验收通过。未提交源码的构建只能用 `--internal-test` 生成内部测试清单，不得公开发布。
 
+```sh
+python3 scripts/make_go_manifest.py sdk-a/artifacts/2.0.0rc1/build-record.json \
+  sdk-b/artifacts/2.0.0rc1/build-record.json --evidence validation.json --output release/2.0.0rc1
+```
+
+输出目录必须不存在。脚本复制包并重新核对字节，生成清单和 `SHA256SUMS`；上传时使用整个输出目录。发布文件名增加实际包架构和 `_openwrt-<SDK版本>`，避免多架构 APK 原生同名，以及不同 SDK 的同名 IPK 相互覆盖。包内名称、版本和签名不变，构建目录继续保留原生文件名。清单最后写入，未完成的导出不会覆盖已有目录。
+
 构建记录同时保存版本替换前的 `source_template_files` 和实际 SDK 输入的 `source_files`。跨包格式合并时比较原始源码，允许 Makefile 中 opkg `~rc` 与 APK `_rc` 的版本写法不同；其他文件必须一致。缺少原始源码测量的旧记录不能补写猜测值，应重新构建。
 
 成功更新或恢复后，保留最近两次任务的恢复包与独立配置备份，删除已完成任务的临时下载。进行中的任务、损坏的 journal、没有完成记录的旧目录、未知文件与符号链接均不自动清理；清理失败会提示并在下一次更新前重试，不会把已经核验成功的安装说成失败。
@@ -51,8 +58,8 @@ Go 树中的 `scripts/hot_update.py` 已转为 SDK 包部署入口，需要设�
 
 ```sh
 python3 scripts/hot_update.py --host router \
-  --manifest new/release-manifest.json --assets new/packages \
-  --recovery-manifest old/release-manifest.json --recovery-assets old/packages \
+  --manifest new/release-manifest.json --assets new \
+  --recovery-manifest old/release-manifest.json --recovery-assets old \
   --probe
 ```
 

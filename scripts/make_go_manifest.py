@@ -10,19 +10,28 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
+import tempfile
 
 REPOSITORY = "matthewlu070111/smart-srun"
 KINDS = {"smart-srun": "core", "luci-app-smart-srun": "luci", "luci-app-smart-srun-bundle": "bundle"}
 CHECKS = ("build", "elf", "emulated_core", "openwrt_install", "hardware_core", "campus_auth")
 
 
-def generate(records, evidence=None, internal=False):
+def release_filename(package, native_version, architecture, sdk, fmt):
+    # Native APK filenames omit architecture. Both formats also omit the SDK,
+    # so never flatten their original names into a multi-target Release.
+    separator = "_" if fmt == "ipk" else "-"
+    return f"{package}{separator}{native_version}_{architecture}_openwrt-{sdk}.{fmt}"
+
+
+def generate(records, evidence=None, internal=False, *, package_sources=None):
     evidence = evidence or {"schema_version": 1, "assets": {}}
     if evidence.get("schema_version") != 1 or not isinstance(evidence.get("assets"), dict):
         raise ValueError("Invalid validation evidence")
     manifest = None
     source_files = None
-    selections, names = {}, {}
+    selections, names, sources = {}, {}, {}
     for path in records:
         path = Path(path)
         record = json.loads(path.read_text(encoding="utf-8"))
@@ -106,10 +115,13 @@ def generate(records, evidence=None, internal=False):
             validation = {key: checked.get(key, False) for key in CHECKS}
             validation["build"] = True
             identifier = f"{kind}-{manager}-{architecture}-{family}"
+            export_name = release_filename(artifact["name"], artifact["package_version"], architecture, sdk, fmt)
+            if len(export_name) > 200:
+                raise ValueError("Release artifact filename exceeds the consumer limit")
             asset = dict(id=identifier, kind=kind, package_manager=manager, format=fmt,
                          openwrt_arch=architecture, package_version=artifact["package_version"],
                          sdk_release=sdk, target=target["target"], goos=target["goos"], goarch=target["goarch"],
-                         url=f"https://github.com/{REPOSITORY}/releases/download/{version}/{name}",
+                         url=f"https://github.com/{REPOSITORY}/releases/download/{version}/{export_name}",
                          sha256=digest, bytes=size, installed_bytes=installed,
                          firmware_compat=[family], validation=validation)
             if identifier in selections:
@@ -118,13 +130,46 @@ def generate(records, evidence=None, internal=False):
                                         ("sha256", "package_version", "installed_bytes", "validation")):
                     raise ValueError("Ambiguous packages for the same device selection")
                 continue  # identical architecture-neutral LuCI from another SDK target
-            if name in names:
+            if export_name in names:
                 raise ValueError("Duplicate release asset filename")
-            selections[identifier], names[name] = asset, digest
+            selections[identifier], names[export_name] = asset, digest
+            sources[export_name] = file
             manifest["assets"].append(asset)
     if manifest is None or not manifest["assets"]:
         raise ValueError("No artifacts")
+    if package_sources is not None:
+        package_sources.update(sources)
     return manifest, "".join(f"{digest}  {name}\n" for name, digest in sorted(names.items()))
+
+
+def export_release(records, output, evidence=None, internal=False):
+    sources = {}
+    manifest, sums = generate(records, evidence, internal, package_sources=sources)
+    output = Path(output)
+    if output.exists() or output.is_symlink():
+        raise ValueError("Refusing to replace an existing release directory")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    document = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    manifest_hash = hashlib.sha256(document.encode()).hexdigest()
+    with tempfile.TemporaryDirectory(prefix=".smart-srun-release-", dir=output.parent) as temporary:
+        stage = Path(temporary)
+        for asset in manifest["assets"]:
+            name = asset["url"].rsplit("/", 1)[1]
+            destination = stage / name
+            shutil.copyfile(sources[name], destination)
+            with destination.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            if digest != asset["sha256"] or destination.stat().st_size != asset["bytes"]:
+                raise ValueError("Artifact changed while staging the release")
+        (stage / "SHA256SUMS").write_text(sums + f"{manifest_hash}  release-manifest.json\n", encoding="utf-8", newline="\n")
+        (stage / "release-manifest.json").write_text(document, encoding="utf-8", newline="\n")
+        # Reserve the immutable destination exclusively after all byte checks.
+        # Install the manifest last; an interrupted export has no usable index
+        # and is kept for inspection rather than silently overwritten.
+        output.mkdir()
+        for name in [*sorted(sources), "SHA256SUMS", "release-manifest.json"]:
+            (stage / name).rename(output / name)
+    return manifest
 
 
 def main():
@@ -135,16 +180,7 @@ def main():
     parser.add_argument("--internal-test", action="store_true")
     args = parser.parse_args()
     evidence = json.loads(args.evidence.read_text()) if args.evidence else None
-    manifest, sums = generate(args.records, evidence, args.internal_test)
-    args.output.mkdir(parents=True, exist_ok=True)
-    document = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
-    manifest_hash = hashlib.sha256(document.encode()).hexdigest()
-    outputs = {"release-manifest.json": document, "SHA256SUMS": sums + f"{manifest_hash}  release-manifest.json\n"}
-    if any((args.output / name).exists() for name in outputs):
-        raise ValueError("Refusing to replace existing release metadata")
-    for name, content in outputs.items():
-        with (args.output / name).open("x", encoding="utf-8", newline="\n") as stream:
-            stream.write(content)
+    manifest = export_release(args.records, args.output, evidence, args.internal_test)
     print(f"{manifest['release']}: {len(manifest['assets'])} measured assets -> {args.output}")
 
 

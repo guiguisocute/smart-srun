@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("go_manifest", ROOT / "scripts/make_go_manifest.py")
@@ -28,6 +29,56 @@ class ManifestTests(unittest.TestCase):
         path = Path(directory) / "build-record.json"
         path.write_text(json.dumps(record))
         return path, package, record, digest
+
+    def apk_fixture(self, directory, arch, goarch):
+        Path(directory).mkdir()
+        path, old, record, _ = self.fixture(directory)
+        record["target"].update(package_manager="apk", format="apk", sdk_release="25.12.2",
+                                openwrt_arch=arch, goarch=goarch)
+        asset = record["artifacts"][0]
+        asset.update(file="smart-srun-2.0.0_rc2-r1.apk", package_version="2.0.0_rc2-r1",
+                     architecture=arch, signature_spki_sha256="c" * 64)
+        package = old.with_name(asset["file"])
+        package.write_bytes(b"synthetic signed package " + arch.encode())
+        asset.update(bytes=package.stat().st_size, sha256=hashlib.sha256(package.read_bytes()).hexdigest())
+        old.unlink()
+        path.write_text(json.dumps(record))
+        return path, package, record
+
+    def test_export_distinguishes_same_native_apk_name_and_preserves_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, pkg1, _ = self.apk_fixture(root / "x86", "x86_64", "amd64")
+            second, pkg2, _ = self.apk_fixture(root / "arm", "aarch64_cortex-a53", "arm64")
+            self.assertEqual(pkg1.name, pkg2.name)
+            out = root / "release"
+            result = manifest.export_release([first, second], out)
+            exported = [asset["url"].rsplit("/", 1)[1] for asset in result["assets"]]
+            self.assertEqual(len(set(exported)), 2)
+            for name, package in zip(exported, (pkg1, pkg2)):
+                self.assertIn("_openwrt-25.12.2.apk", name)
+                self.assertEqual((out / name).read_bytes(), package.read_bytes())
+            for line in (out / "SHA256SUMS").read_text().splitlines():
+                digest, name = line.split("  ")
+                self.assertEqual(hashlib.sha256((out / name).read_bytes()).hexdigest(), digest)
+            with self.assertRaisesRegex(ValueError, "existing release directory"):
+                manifest.export_release([first, second], out)
+
+    def test_export_distinguishes_sdk_families_and_rejects_copy_corruption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "first").mkdir(); (root / "second").mkdir()
+            first, _, _, _ = self.fixture(root / "first")
+            second, _, record, _ = self.fixture(root / "second")
+            record["target"]["sdk_release"] = "23.05.6"
+            second.write_text(json.dumps(record))
+            result, _ = manifest.generate([first, second])
+            self.assertEqual(len({asset["url"] for asset in result["assets"]}), 2)
+            out = root / "release"
+            with patch.object(manifest.shutil, "copyfile", side_effect=lambda src, dst: dst.write_bytes(b"changed")):
+                with self.assertRaisesRegex(ValueError, "changed while staging"):
+                    manifest.export_release([first, second], out)
+            self.assertFalse(out.exists())
 
     def test_build_never_implies_runtime_acceptance(self):
         with tempfile.TemporaryDirectory() as directory:
