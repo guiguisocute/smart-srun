@@ -21,6 +21,7 @@ def generate(records, evidence=None, internal=False):
     if evidence.get("schema_version") != 1 or not isinstance(evidence.get("assets"), dict):
         raise ValueError("Invalid validation evidence")
     manifest = None
+    source_files = None
     selections, names = {}, {}
     for path in records:
         path = Path(path)
@@ -32,12 +33,32 @@ def generate(records, evidence=None, internal=False):
             raise ValueError("Not a Go release source")
         if record.get("source_dirty") is not False and not internal:
             raise ValueError("Dirty source is allowed only for explicit internal tests")
+        # Native RC spelling changes Makefile (~rc for opkg, _rc for APK).
+        # Compare the measured inputs before that one deliberate substitution,
+        # while retaining the SDK's exact staged file hashes in the build record.
+        files = record.get("source_template_files")
+        if not isinstance(files, dict) or not 2 <= len(files) <= 4096 or not {"Makefile", "core/go.mod"} <= files.keys():
+            raise ValueError("Missing measured source file identities")
+        for name, digest in files.items():
+            if not isinstance(name, str) or name.startswith("/") or "\\" in name or ":" in name or any(part in ("", ".", "..") for part in name.split("/")) or not isinstance(digest, str) or not re.fullmatch("[0-9a-f]{64}", digest):
+                raise ValueError("Invalid measured source file identity")
+        staged = record.get("source_files")
+        if not isinstance(staged, dict) or staged.keys() != files.keys() or any(
+                not isinstance(digest, str) or not re.fullmatch("[0-9a-f]{64}", digest)
+                or (name != "Makefile" and files[name] != digest) for name, digest in staged.items()):
+            raise ValueError("Unexpected SDK source substitution")
+        if source_files is None:
+            source_files = files
+        elif source_files != files:
+            raise ValueError("SDK builds do not contain the same source files")
         if manifest is None:
             manifest = dict(schema_version=1, release=version, channel="rc" if "rc" in version else "stable",
                             source_commit=record["source_commit"], assets=[])
         if manifest["release"] != version or manifest["source_commit"] != record["source_commit"]:
             raise ValueError("Build records do not share a release and source commit")
         target = record["target"]
+        if target.get("goos") != "linux" or not isinstance(target.get("goarch"), str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}", target["goarch"]) or not re.fullmatch(r"[a-z0-9_-]+/[a-z0-9_-]+", target.get("target", "")) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}", target.get("openwrt_arch", "")) or target["openwrt_arch"] in ("all", "noarch"):
+            raise ValueError("Invalid native SDK target identity")
         manager, fmt = target["package_manager"], target["format"]
         if (manager, fmt) not in (("opkg", "ipk"), ("apk", "apk")):
             raise ValueError("Inconsistent package format")
@@ -58,7 +79,7 @@ def generate(records, evidence=None, internal=False):
             if digest != artifact["sha256"] or size != artifact["bytes"] or not 0 < size <= 16 * 1024**2:
                 raise ValueError("Artifact bytes or checksum changed after build")
             installed = artifact["installed_payload_bytes"]
-            if sum(artifact["files"].values()) != installed or not 0 < installed <= 10 * 1024**2:
+            if type(installed) is not int or not isinstance(artifact["files"], dict) or any(type(size) is not int or size < 0 for size in artifact["files"].values()) or sum(artifact["files"].values()) != installed or not 0 < installed <= 10 * 1024**2:
                 raise ValueError("Invalid measured installed payload")
             kind = KINDS[artifact["name"]]
             separator = "_" if fmt == "ipk" else "-"
@@ -71,6 +92,10 @@ def generate(records, evidence=None, internal=False):
             native = version.replace("rc", "~rc" if manager == "opkg" else "_rc")
             if not re.fullmatch(re.escape(native) + r"-r[1-9]\d{0,8}", artifact["package_version"]):
                 raise ValueError("Unexpected native package version")
+            expected_name = (f"{artifact['name']}_{artifact['package_version']}_{architecture}.ipk" if fmt == "ipk"
+                             else f"{artifact['name']}-{artifact['package_version']}.apk")
+            if name != expected_name:
+                raise ValueError("Filename does not identify the exact native package")
             if manager == "apk" and not re.fullmatch("[0-9a-f]{64}", artifact.get("signature_spki_sha256") or ""):
                 raise ValueError("APK must have verified signing evidence")
             if artifact.get("validation", {}).get("build") is not True:

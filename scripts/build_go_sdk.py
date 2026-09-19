@@ -190,7 +190,7 @@ def copy_source(repo, destination, version):
     if destination.exists():
         shutil.rmtree(destination)
     destination.mkdir(parents=True)
-    files = {}
+    files, templates = {}, {}
     for relative in SOURCE_PATHS:
         source = repo / relative
         entries = sorted(source.rglob("*")) if source.is_dir() else [source]
@@ -201,6 +201,7 @@ def copy_source(repo, destination, version):
                 continue
             name = entry.relative_to(repo).as_posix()
             data = entry.read_bytes().replace(b"\r\n", b"\n")
+            templates[name] = hashlib.sha256(data).hexdigest()
             if name == "Makefile":
                 if data.count(b"PKG_VERSION:=0.0.0\n") != 1:
                     raise ValueError("Missing Makefile version placeholder")
@@ -209,7 +210,7 @@ def copy_source(repo, destination, version):
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(data)
             files[name] = hashlib.sha256(data).hexdigest()
-    return files
+    return files, templates
 
 
 def sign_apk(apk, path, private_key, public_key):
@@ -262,7 +263,7 @@ def build(args):
         for name, commit in target["feeds"].items():
             if command(["git", "rev-parse", "HEAD"], sdk / "feeds" / name).strip() != commit:
                 raise ValueError("Feed checkout changed: " + name)
-        files = copy_source(REPO, sdk / "package/luci-app-smart-srun", version)
+        files, templates = copy_source(REPO, sdk / "package/luci-app-smart-srun", version)
         source_commit = command(["git", "rev-parse", "HEAD"], REPO).strip()
         dirty = bool(command(["git", "status", "--porcelain"], REPO).strip())
         epoch = command(["git", "show", "-s", "--format=%ct", "HEAD"], REPO).strip()
@@ -317,7 +318,8 @@ def build(args):
                                installed_payload_bytes=sum(payload.values()), files=payload,
                                signature_spki_sha256=fingerprint, validation={"build": True}))
         record = dict(schema_version=1, display_version=args.version, source_commit=source_commit,
-                      source_dirty=dirty, source_files=files, source_date_epoch=int(epoch),
+                      source_dirty=dirty, source_files=files, source_template_files=templates,
+                      source_date_epoch=int(epoch),
                       target=target, go_version=catalog["go_version"], go_compiler=go_actual,
                       golang_framework_commit=catalog["golang_framework_commit"], artifacts=result)
         (stage / "build-record.json").write_text(json.dumps(record, indent=2) + "\n")

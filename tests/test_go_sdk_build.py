@@ -1,6 +1,7 @@
 """Focused checks for release version mapping and failed signing/config input."""
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -15,6 +16,22 @@ spec.loader.exec_module(build)
 
 
 class GoSDKBuildTests(unittest.TestCase):
+    def test_native_rc_substitution_preserves_common_input_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / "repo"
+            (repo / "core").mkdir(parents=True)
+            (repo / "Makefile").write_bytes(b"PKG_VERSION:=0.0.0\r\nOTHER:=unchanged\r\n")
+            (repo / "core/go.mod").write_text("module test\n")
+            with patch.object(build, "SOURCE_PATHS", ("Makefile", "core/go.mod")):
+                ipk, first = build.copy_source(repo, root / "ipk", "2.0.0~rc9")
+                apk, second = build.copy_source(repo, root / "apk", "2.0.0_rc9")
+            self.assertEqual(first, second)
+            self.assertNotEqual(ipk["Makefile"], apk["Makefile"])
+            self.assertEqual(ipk["core/go.mod"], first["core/go.mod"])
+            for name, digest in apk.items():
+                self.assertEqual(hashlib.sha256((root / "apk" / name).read_bytes()).hexdigest(), digest)
+
     def test_payload_rejects_missing_binary_extra_config_and_legacy_runtime(self):
         files = dict.fromkeys(build.CORE_FILES | build.LUCI_FILES, 100)
         build.validate_payload("luci-app-smart-srun-bundle", files, 10 * 1024**2)
