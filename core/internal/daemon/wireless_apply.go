@@ -162,7 +162,13 @@ func (w *deviceWireless) undo(ctx context.Context, transaction *wireless.Transac
 // proves the line can carry anything. Authenticating over a client that
 // associated and got nothing is a request that goes nowhere.
 func (w *deviceWireless) awaitLine(ctx context.Context, plan application.WirelessPlan) error {
-	deadline := w.clock.Now().Add(w.settleWait)
+	wait := w.settleWait
+	if seconds := w.settings.Snapshot().Checks.SwitchTimeoutSeconds; seconds > 0 {
+		// Keep the transaction's sixty-second safety ceiling even if the
+		// shared configuration allows a longer outer readiness budget.
+		wait = min(wait, time.Duration(seconds)*time.Second)
+	}
+	deadline := w.clock.Now().Add(wait)
 	application.ReportPhase(ctx, application.PhaseAssociation)
 	target := wifi.Target{SSID: plan.SSID, Security: wifi.ParseSecurity(plan.Encryption), Policy: domain.APSelectionAuto}
 	if plan.BSSID != "" {
@@ -191,9 +197,13 @@ func (w *deviceWireless) awaitLine(ctx context.Context, plan application.Wireles
 		if !w.clock.Now().Before(deadline) {
 			return domain.Errorf(domain.CodeDeadlineExceeded,
 				"切换到 %s 后 %s 内没有连上并拿到地址：%s",
-				plan.SSID, w.settleWait, last.Error())
+				plan.SSID, wait, last.Error())
 		}
-		timer := w.clock.NewTimerAt(w.clock.Now().Add(w.settlePoll))
+		wake := w.clock.Now().Add(w.settlePoll)
+		if deadline.Before(wake) {
+			wake = deadline
+		}
+		timer := w.clock.NewTimerAt(wake)
 		select {
 		case <-timer.C():
 		case <-ctx.Done():

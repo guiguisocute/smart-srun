@@ -154,6 +154,7 @@ type attempt struct {
 	shape     auth.Shape
 	intent    auth.Intent
 	checkMode domain.CheckMode
+	checks    domain.ChecksConfig
 	revision  uint64
 	binding   domain.Binding
 	line      auth.Line
@@ -212,9 +213,20 @@ func (a *Authenticator) authenticate(ctx context.Context, action Action,
 // may belong to somebody else.
 func (a *Authenticator) verify(ctx context.Context, transaction *auth.Transaction,
 	prepared *attempt, report func(Phase)) Outcome {
+	return a.verifySession(ctx, transaction, prepared, report, nil)
+}
+
+func (a *Authenticator) verifyOnce(ctx context.Context, transaction *auth.Transaction,
+	prepared *attempt, report func(Phase), known *auth.Identity) Outcome {
 
 	report(PhaseVerify)
-	identity, err := transaction.Online(ctx, prepared.username)
+	var identity auth.Identity
+	var err error
+	if known != nil {
+		identity = *known
+	} else {
+		identity, err = transaction.Online(ctx, prepared.username)
+	}
 	if err != nil {
 		// Accepted but unverifiable. Reporting success here would be reporting
 		// the gateway's word for it.
@@ -231,7 +243,7 @@ func (a *Authenticator) verify(ctx context.Context, transaction *auth.Transactio
 			domain.AuthVerifiedOther, identity.Username)
 	default:
 		return prepared.failed(a,
-			domain.Errorf(domain.CodeAuthRejected,
+			domain.Errorf(domain.CodeDeadlineExceeded,
 				"网关接受了登录，但这条线路上查不到任何在线会话"),
 			domain.AuthAccepted, "")
 	}
@@ -263,7 +275,7 @@ func (a *Authenticator) settleAlreadyOnline(ctx context.Context,
 
 	switch identity.State() {
 	case domain.AuthVerifiedSelf:
-		return a.verifyConnectivity(ctx, prepared, "本线路已是该账号的在线会话", identity.Username)
+		return a.verifySession(ctx, transaction, prepared, report, &identity)
 
 	case domain.AuthVerifiedOther:
 		if prepared.intent != auth.IntentManual {
@@ -418,25 +430,7 @@ func (a *Authenticator) logout(ctx context.Context, action Action,
 			identity.State(), identity.Username)
 	}
 
-	// The gateway accepting the unbind is still the gateway's claim about
-	// itself. Spec 04 does not let that stand for a login and it does not stand
-	// for a logout either -- the baseline asks again too (wait_for_logout_status).
-	report(PhaseVerify)
-	after, err := transaction.Online(ctx, prepared.username)
-	if err != nil {
-		// The request was accepted and the result could not be confirmed. Not a
-		// success, and not a claim that the session is still up either.
-		return prepared.unconfirmed(a,
-			"已发送登出请求，但无法确认这条线路是否已下线："+userMessage(err),
-			identity.Username)
-	}
-	if after.Present {
-		return prepared.failed(a,
-			domain.Errorf(domain.CodeConflict,
-				"网关接受了登出请求，但这条线路上仍有在线会话"),
-			after.State(), after.Username)
-	}
-	return prepared.wentOffline(a, "已登出")
+	return a.verifyLogout(ctx, transaction, prepared, identity.Username, report)
 }
 
 // prepare resolves everything an attempt needs, or explains why it cannot.
@@ -461,6 +455,7 @@ func (a *Authenticator) prepare(ctx context.Context, action Action,
 		shape:     shapeOf(config.EffectiveLogin(cfg, account)),
 		intent:    intentOf(action.Request.Kind),
 		checkMode: cfg.Checks.Mode,
+		checks:    cfg.Checks,
 		revision:  revision,
 		sequence:  action.Sequence,
 	}

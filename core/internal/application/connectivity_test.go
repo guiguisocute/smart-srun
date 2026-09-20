@@ -79,6 +79,21 @@ func TestOnlineCheckRejectsABindingChangedDuringTheProbe(t *testing.T) {
 	}
 }
 
+func TestWiredInternetSwitchKeepsTheHotspotUntilInternetIsConfirmed(t *testing.T) {
+	probe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
+	defer probe.Close()
+	p := newPortal(t)
+	worker, _ := workerFor(t, p, &fakeBinder{})
+	radio := &fakeWireless{}
+	worker.wireless = radio
+	worker.settings.(*fakeSettings).cfg.Checks.Mode = domain.CheckInternet
+	worker.probeURLs = []string{probe.URL}
+	out := runWorker(t, worker, KindSwitchCampus)
+	if out.State != StateFailed || out.Observation.Auth != domain.AuthVerifiedSelf || radio.retired != 0 {
+		t.Fatalf("failed Internet check retired working uplink: %+v / %d", out, radio.retired)
+	}
+}
+
 func TestSSIDModeStillRequiresTheSelectedAssociationAndAddress(t *testing.T) {
 	for _, name := range []string{"wired-ready", "wired-down", "wifi-correct", "wifi-wrong", "wifi-no-ip", "wifi-unavailable"} {
 		t.Run(name, func(t *testing.T) {
