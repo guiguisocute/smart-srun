@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -33,10 +34,13 @@ type Maintainer struct {
 	onEvent        func(MaintenanceEvent)
 	manuallyPaused func(domain.Config, string) bool
 
-	results chan Action
-	changes chan struct{}
-	started atomic.Bool
-	keys    atomic.Uint64
+	resultsMu   sync.Mutex
+	results     map[string]maintenanceResult
+	resultOrder uint64
+	resultReady chan struct{}
+	changes     chan struct{}
+	started     atomic.Bool
+	keys        atomic.Uint64
 
 	// Loop-owned below here.
 	pause    policy.PauseSet
@@ -147,11 +151,10 @@ func NewMaintainer(options MaintainerOptions) *Maintainer {
 		line:           line,
 		onEvent:        onEvent,
 		manuallyPaused: paused,
-		// Buffered so the coordinator's observer never blocks on this loop, and
-		// bounded so it cannot become an unread backlog either.
-		results:  make(chan Action, 64),
-		changes:  make(chan struct{}, 1),
-		accounts: map[string]*accountState{},
+		results:        map[string]maintenanceResult{},
+		resultReady:    make(chan struct{}, 1),
+		changes:        make(chan struct{}, 1),
+		accounts:       map[string]*accountState{},
 	}
 	cfg := options.Settings.Snapshot()
 	m.revision = cfg.Revision
@@ -167,22 +170,6 @@ func NewMaintainer(options MaintainerOptions) *Maintainer {
 		}
 	}
 	return m
-}
-
-// Observe is what the coordinator's Observer calls.
-//
-// Non-blocking on purpose: it runs on the coordinator's goroutine, and a
-// maintainer that was slow to read would stall every action in the service. A
-// dropped update costs one tick -- the loop re-reads the world each time -- and
-// stalling the coordinator costs the whole daemon.
-func (m *Maintainer) Observe(action Action) {
-	if !action.State.Terminal() {
-		return
-	}
-	select {
-	case m.results <- action:
-	default:
-	}
 }
 
 // ConfigurationChanged wakes the loop after a committed settings change.
@@ -212,17 +199,10 @@ func (m *Maintainer) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			timer.Stop()
 			return nil
-		case action := <-m.results:
+		case <-m.resultReady:
 			timer.Stop()
-			m.apply(action, m.clock.Now())
-			// Drain whatever else arrived, so a burst costs one pass.
-			for draining := true; draining; {
-				select {
-				case next := <-m.results:
-					m.apply(next, m.clock.Now())
-				default:
-					draining = false
-				}
+			for _, action := range m.takeResults() {
+				m.apply(action, m.clock.Now())
 			}
 		case <-m.changes:
 			timer.Stop()
