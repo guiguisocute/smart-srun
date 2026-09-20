@@ -297,7 +297,8 @@ def build(args):
         config += [f"CONFIG_PACKAGE_{package}=m" for package in PACKAGES]
         (sdk / ".config").write_text("\n".join(config) + "\n")
         output = command(["make", "defconfig"], sdk)
-        log.write(output); log.flush()
+        log.write(output)
+        log.flush()
         if "recursive dependency detected" in output or re.search(r"(?:^|\n).*:error:", output):
             raise ValueError("SDK configuration failed even though make returned zero")
         env = dict(os.environ, SOURCE_DATE_EPOCH=epoch, GOTOOLCHAIN="local")

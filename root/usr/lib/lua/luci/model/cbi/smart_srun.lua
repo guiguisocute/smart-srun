@@ -886,6 +886,30 @@ function tables_html.cfgvalue()
 ]]
 end
 
+local preset_auto_update = s:taboption("advanced", Flag, "preset_auto_update_enabled", "自动更新学校预设")
+preset_auto_update.description = "每天检查一次；关闭后仍可手动更新。"
+bind_flag(preset_auto_update, "preset_auto_update_enabled")
+
+local preset_update_time = s:taboption("advanced", ListValue, "preset_update_time", "每天更新时间（北京时间，24 小时制）")
+for hour = 0, 23 do
+    local value = string.format("%02d:00", hour)
+    preset_update_time:value(value, value)
+end
+-- Keep a precise time configured through the CLI selectable in the form.
+local saved_preset_time = validate_hhmm(cfg.preset_update_time or "")
+if saved_preset_time and saved_preset_time:sub(4) ~= "00" then
+    preset_update_time:value(saved_preset_time, saved_preset_time)
+end
+preset_update_time:depends("preset_auto_update_enabled", "1")
+bind_text(preset_update_time, "preset_update_time", validate_hhmm)
+preset_update_time.description = "到点后检查；错过时间会补查一次。更新失败时继续使用本地预设。"
+
+local preset_refresh = s:taboption("advanced", DummyValue, "_preset_refresh", "学校预设")
+preset_refresh.rawhtml = true
+function preset_refresh.cfgvalue()
+    return [[<button id="smart-presets-refresh" type="button" class="cbi-button cbi-button-action" onclick="smartRefreshPresets()">立即更新</button> <span id="smart-presets-refresh-result" role="status" aria-live="polite"></span>]]
+end
+
 backoff_enable = s:taboption("advanced", Flag, "backoff_enable", "登录失败时启用退避重试")
 bind_flag(backoff_enable, "backoff_enable")
 

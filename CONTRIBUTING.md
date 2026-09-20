@@ -11,14 +11,14 @@
 
 `go` 是 2.0 的开发分支，认证核心改用 Go，LuCI 界面保持不变。
 
-- `root/usr/lib/smart_srun/**` 与 `tests/**` 仍是 1.6.0 的 Python 基线，本指南原有的 Python 约束继续适用。它是行为基线，不要顺手重构。
-- `core/**` 是 Go 实现，不适用 Python 专用约束（裸名导入、`python3-light` 标准库限制、UCI 字符串配置等）。
+- `core/**` 是设备端 Go 实现。旧 Python 运行时和专属测试保留在 Git 历史及 `main`，不再放入 `go` 工作树。
+- `scripts/**` 和 `tests/**` 中的 Python 仅用于开发主机上的 SDK、发布、部署与 LuCI 契约检查；行为回归映射见 [tests/README.md](tests/README.md)。
 - `root/usr/lib/lua/**` 与 `root/www/**` 两边共用：布局、字段、操作流程、中文文案与五步向导**冻结**，只改后端调用；前端仍是无依赖 ES5。
 - 配置 v2 是有意的破坏性更新（`/etc/smart-srun/config.json`，强类型 JSON），不读 1.x 配置。
 - 发行包内不得包含或调用 Python；Python 只作开发机工具。
 - Go 门禁：`scripts/verify-go.sh`（gofmt + vet + 打乱顺序的单元测试 + 覆盖率 + race）。缺少工具链或 `core/` 时该脚本失败而不是跳过。
-- 开发节奏按当前维护者要求及 `.codex/go-loop/next.md` / D22：按完整用户流程分批实现，开发时保留编译、相关已有测试和危险副作用的针对性检查；逐卡补覆盖率、变异测试和独立验收后移至批次加固/发布验收，不再阻挡后续实现。延期检查要明确记录，未经独立审查不得标 passed；界面冻结、数据/网络及最终发布契约仍适用。
-- 面向 2.0 的 PR 请说明对应的任务卡编号、执行过的门禁命令与退出码。
+- 按完整用户流程实现，开发时运行编译、相关回归和危险副作用检查。PR 说明行为变化、执行过的验证与未执行的硬件/发布验收；不要把构建通过写成真机或独立审查通过。
+- 开发主机完整检查：`bash scripts/verify-go.sh`、`python3 -m unittest discover -s tests -v`、`ruff check scripts tests`、`node --check root/www/luci-static/resources/smart_srun.js`。Linux 上安装 Lua 5.1、GNU make、C 编译器和 Node，避免遗漏契约检查。
 
 ### Go SDK 开发包
 
@@ -44,7 +44,19 @@ python3 scripts/verify_go_sdk.py sdk/artifacts/2.0.0rc1/build-record.json \
 
 APK 目标可通过 `--sign-key` 和 `--public-key` 传入维护者控制的密钥。私钥不得入库或上传到构建产物。脚本对自己的未签名输入执行离线签名，然后必须用公钥通过原生 `apk verify`，不能只相信签名命令的退出码。公钥信任引导、固件安装和发布验收是另外的步骤；不能在安装时加 `--allow-untrusted`。
 
-`.github/workflows/build-go.yml` 是按上述目标生成矩阵的手动构建流程，不发布 Release，默认 APK 未签名。旧的两个发布流程拒绝 Go 源码树，避免生成未经 2.0 验收的公开产物。首个公开 RC 仍需完成剩余架构、更新恢复、资源、真机和独立审查。
+### GitHub Actions 与发布
+
+CI 在 push、PR 和手动运行时检查 Go 门禁、五种 Go 架构编译、LuCI/主机工具、工作流语法和秘密泄露。所有外部 Actions 固定提交，普通检查只有仓库读取权限，不接触签名私钥或校园账号。
+
+- `build-go.yml`：输入 `2.0.0rcN` 或 `2.0.0`，执行完整锁定 SDK 矩阵、原生包校验、ELF/载荷与 QEMU 版本启动检查，生成 `release-candidate-<版本>` artifact。预览 APK 使用每次任务临时密钥，不能直接晋升为公开版本。
+- `build-prerelease.yml`：输入完整 RC 版本，默认仅预览构建；启用 `publish_release` 后使用维护者密钥，生成待核对的 GitHub prerelease 草稿。
+- `build-release.yml`：输入正式版本，构建并创建正式 release 草稿。发布阶段复用本次已校验产物，不再编译，不覆盖已有版本。
+
+正式签名和草稿创建只允许上游 `matthewlu070111/smart-srun` 的 `go` 分支。维护者需要配置 `release-signing` environment：secret `SMARTSRUN_APK_SIGNING_KEY` 为 PEM 私钥，variable `SMARTSRUN_APK_PUBLIC_KEY` 为匹配的 PEM 公钥；建议限制分支并设置审核人。`release` environment 控制草稿创建，也应设置维护者审核。缺少正式密钥时任务失败，不自动生成发布身份，不降级为跳过验签。
+
+每个候选附带真实架构包、同 SDK 分体 ZIP、`release-manifest.json`、覆盖所有文件的 `SHA256SUMS`、`build-records.tar.gz` 和正式公钥。PKG_VERSION 在源码中保留 `0.0.0`；SDK 副本分别使用 opkg `~rc` 和 APK `_rc`，二进制与页面显示统一的 `2.0.0rcN`。版本标签不加 `v`，与 Go 更新器的不可变下载地址一致。
+
+维护者核对草稿中的变更、已知问题、签名指纹和实测范围，再发布。首个公开 RC 仍需完整候选验收；自动化不会把仅编译通过的架构标成核心/安装/真机/校园认证通过。学校账号只在私有环境中测试，禁止放入 CI secrets、日志或公开附件。
 
 ### Go 更新与开发部署
 

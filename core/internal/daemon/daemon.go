@@ -374,6 +374,7 @@ func Run(ctx context.Context, options Options) error {
 	loops.Go(func() { coordinatorErr = service.actions.Run(background) })
 	loops.Go(func() { maintainerErr = maintainer.Run(background) })
 	loops.Go(func() { service.writeSnapshots(background) })
+	loops.Go(func() { service.schedulePresets(background) })
 	if options.Runner == nil {
 		loops.Go(func() { service.observeWireless(background, openwrt.NewAdapter(openwrt.Runner{})) })
 	}

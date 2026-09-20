@@ -34,6 +34,7 @@ local CONFIG = {
         active_hotspot_id = "h1", default_hotspot_id = "h1",
     },
     quiet = { enabled = true, start = "00:00", ["end"] = "06:00", force_logout = true },
+    preset_updates = { enabled = true, time = "09:00" },
     retry = { enabled = true, max_retries = 4, initial_seconds = 10, max_seconds = 60 },
     checks = {
         interval_seconds = 60, mode = "internet", switch_timeout_seconds = 30,
@@ -69,6 +70,13 @@ equal("flatten.multi_wan", flat.multi_wan_enabled, "0")
 equal("flatten.quiet_enabled", flat.quiet_hours_enabled, "1")
 equal("flatten.quiet_start", flat.quiet_start, "00:00")
 equal("flatten.quiet_end", flat.quiet_end, "06:00")
+equal("flatten.preset_auto_update", flat.preset_auto_update_enabled, "1")
+equal("flatten.preset_time", flat.preset_update_time, "09:00")
+local preset_patch = bridge.settings_patch(
+    { preset_auto_update_enabled = "0", preset_update_time = "23:00" },
+    { preset_auto_update_enabled = true, preset_update_time = true })
+equal("patch.preset_disabled", preset_patch.preset_updates.enabled, false)
+equal("patch.preset_time", preset_patch.preset_updates.time, "23:00")
 equal("flatten.interval", flat.interval, "60")
 equal("flatten.retry_cooldown", flat.retry_cooldown_seconds, "10")
 equal("flatten.max_retries", flat.backoff_max_retries, "4")

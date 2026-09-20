@@ -56,6 +56,7 @@ XHR.prototype.send = function(body) {
 };
 const context = { window: {setInterval() {}}, document: {
   readyState: 'loading', addEventListener() {},
+  querySelector(selector) { return selector === 'input[name="token"]' ? {value: 'test-csrf'} : null; },
   getElementById(id) { return nodes[id] || null; }
 }, XMLHttpRequest: XHR, FormData, alert(value) { alerts.push(value); }, Date, JSON };
 vm.runInNewContext(source, context);
@@ -73,9 +74,10 @@ console.log(JSON.stringify({ sent, alerts, bssidDisabled: nodes['jm-bssid'].disa
   pending: nodes['smart-srun-overview-pending'].textContent }));
 """
         output = subprocess.run(
-            [node, "-e", script, json.dumps(scenario), str(JS)], check=True,
+            [node, "-e", script, json.dumps(scenario), str(JS)],
             stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=15,
         )
+        self.assertEqual(output.returncode, 0, output.stderr)
         result = json.loads(output.stdout)
         result["fields"] = dict(re.findall(r"<dt>(.*?)</dt><dd[^>]*>(.*?)</dd>", result["overview"]))
         return result

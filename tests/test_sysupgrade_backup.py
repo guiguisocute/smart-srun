@@ -1,13 +1,8 @@
 """Keep runtime-created user settings across OpenWrt keep-config upgrades."""
 
-import ast
-import importlib.util
-import io
 import re
-import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,22 +24,6 @@ class SysupgradeBackupTests(unittest.TestCase):
         ]
         self.assertEqual(entries, [CONFIG_PATH, USER_PRESETS_PATH])
 
-        config_tree = ast.parse(read_source("root/usr/lib/smart_srun/config.py"))
-        config_path = next(
-            ast.literal_eval(node.value)
-            for node in config_tree.body
-            if isinstance(node, ast.Assign)
-            and any(
-                isinstance(target, ast.Name) and target.id == "JSON_CONFIG_FILE"
-                for target in node.targets
-            )
-        )
-        self.assertEqual(config_path, "/usr/lib/smart_srun/config.json")
-        # The LuCI tree no longer names either path. It reaches both files
-        # through the daemon, which owns them, so a page that is open while an
-        # upgrade restores them cannot write a stale copy over the restore.
-        # The Python oracle retains its old path. The installed keep list now
-        # follows Go v2; there is deliberately no automatic 1.x migration.
         for relative_path in (
             "root/usr/lib/lua/luci/controller/smart_srun.lua",
             "root/usr/lib/lua/luci/model/cbi/smart_srun.lua",
@@ -79,35 +58,6 @@ class SysupgradeBackupTests(unittest.TestCase):
         self.assertNotIn(b"\r", (REPO_ROOT / ("root" + KEEP_PATH)).read_bytes())
         self.assertIn("root%s text eol=lf" % KEEP_PATH, read_source(".gitattributes"))
 
-    def test_hot_deploy_uploads_keep_rule_with_unix_paths_even_from_windows(self):
-        spec = importlib.util.spec_from_file_location(
-            "hot_update_backup_test", REPO_ROOT / "scripts/hot_update.py",
-        )
-        hot_update = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(hot_update)
-        self.assertIn(
-            {"local": "root" + KEEP_PATH, "remote": KEEP_PATH},
-            hot_update.UPLOAD_TARGETS,
-        )
-        self.assertNotIn(KEEP_PATH, hot_update.EXECUTABLE_TARGETS)
-        target = next(
-            item for item in hot_update.remote_target_paths("/tmp/probe")
-            if item["original_remote"] == KEEP_PATH
-        )
-        with tempfile.TemporaryDirectory() as temp_dir:
-            source = Path(temp_dir) / target["local"]
-            source.parent.mkdir(parents=True)
-            source.write_bytes((CONFIG_PATH + "\r\n").encode("utf-8"))
-            output = io.BytesIO()
-            remote_file = mock.MagicMock()
-            remote_file.__enter__.return_value = output
-            sftp = mock.Mock()
-            sftp.file.return_value = remote_file
-            with mock.patch.object(hot_update, "REPO_ROOT", Path(temp_dir)):
-                hot_update.upload_files(sftp, [target])
-            sftp.file.assert_called_once_with("/tmp/probe" + KEEP_PATH, "wb")
-            self.assertEqual(output.getvalue(), (CONFIG_PATH + "\n").encode("utf-8"))
-            sftp.put.assert_not_called()
 
 
 if __name__ == "__main__":

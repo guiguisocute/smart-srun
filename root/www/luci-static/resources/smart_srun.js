@@ -510,16 +510,26 @@
     return active;
   }
 
-  function refreshSchoolPresets() {
+  window.smartRefreshPresets = function() {
     var node = document.getElementById('smart-school-preset-data');
     if (!node || window.__smartPresetsRefresh) return;
+    var button = document.getElementById('smart-presets-refresh');
+    var result = document.getElementById('smart-presets-refresh-result');
     window.__smartPresetsRefresh = true;
+    if (button) button.disabled = true;
+    if (result) result.textContent = '正在更新…';
     postDiscovery('presets_refresh', {}, function(err, data) {
-      if (err || !data || !data.ok || !data.schools) return;
+      window.__smartPresetsRefresh = false;
+      if (button) button.disabled = false;
+      if (err || !data || !data.ok || !data.schools) {
+        if (result) result.textContent = '更新失败，仍使用本地预设';
+        return;
+      }
       node.value = JSON.stringify(data.schools);
       node.textContent = node.value;
+      if (result) result.textContent = '学校预设已更新';
     });
-  }
+  };
 
   var DEFAULT_LOGIN_SHAPE = {
     n: '200',
@@ -543,7 +553,7 @@
     return null;
   }
 
-  // 用户自定义预设/运营商存储：真身在路由器侧 /usr/lib/smart_srun/user_presets.json，
+  // 用户自定义预设/运营商存储：真身在路由器侧 /etc/smart-srun/user-presets.json，
   // 页面渲染时经 #smart-user-preset-data 注入，增删后整份 POST 回写，跨设备共享。
   var USER_PRESETS_SET_URL = '/cgi-bin/luci/admin/services/smart_srun/user_presets_set';
   var userPresetStore = { presets: [], operators: [] };
@@ -1452,7 +1462,6 @@
     campusData = readJson('smart-campus-data', []);
     hotspotData = readJson('smart-hotspot-data', []);
     initUserPresetStore();
-    refreshSchoolPresets();
   }
 
   var LOG_LEVEL_WEIGHTS = { ALL: 0, DEBUG: 10, INFO: 20, WARN: 30, ERROR: 40 };

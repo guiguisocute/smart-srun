@@ -52,6 +52,8 @@ local SCALARS = {
     quiet_hours_enabled                    = { path = { "quiet", "enabled" }, kind = "bool" },
     quiet_start                            = { path = { "quiet", "start" }, kind = "string" },
     quiet_end                              = { path = { "quiet", "end" }, kind = "string" },
+    preset_auto_update_enabled             = { path = { "preset_updates", "enabled" }, kind = "bool" },
+    preset_update_time                     = { path = { "preset_updates", "time" }, kind = "string" },
     force_logout_in_quiet                  = { path = { "quiet", "force_logout" }, kind = "bool" },
     failover_enabled                       = { path = { "failover", "enabled" }, kind = "bool" },
     hotspot_failback_enabled               = { path = { "failover", "hotspot_failback_enabled" }, kind = "bool" },

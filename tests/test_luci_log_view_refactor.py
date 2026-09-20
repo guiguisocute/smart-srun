@@ -166,7 +166,7 @@ class LuciLogViewRefactorTests(unittest.TestCase):
         # covered by runtime/config tests rather than brittle string laundry lists.
         self.assertIn("smart-school-preset-data", self.cbi_text)
         self.assertIn("presets_refresh", self.controller_text)
-        self.assertIn("refreshSchoolPresets", self.js_text)
+        self.assertIn("window.smartRefreshPresets", self.js_text)
         self.assertIn("jm-apply-school-defaults", self.js_text)
         self.assertIn("applySchoolDefaultsToForm", self.js_text)
         self.assertIn("jm-save-school-preset", self.js_text)

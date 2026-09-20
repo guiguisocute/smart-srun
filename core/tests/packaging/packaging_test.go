@@ -161,10 +161,8 @@ func TestTheDaemonIsGivenTimeToShutDown(t *testing.T) {
 
 // The device package does not invoke Python from its service definition.
 //
-// CLAUDE.md fixes this for the whole shipped package. The Python runtime under
-// root/usr/lib/smart_srun is the 1.6 baseline and stays until M22 removes it,
-// so the rule is asserted here where it is already true and enforceable: what
-// procd starts.
+// The legacy Python runtime is retained in Git history only. The source audit
+// checks the tree; this assertion checks what procd actually starts.
 func TestTheServiceDefinitionInvokesNoPython(t *testing.T) {
 	script := commands(initScript(t))
 	for _, marker := range []string{"python", "client.py", "smart_srun/"} {

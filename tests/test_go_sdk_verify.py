@@ -25,7 +25,8 @@ def header(arch):
 class SDKVerifyTests(unittest.TestCase):
     def test_quoted_sdk_flags_allow_only_expected_inlining_setting(self):
         with tempfile.TemporaryDirectory() as temporary:
-            binary = Path(temporary) / "srunnet"; binary.write_bytes(header("mips"))
+            binary = Path(temporary) / "srunnet"
+            binary.write_bytes(header("mips"))
             info = '\tbuild\tCGO_ENABLED=0\n\tbuild\tGOOS=linux\n\tbuild\tGOARCH=mips\n\tbuild\tGOMIPS=softfloat\n\tbuild\t-gcflags="all=-l "\n'
             with patch.object(verify, "run", side_effect=["  LOAD  0x000000", info]):
                 result = verify.inspect_binary(binary, {"goarch": "mips"}, "go", False, None, "2.0.0")
@@ -41,13 +42,15 @@ class SDKVerifyTests(unittest.TestCase):
                 if arch != other:
                     with self.subTest(arch=arch, other=other), self.assertRaises(ValueError):
                         verify.inspect_header(header(arch), other)
-        data = bytearray(header("amd64")); data[16:18] = b"\x03\x00"
+        data = bytearray(header("amd64"))
+        data[16:18] = b"\x03\x00"
         with self.assertRaises(ValueError):
             verify.inspect_header(data, "amd64")
 
     def test_dynamic_loader_and_hard_float_never_pass_static_mips_check(self):
         with tempfile.TemporaryDirectory() as temporary:
-            binary = Path(temporary) / "srunnet"; binary.write_bytes(header("mips"))
+            binary = Path(temporary) / "srunnet"
+            binary.write_bytes(header("mips"))
             with patch.object(verify, "run", return_value="  INTERP  0x000000"):
                 with self.assertRaisesRegex(ValueError, "dynamic loader"):
                     verify.inspect_binary(binary, {"goarch": "mips"}, "go", False, None, "2.0.0")

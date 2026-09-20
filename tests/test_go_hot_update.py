@@ -98,7 +98,9 @@ class DeployTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("hot_update_dispatch_test", ROOT / "scripts/hot_update.py")
         entry = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(entry)
-        with mock.patch.object(entry, "legacy_main", side_effect=AssertionError("legacy forbidden")), contextlib.redirect_stdout(io.StringIO()):
+        self.assertFalse(hasattr(entry, "legacy_main"))
+        self.assertEqual(entry.main.__module__, "hot_update_go")
+        with contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(SystemExit) as raised:
                 entry.main(["--help"])
         self.assertEqual(raised.exception.code, 0)

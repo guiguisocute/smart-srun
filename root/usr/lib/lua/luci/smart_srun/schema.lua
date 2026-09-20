@@ -1,8 +1,6 @@
 local fs = require "nixio.fs"
-local jsonc = require "luci.jsonc"
 local nixio = require "nixio"
 
-local DEFAULTS_FILE = "/usr/lib/smart_srun/defaults.json"
 local OPKG_STATUS_FILE = "/usr/lib/opkg/status"
 local APK_STATUS_FILE = "/lib/apk/db/installed"
 local DEFAULT_VERSION = "v0.0.0"
@@ -49,9 +47,8 @@ end
 --
 -- Spec 02 gives Go the types, defaults, bounds and choices and leaves the page
 -- its labels, so that the two cannot disagree about what a valid value is. The
--- shipped defaults file is the fallback for a device where the service is not
--- answering, which is also the only case where the form has nothing better to
--- show than the values it was built with.
+-- page reports a stopped/unavailable service when schema cannot be read; it
+-- never falls back to an obsolete 1.x configuration file.
 local function load_defaults()
     -- One pcall around both the load and the call: on a host without nixio, or
     -- with the service stopped, this must fall back rather than take the page
@@ -60,9 +57,6 @@ local function load_defaults()
         return require("luci.smart_srun.bridge").defaults()
     end)
     if not ok or type(parsed) ~= "table" then
-        parsed = jsonc.parse(fs.readfile(DEFAULTS_FILE) or "")
-    end
-    if type(parsed) ~= "table" then
         parsed = {}
     end
     if parsed.school == nil then

@@ -20,13 +20,14 @@ type Config struct {
 	School          string `json:"school"`
 	STAIface        string `json:"sta_iface"`
 
-	LoginDefaults LoginDefaults  `json:"login_defaults"`
-	Selection     Selection      `json:"selection"`
-	Quiet         QuietConfig    `json:"quiet"`
-	Retry         RetryConfig    `json:"retry"`
-	Checks        ChecksConfig   `json:"checks"`
-	Failover      FailoverConfig `json:"failover"`
-	Log           LogConfig      `json:"log"`
+	LoginDefaults LoginDefaults      `json:"login_defaults"`
+	Selection     Selection          `json:"selection"`
+	Quiet         QuietConfig        `json:"quiet"`
+	Retry         RetryConfig        `json:"retry"`
+	Checks        ChecksConfig       `json:"checks"`
+	Failover      FailoverConfig     `json:"failover"`
+	Log           LogConfig          `json:"log"`
+	PresetUpdates PresetUpdateConfig `json:"preset_updates"`
 
 	CampusAccounts  []CampusAccount  `json:"campus_accounts"`
 	HotspotProfiles []HotspotProfile `json:"hotspot_profiles"`
@@ -98,6 +99,12 @@ type FailoverConfig struct {
 
 type LogConfig struct {
 	Level LogLevel `json:"level"`
+}
+
+// PresetUpdateConfig schedules one catalogue check per Beijing calendar day.
+type PresetUpdateConfig struct {
+	Enabled bool      `json:"enabled"`
+	Time    ClockTime `json:"time"`
 }
 
 // CampusAccount is one campus identity plus the environment it authenticates

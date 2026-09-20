@@ -110,6 +110,9 @@ func globalFields(defaults domain.Config) []Field {
 		{Path: "selection.default_hotspot_id", Kind: KindString, MaxBytes: MaxIDBytes},
 
 		{Path: "quiet.enabled", Kind: KindBool, Default: defaults.Quiet.Enabled},
+		{Path: "preset_updates.enabled", Kind: KindBool, Default: defaults.PresetUpdates.Enabled},
+		{Path: "preset_updates.time", Kind: KindClock, Default: defaults.PresetUpdates.Time.String(),
+			Note: "北京时间 UTC+08:00；每天到点后检查一次，失败不重复请求；重启设备后重新计时"},
 		{Path: "quiet.start", Kind: KindClock, Default: defaults.Quiet.Start.String(),
 			Note: "北京时间 UTC+08:00；start 等于 end 表示空窗口"},
 		{Path: "quiet.end", Kind: KindClock, Default: defaults.Quiet.End.String()},

@@ -25,7 +25,8 @@ class ManifestTests(unittest.TestCase):
                          bytes=luci.stat().st_size, sha256=hashlib.sha256(luci.read_bytes()).hexdigest())
             record["artifacts"].insert(0, asset)  # Another artifact must still parse after deduplication.
             path.write_text(json.dumps(record))
-            records.append(path); packages.append(luci)
+            records.append(path)
+            packages.append(luci)
         return records, packages
 
     def test_independently_signed_luci_requires_native_content_equivalence(self):
@@ -121,7 +122,8 @@ class ManifestTests(unittest.TestCase):
     def test_export_distinguishes_sdk_families_and_rejects_copy_corruption(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "first").mkdir(); (root / "second").mkdir()
+            (root / "first").mkdir()
+            (root / "second").mkdir()
             first, _, _, _ = self.fixture(root / "first")
             second, _, record, _ = self.fixture(root / "second")
             record["target"]["sdk_release"] = "23.05.6"
@@ -170,7 +172,8 @@ class ManifestTests(unittest.TestCase):
     def test_extra_family_cannot_make_two_sdk_packages_match_one_device(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "first").mkdir(); (root / "second").mkdir()
+            (root / "first").mkdir()
+            (root / "second").mkdir()
             first, _, _, digest = self.fixture(root / "first")
             second, _, record, _ = self.fixture(root / "second")
             record["target"]["sdk_release"] = "25.12.2"

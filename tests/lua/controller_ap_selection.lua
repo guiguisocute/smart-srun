@@ -85,13 +85,15 @@ harness.responses["status.get"] = {
     accounts = { { account_id = "c1", link = "Ready", auth = "VerifiedSelf",
                    connectivity = "InternetReachable", identity = "student" } },
     actions = {},
+    wireless = { state = "associated", device = "phy1-sta0", ssid = "Campus",
+        bssid = "02:11:22:33:44:55", signal = -52, channel = 44, iface = "wwan" },
 }
 controller.action_status()
 local status = harness.output
 assert(status.current_ssid == "Campus", status.current_ssid)
 assert(status.current_bssid == "02:11:22:33:44:55", status.current_bssid)
-assert(status.current_signal == nil and status.current_channel == nil)
-assert(status.ap_selection_policy == "" and status.ap_selection_reason == "")
+assert(status.current_signal == -52 and status.current_channel == 44)
+assert(status.ap_selection_policy == "fixed" and status.ap_selection_reason == "已连接指定接入点")
 assert(status.connectivity_level == "online", status.connectivity_level)
 
 -- A line that is not ready claims nothing about the air.

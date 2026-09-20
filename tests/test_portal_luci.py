@@ -6,7 +6,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from _portal_urls import PORTAL_IPV4_ORIGIN, PORTAL_ORIGIN
+from _portal_urls import PORTAL_IPV4_ORIGIN
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

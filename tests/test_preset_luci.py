@@ -91,7 +91,7 @@ source = source.slice(0, end) + `
   window.presetTestApi = {
     list: schoolPresetList,
     find: findSchoolPreset,
-    refresh: refreshSchoolPresets,
+    refresh: window.smartRefreshPresets,
     initCustom: initUserPresetStore
   };
 ` + source.slice(end);
@@ -144,8 +144,7 @@ function snapshot() {
 const states = [snapshot()];
 const beforeResponses = [];
 scenario.refreshes.forEach(payload => {
-  // Allow another page refresh cycle while retaining the previous DOM value.
-  context.window.__smartPresetsRefresh = false;
+  // A completed manual refresh allows a later click without reloading the page.
   api.refresh();
   beforeResponses.push(snapshot());
   if (pending.length !== 1) throw new Error('Expected one asynchronous request');
@@ -167,12 +166,12 @@ console.log(JSON.stringify({states, beforeResponses, urls}));
         result = subprocess.run(
             [node, "-e", script, json.dumps(scenario), str(JS_FILE)],
             stdin=subprocess.DEVNULL,
-            check=True,
             capture_output=True,
             text=True,
             encoding="utf-8",
             timeout=15,
         )
+        self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
     def test_public_presets_require_active_status(self):

@@ -82,12 +82,13 @@ type Settings struct {
 	School          string `json:"school"`
 	STAIface        string `json:"sta_iface"`
 
-	LoginDefaults domain.LoginDefaults  `json:"login_defaults"`
-	Quiet         domain.QuietConfig    `json:"quiet"`
-	Retry         domain.RetryConfig    `json:"retry"`
-	Checks        domain.ChecksConfig   `json:"checks"`
-	Failover      domain.FailoverConfig `json:"failover"`
-	Log           domain.LogConfig      `json:"log"`
+	LoginDefaults domain.LoginDefaults      `json:"login_defaults"`
+	Quiet         domain.QuietConfig        `json:"quiet"`
+	Retry         domain.RetryConfig        `json:"retry"`
+	Checks        domain.ChecksConfig       `json:"checks"`
+	Failover      domain.FailoverConfig     `json:"failover"`
+	Log           domain.LogConfig          `json:"log"`
+	PresetUpdates domain.PresetUpdateConfig `json:"preset_updates"`
 
 	// SchoolExtra is strategy-private storage. Filtering it against the
 	// strategy's declared descriptors needs the strategy registry and lands
@@ -113,6 +114,7 @@ func SettingsOf(cfg domain.Config) Settings {
 		Checks:          cfg.Checks,
 		Failover:        cfg.Failover,
 		Log:             cfg.Log,
+		PresetUpdates:   cfg.PresetUpdates,
 		SchoolExtra:     extra,
 	}
 }
@@ -136,6 +138,7 @@ func ApplySettings(settings Settings) Change {
 		cfg.Checks = settings.Checks
 		cfg.Failover = settings.Failover
 		cfg.Log = settings.Log
+		cfg.PresetUpdates = settings.PresetUpdates
 
 		if switching {
 			cfg.SchoolExtra = map[string]any{}

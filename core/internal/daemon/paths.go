@@ -56,8 +56,9 @@ func (p Paths) Lock() string { return filepath.Join(p.Runtime, "daemon.lock") }
 // State is the snapshot a reader can see even while the service is stopped.
 func (p Paths) State() string { return filepath.Join(p.Runtime, "state.json") }
 
-func (p Paths) QuietResume() string  { return filepath.Join(p.Runtime, "quiet-uplink.json") }
-func (p Paths) ManualPauses() string { return filepath.Join(p.Runtime, "manual-pauses.json") }
+func (p Paths) QuietResume() string    { return filepath.Join(p.Runtime, "quiet-uplink.json") }
+func (p Paths) ManualPauses() string   { return filepath.Join(p.Runtime, "manual-pauses.json") }
+func (p Paths) PresetSchedule() string { return filepath.Join(p.Runtime, "presets-schedule.json") }
 
 // UpdateStatus is written by the update worker alone, and read by LuCI from
 // this fixed path while the main service is down.
