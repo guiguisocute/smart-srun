@@ -293,20 +293,37 @@ func (a *Authenticator) ensureWirelessLine(ctx context.Context, action Action,
 	if !known || account.IsWired() {
 		return Outcome{}, false
 	}
+	// Capture the generation before any radio operation. A failed association
+	// never reaches prepare(), but still invalidates the previous campus claim.
+	// Keeping this stamp also prevents a late result from replacing a recovery.
+	revision := a.settings.Revision()
+	a.mu.Lock()
+	generation := a.seen[account.ID].Generation
+	a.mu.Unlock()
+	if generation == 0 {
+		generation = a.generation.Add(1)
+	}
+	unconfirmed := func(outcome Outcome) (Outcome, bool) {
+		a.invalidateLine(account.ID, generation)
+		prepared := attempt{account: account, revision: revision, sequence: action.Sequence,
+			binding: domain.Binding{Generation: generation}}
+		outcome.Observation = prepared.observation(a, domain.AuthUnknown, domain.ConnectivityUnknown, "")
+		return outcome, true
+	}
 	if action.Request.Kind == KindMaintain {
 		if outcome, stop := a.deferOnHotspot(ctx, cfg, account); stop {
-			return outcome, true
+			return unconfirmed(outcome)
 		}
 	}
 	dest, err := campusDestination(account)
 	if err != nil {
-		return failure(err), true
+		return unconfirmed(failure(err))
 	}
 	if err := a.moveTo(ctx, dest, report); err != nil {
 		outcome := failure(err)
 		outcome.Message = "无法连接到" + dest.what + " " + dest.label + "：" +
 			outcome.Message
-		return outcome, true
+		return unconfirmed(outcome)
 	}
 	return Outcome{}, false
 }

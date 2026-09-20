@@ -480,10 +480,10 @@ func (a *Authenticator) prepare(ctx context.Context, action Action,
 
 	report(PhaseWaitingLink)
 	binding, err := a.observeLine(ctx, account.ID, iface)
+	prepared.binding = binding
 	if err != nil {
 		return nil, a.linkFailure(ctx, prepared, iface, err)
 	}
-	prepared.binding = binding
 
 	gateway, err := auth.ParseGateway(account.BaseURL, account.ACID)
 	if err != nil {
@@ -530,7 +530,9 @@ func (a *Authenticator) observeLine(ctx context.Context, accountID,
 	binding, err := a.binder.ResolveBinding(ctx, iface, stamp)
 	if err != nil {
 		a.invalidateLine(accountID, stamp)
-		return domain.Binding{}, err
+		// The failed observation must supersede this generation's prior success.
+		// A zero stamp would be discarded as older than the still-visible state.
+		return domain.Binding{Generation: stamp}, err
 	}
 	binding.Generation = stamp
 
