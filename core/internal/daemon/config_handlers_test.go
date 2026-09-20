@@ -9,11 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/config"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
-	"github.com/matthewlu070111/smart-srun/core/internal/policy/faketime"
 )
 
 func (r *running) writeConfig(method, params string) ConfigWriteResult {
@@ -30,7 +28,7 @@ func (r *running) writeConfig(method, params string) ConfigWriteResult {
 }
 
 func TestConfigurationRPCPersistsAccountsSettingsAndSelection(t *testing.T) {
-	service := start(t, func(o *Options) { o.Clock = faketime.New(time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)) })
+	service := start(t, nil)
 	first := service.writeConfig("campus.upsert", `{"expected_revision":0,"account":{"user_id":"student","password":"private-password","wired_iface":"wan","login":{"double_stack":false}}}`)
 	if first.ID != "c1" || first.Revision != 1 || first.Config.Selection.ActiveCampusID != first.ID {
 		t.Fatalf("creation receipt = %+v", first)
@@ -89,7 +87,7 @@ func TestConfigurationRPCPersistsAccountsSettingsAndSelection(t *testing.T) {
 }
 
 func TestConfigurationRPCRejectsAmbiguousOrStaleWritesWithoutChangingDisk(t *testing.T) {
-	service := start(t, func(o *Options) { o.Clock = faketime.New(time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)) })
+	service := start(t, nil)
 	service.writeConfig("campus.upsert", `{"expected_revision":0,"account":{"user_id":"student","wired_iface":"wan","password":"private-password"}}`)
 	before, err := os.ReadFile(service.paths.ConfigFile())
 	if err != nil {

@@ -46,9 +46,10 @@ func start(t *testing.T, configure func(*Options)) *running {
 		Paths:   paths,
 		Version: "2.0.0rc1",
 		Ready:   sync.OnceFunc(func() { close(ready) }),
-		// RPC/log fixtures must not enter quiet hours according to the host's
-		// wall clock. Scheduling tests can override this clock explicitly.
-		Clock: faketime.New(time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)),
+		// 08:00 Beijing is outside default quiet hours and before the 09:00
+		// preset refresh, so background actions cannot race RPC/log fixtures.
+		// Scheduling tests can override this clock explicitly.
+		Clock: faketime.New(time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)),
 		Observer: func(action application.Action) {
 			select {
 			case service.actions <- action:
