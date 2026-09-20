@@ -339,6 +339,13 @@ def _build_parser():
     )
     config_sub = p_config.add_subparsers(dest="config_command", metavar="SUBCOMMAND")
 
+    p_export = _make_subparser(config_sub, "export", help_text="导出完整配置备份（含密码）", description="导出插件设置、账号和热点，备份含明文密码")
+    p_export.add_argument("file", help="备份文件路径；- 表示标准输出")
+    p_import = _make_subparser(config_sub, "import", help_text="校验并替换配置；导入后自动守护关闭", description="从版本化备份恢复配置")
+    p_import.add_argument("file", help="1.6.1 备份文件路径；- 表示标准输入")
+    p_import.add_argument("--check", action="store_true", help="仅预览，不修改配置")
+    p_import.add_argument("--expected-revision", default=None, help="预览返回的配置版本，防止覆盖并发修改")
+
     _make_subparser(
         config_sub, "show",
         help_text="显示完整配置摘要",
@@ -628,12 +635,41 @@ def _dispatch_help(parser, sub, targets):
     return 0
 
 
+def _run_backup(args):
+    cmd = args.config_command
+    import config_backup
+    try:
+        if cmd == "export":
+            data = config_backup.export_backup()
+            if args.file == "-":
+                sys.stdout.buffer.write(data)
+            else:
+                config_backup.write_export(args.file, data)
+                print("配置备份已保存（含密码，请妥善保管）")
+        else:
+            if args.file == "-":
+                data = sys.stdin.buffer.read(config_backup.MAX_BYTES + 1)
+            else:
+                with open(args.file, "rb") as handle:
+                    data = handle.read(config_backup.MAX_BYTES + 1)
+            result = config_backup.import_backup(data, args.expected_revision, args.check)
+            print(json.dumps(result, ensure_ascii=False))
+    except (OSError, ValueError):
+        # Never echo imported field values, filenames or passwords.
+        print(json.dumps({"ok": False, "message": "备份无效、配置已变化或文件无法安全读写；请重新预览"}, ensure_ascii=False))
+        raise SystemExit(1)
+    return
+
+
 def main():
     argv = sys.argv[1:]
     parser, sub = _build_parser()
     if argv and argv[0] == "--version":
         parser.parse_args(argv)
         return
+
+    if len(argv) >= 2 and argv[0] == "config" and argv[1] in ("export", "import"):
+        return _run_backup(parser.parse_args(argv))
 
     cfg = daemon.load_config()
     runtime = None
@@ -834,6 +870,7 @@ def main():
 
     if args.command == "config":
         cmd = args.config_command
+
 
         if not cmd or cmd == "show":
             daemon._show_config()

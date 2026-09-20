@@ -210,8 +210,13 @@ def ensure_parent_dir(path):
 def ensure_json_config_file():
     ensure_parent_dir(JSON_CONFIG_FILE)
     if os.path.exists(JSON_CONFIG_FILE):
+        os.chmod(JSON_CONFIG_FILE, 0o600)
         return
-    with open(JSON_CONFIG_FILE, "w", encoding="utf-8") as wf:
+    try:
+        fd = os.open(JSON_CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return
+    with os.fdopen(fd, "w", encoding="utf-8") as wf:
         wf.write("{}\n")
 
 
@@ -259,11 +264,18 @@ def load_json_file(path, allowed_keys=None):
 
 
 def _atomic_save_json_unlocked(path, payload):
-    tmp_path = str(path) + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as wf:
-        json.dump(payload, wf, ensure_ascii=False, indent=2, sort_keys=True)
-        wf.write("\n")
-    os.replace(tmp_path, path)
+    tmp_path = str(path) + ".tmp." + str(os.getpid())
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as wf:
+            json.dump(payload, wf, ensure_ascii=False, indent=2, sort_keys=True)
+            wf.write("\n")
+            wf.flush()
+            os.fsync(wf.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 def save_json_file(path, payload):

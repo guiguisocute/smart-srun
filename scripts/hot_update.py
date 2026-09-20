@@ -28,6 +28,10 @@ PROBE_ROOT_PREFIX = "/tmp/smart_srun_probe"
 
 RUNTIME_TARGETS = [
     {
+        "local": "root/usr/lib/smart_srun/config_backup.py",
+        "remote": "/usr/lib/smart_srun/config_backup.py",
+    },
+    {
         "local": "root/usr/bin/srunnet",
         "remote": "/usr/bin/srunnet",
     },

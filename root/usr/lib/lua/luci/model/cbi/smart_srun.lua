@@ -38,16 +38,16 @@ local function ensure_json_file()
         fs.mkdirr(dir)
     end
     if not fs.access(CONFIG_FILE) then
-        fs.writefile(CONFIG_FILE, "{}\n")
+        schema.with_file_lock(CONFIG_FILE, function()
+            if not fs.access(CONFIG_FILE) then schema.write_private_json(CONFIG_FILE, {}) end
+        end)
     end
+    fs.chmod(CONFIG_FILE, "600")
 end
 
 local function write_config_json_atomic(data)
     schema.with_file_lock(CONFIG_FILE, function()
-        ensure_json_file()
-        local tmp = CONFIG_FILE .. ".tmp"
-        fs.writefile(tmp, (jsonc.stringify(data) or "{}") .. "\n")
-        os.rename(tmp, CONFIG_FILE)
+        schema.write_private_json(CONFIG_FILE, data)
     end)
 end
 
@@ -155,8 +155,8 @@ local function load_cfg()
 end
 
 local function save_cfg(cfg)
+    ensure_json_file()
     schema.with_file_lock(CONFIG_FILE, function()
-        ensure_json_file()
         local latest = jsonc.parse(fs.readfile(CONFIG_FILE) or "{}")
         if type(latest) ~= "table" then
             latest = {}
@@ -178,9 +178,7 @@ local function save_cfg(cfg)
             and (type(cfg[SCHOOL_EXTRA_KEY]) == "table" and cfg[SCHOOL_EXTRA_KEY] or {})
             or (type(latest[SCHOOL_EXTRA_KEY]) == "table" and latest[SCHOOL_EXTRA_KEY] or {})
 
-        local tmp = CONFIG_FILE .. ".tmp"
-        fs.writefile(tmp, (jsonc.stringify(out) or "{}") .. "\n")
-        os.rename(tmp, CONFIG_FILE)
+        schema.write_private_json(CONFIG_FILE, out)
     end)
 end
 
@@ -1082,6 +1080,18 @@ bind_text(connectivity_check_mode, "connectivity_check_mode")
 interval = s:taboption("advanced", Value, "interval", "检测间隔（秒）")
 interval.datatype = "uinteger"
 bind_text(interval, "interval")
+
+config_backup = s:taboption("advanced", DummyValue, "_config_backup", "配置备份")
+config_backup.rawhtml = true
+function config_backup.cfgvalue()
+    return [[<div id="smart-srun-config-backup">
+<button type="button" class="cbi-button" id="smart-srun-config-export">导出配置</button>
+<label class="cbi-button" for="smart-srun-config-file">选择备份文件</label>
+<input type="file" id="smart-srun-config-file" accept=".json,application/json" style="display:none">
+<button type="button" class="cbi-button cbi-button-action" id="smart-srun-config-import" disabled>确认导入</button>
+<p class="cbi-value-description">备份含插件设置、校园账号和热点密码，请妥善保管。自建学校预设需单独备份。导入会替换配置并关闭自动守护，请核对账号和网口后再启用。</p>
+<p id="smart-srun-config-result" role="status" aria-live="polite"></p></div>]]
+end
 
 log_level = s:taboption("log", ListValue, "log_level", "日志等级",
     "ALL = 全部；DEBUG = 含调试细节；INFO = 默认；WARN/ERROR 仅记录警告与错误。")

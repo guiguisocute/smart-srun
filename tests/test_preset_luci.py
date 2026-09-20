@@ -111,6 +111,7 @@ XHR.prototype.open = function(method, url, async) {
   this.async = async;
   urls.push(url);
 };
+XHR.prototype.setRequestHeader = function() {};
 XHR.prototype.send = function() { pending.push(this); };
 const context = {
   window: {},

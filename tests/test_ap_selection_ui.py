@@ -185,6 +185,7 @@ files[config_path] = stringify({campus_accounts={{id="one", bssid="02:11:22:33:4
 files[state_path] = stringify({current_bssid="02:11:22:33:44:55", current_signal=-47,
     current_channel=36, current_wireless_ifname="phy0-sta0", ap_selection_policy="strongest",
     ap_selection_reason="fixture"})
+package.preload["luci.dispatcher"] = function() return {test_post_security=function() return true end} end
 package.preload["luci.http"] = function() return {
     formvalue=function(key) return form[key] end, prepare_content=function() end,
     write=function(value) output = parse(value) end
@@ -202,8 +203,10 @@ package.preload["nixio.fs"] = function() return {
     dir=function() return function() return nil end end
 } end
 package.preload["nixio"] = function() return {
+    getpid=function() return 99 end,
     open_flags=function() return 0 end,
-    open=function() return {lock=function() return true end, close=function() end} end
+    open=function(path) return {lock=function() return true end, close=function() end,
+        write=function(_, body) files[path] = body; return #body end} end
 } end
 os.rename = function(from, target) files[target] = files[from]; files[from] = nil; return true end
 package.preload["luci.smart_srun.schema"] = function() return dofile(SCHEMA_PATH) end

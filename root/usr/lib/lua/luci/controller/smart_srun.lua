@@ -82,6 +82,8 @@ local MONTH_MAP = {
 }
 
 function index()
+    entry({"admin", "services", "smart_srun", "config_export"}, call("action_config_export")).leaf = true
+    entry({"admin", "services", "smart_srun", "config_import"}, call("action_config_import")).leaf = true
     entry({"admin", "services", "smart_srun"}, cbi("smart_srun"), _("SMART SRun"), 80).dependent = true
     entry({"admin", "services", "smart_srun", "status"}, call("action_status")).leaf = true
     entry({"admin", "services", "smart_srun", "enqueue"}, call("action_enqueue")).leaf = true
@@ -116,11 +118,50 @@ local function run_srunnet_json(args)
     }
 end
 
+function action_config_export()
+    if not require("luci.dispatcher").test_post_security() then return end
+    local output = sys.exec("/usr/bin/srunnet config export - 2>/dev/null") or ""
+    local parsed = jsonc.parse(output)
+    if type(parsed) ~= "table" or parsed.format ~= "smart-srun-config" then
+        write_json_response({ok=false, message="无法导出配置，请检查配置文件"})
+        return
+    end
+    http.header("Cache-Control", "no-store")
+    http.header("Content-Disposition", 'attachment; filename="smart-srun-config.json"')
+    http.prepare_content("application/json")
+    http.write(output)
+end
+
+function action_config_import()
+    if not require("luci.dispatcher").test_post_security() then return end
+    local data = tostring(http.formvalue("data") or "")
+    local preview = http.formvalue("check") == "1"
+    local revision = tostring(http.formvalue("expected_revision") or "")
+    if #data > 524288 or (not preview and (#revision ~= 64 or not revision:match("^[a-f0-9]+$"))) then
+        write_json_response({ok=false, message="备份过大或预览已失效，请重新选择文件"})
+        return
+    end
+    local nixio = require "nixio"
+    local path = "/tmp/smart_srun_config_import." .. nixio.getpid() .. ".json"
+    local handle = nixio.open(path, nixio.open_flags("wronly", "creat", "excl"), "600")
+    if not handle then write_json_response({ok=false, message="无法创建安全临时文件"}); return end
+    local count = handle:write(data)
+    handle:close()
+    if count ~= #data then fs.unlink(path); write_json_response({ok=false, message="备份接收不完整"}); return end
+    local args = "config import " .. util.shellquote(path)
+    args = args .. (preview and " --check" or (" --expected-revision " .. util.shellquote(revision)))
+    local ok, result = pcall(run_srunnet_json, args)
+    fs.unlink(path)
+    http.header("Cache-Control", "no-store")
+    write_json_response(ok and result or {ok=false, message="配置导入失败"})
+end
+
 function action_update_check()
     write_json_response(run_srunnet_json("update check"))
 end
 
 function action_update_start()
+    if not require("luci.dispatcher").test_post_security() then return end
     write_json_response(run_srunnet_json("update run --background"))
 end
 
@@ -129,6 +170,7 @@ function action_update_status()
 end
 
 function action_presets_refresh()
+    if not require("luci.dispatcher").test_post_security() then return end
     write_json_response(run_srunnet_json("presets refresh"))
 end
 
@@ -333,9 +375,7 @@ local function load_config_json_unlocked()
 end
 
 local function write_config_json_unlocked(data)
-    local tmp = CONFIG_FILE .. ".tmp"
-    fs.writefile(tmp, (jsonc.stringify(data) or "{}") .. "\n")
-    os.rename(tmp, CONFIG_FILE)
+    schema.write_private_json(CONFIG_FILE, data)
 end
 
 local function update_config_json(mutator)
@@ -488,6 +528,7 @@ local function sanitize_user_preset_store(raw)
 end
 
 function action_user_presets_set()
+    if not require("luci.dispatcher").test_post_security() then return end
     if http.getenv("REQUEST_METHOD") ~= "POST" then
         write_json_response({ ok = false, message = "仅支持 POST" })
         return
@@ -546,6 +587,7 @@ end
 -- 运营商后缀探测。密码不能进 argv（同机 ps 可见），改用 0600 临时文件传参，
 -- CLI 读完即删，这里再兜底删一次。
 function action_detect_operator()
+    if not require("luci.dispatcher").test_post_security() then return end
     local nixio = require "nixio"
     if http.getenv("REQUEST_METHOD") ~= "POST" then
         write_json_response({ ok = false, message = "仅支持 POST" })
@@ -594,6 +636,7 @@ function action_detect_operator()
 end
 
 function action_setup_wifi()
+    if not require("luci.dispatcher").test_post_security() then return end
     local nixio = require "nixio"
     if http.getenv("REQUEST_METHOD") ~= "POST" then
         write_json_response({ ok = false, message = "仅支持 POST" })
@@ -653,6 +696,7 @@ local function normalize_base_url(value)
 end
 
 function action_enqueue()
+    if not require("luci.dispatcher").test_post_security() then return end
     local action = fv("action")
     local setup_job = fv("setup_job")
     local setup_account = nil
@@ -1763,6 +1807,7 @@ function action_log_tail()
 end
 
 function action_log_clear()
+    if not require("luci.dispatcher").test_post_security() then return end
     local channel = http.formvalue("channel") or "plugin"
     if channel ~= "plugin" then
         write_json_response({ ok = false, message = "系统网络日志不能由插件清空", channel = channel })
