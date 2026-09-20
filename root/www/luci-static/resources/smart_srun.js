@@ -285,16 +285,25 @@
         xhr.open('POST', '/cgi-bin/luci/admin/services/smart_srun/enqueue', true);
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
         xhr.onreadystatechange = function() {
-          if (xhr.readyState !== 4) return;
-          var text = '已触发强制停止';
+          if (xhr.readyState !== 4 || closed) return;
+          var stopped = false;
+          var text = '强制停止失败，请重试';
           if (xhr.status === 200) {
             try {
               var data = JSON.parse(xhr.responseText || '{}');
+              stopped = data.ok === true;
+              if (stopped) text = '已触发强制停止';
               if (typeof data.message === 'string' && data.message !== '')
                 text = data.message;
             } catch (e) {}
           }
-          unlock(text, false);
+          if (stopped) {
+            unlock(text, false);
+          } else {
+            forceButton.disabled = false;
+            tip.textContent = text;
+            if (result) result.textContent = text;
+          }
         };
         xhr.send('action=' + encodeURIComponent('force_stop') + '&token=' + encodeURIComponent(requestToken()));
       }

@@ -25,7 +25,7 @@ class PortalLuciTests(unittest.TestCase):
             check=True, capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
 
-    def _run_ui(self, status, receipt="instance-a1"):
+    def _run_ui(self, status, receipt="instance-a1", force_response=None):
         node = shutil.which("node")
         if not node:
             self.skipTest("node is not installed")
@@ -35,6 +35,7 @@ class PortalLuciTests(unittest.TestCase):
 const fs = require('fs');
 const vm = require('vm');
 const payload = JSON.parse(process.argv[1]);
+const forceResponse = JSON.parse(process.argv[4]);
 const source = fs.readFileSync(process.argv[2], 'utf8');
 function element(tag, attrs, text) {
   const el = {
@@ -65,10 +66,12 @@ let modal = null;
 let cleared = 0;
 function XHR() {}
 XHR.prototype.open = function(method, url) { this.url = url; urls.push(url); };
+XHR.prototype.setRequestHeader = function() {};
 XHR.prototype.send = function() {
   this.readyState = 4;
-  this.status = 200;
-  this.responseText = JSON.stringify(
+  const force = this.url.indexOf('/enqueue') >= 0;
+  this.status = force ? forceResponse.status : 200;
+  this.responseText = force ? forceResponse.body : JSON.stringify(
     this.url.indexOf('/status?') >= 0 ? payload : {empty: true}
   );
   this.onreadystatechange();
@@ -76,6 +79,7 @@ XHR.prototype.send = function() {
 const context = {
   window: { setInterval() { return 1; }, clearInterval() { cleared += 1; } },
   document: { readyState: 'loading', addEventListener() {},
+    querySelector() { return {value: 'csrf-token'}; },
     getElementById(id) { return nodes[id] || null; },
     createElement(tag) { return element(tag); }, createTextNode(text) { return {textContent: text}; }
   },
@@ -85,12 +89,14 @@ const context = {
 };
 vm.runInNewContext(source, context);
 context.window.smartOpenBlockingFeedback('manual_login', 100, JSON.parse(process.argv[3]));
+if (forceResponse) modal[3].children[1].click({preventDefault() {}});
 console.log(JSON.stringify({result: nodes['smart-srun-manual-result'].textContent,
   tip: modal[0].textContent, portal: modal[2].children,
-  resultPortal: nodes['smart-srun-manual-portal'].children, urls, cleared}));
+  resultPortal: nodes['smart-srun-manual-portal'].children, urls, cleared,
+  progressDisabled: !!modal[3].children[0].disabled, forceDisabled: !!modal[3].children[1].disabled}));
 """
         result = subprocess.run(
-            [node, "-e", script, json.dumps(status), str(JS_FILE), json.dumps(receipt)],
+            [node, "-e", script, json.dumps(status), str(JS_FILE), json.dumps(receipt), json.dumps(force_response)],
             stdin=subprocess.DEVNULL,
             check=True,
             capture_output=True,
@@ -159,6 +165,28 @@ console.log(JSON.stringify({result: nodes['smart-srun-manual-result'].textConten
         rendered = self._run_ui(self._status(), receipt=None)
         self.assertIn("无法读取操作回执", rendered["tip"])
         self.assertEqual([], rendered["urls"])
+
+    def test_rejected_force_stop_does_not_claim_stopped_or_end_polling(self):
+        for response in (
+            {"status": 403, "body": "csrf rejected"},
+            {"status": 0, "body": ""},
+            {"status": 200, "body": "invalid json"},
+            {"status": 200, "body": json.dumps({"ok": False, "message": "停止失败"})},
+        ):
+            with self.subTest(response=response):
+                rendered = self._run_ui(self._status(action_result="pending"), force_response=response)
+                self.assertIn("失败", rendered["tip"])
+                self.assertEqual(0, rendered["cleared"])
+                self.assertTrue(rendered["progressDisabled"])
+                self.assertFalse(rendered["forceDisabled"])
+
+    def test_confirmed_force_stop_unlocks_the_dialog(self):
+        rendered = self._run_ui(self._status(action_result="pending"), force_response={
+            "status": 200, "body": json.dumps({"ok": True, "message": "已停止"})})
+        self.assertEqual("已停止", rendered["tip"])
+        self.assertEqual(1, rendered["cleared"])
+        self.assertFalse(rendered["progressDisabled"])
+        self.assertTrue(rendered["forceDisabled"])
 
     def test_unsafe_portal_urls_are_never_rendered(self):
         for url in (
