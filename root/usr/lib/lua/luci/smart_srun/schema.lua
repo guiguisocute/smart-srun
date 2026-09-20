@@ -1,8 +1,6 @@
 local fs = require "nixio.fs"
-local jsonc = require "luci.jsonc"
 local nixio = require "nixio"
 
-local DEFAULTS_FILE = "/usr/lib/smart_srun/defaults.json"
 local OPKG_STATUS_FILE = "/usr/lib/opkg/status"
 local APK_STATUS_FILE = "/lib/apk/db/installed"
 local DEFAULT_VERSION = "v0.0.0"
@@ -45,9 +43,20 @@ for _, key in ipairs(M.LIST_KEYS) do
     LIST_KEY_SET[key] = true
 end
 
+-- load_defaults prefers the daemon's own schema.
+--
+-- Spec 02 gives Go the types, defaults, bounds and choices and leaves the page
+-- its labels, so that the two cannot disagree about what a valid value is. The
+-- page reports a stopped/unavailable service when schema cannot be read; it
+-- never falls back to an obsolete 1.x configuration file.
 local function load_defaults()
-    local parsed = jsonc.parse(fs.readfile(DEFAULTS_FILE) or "")
-    if type(parsed) ~= "table" then
+    -- One pcall around both the load and the call: on a host without nixio, or
+    -- with the service stopped, this must fall back rather than take the page
+    -- down with it.
+    local ok, parsed = pcall(function()
+        return require("luci.smart_srun.bridge").defaults()
+    end)
+    if not ok or type(parsed) ~= "table" then
         parsed = {}
     end
     if parsed.school == nil then
@@ -102,6 +111,9 @@ end
 
 local function normalize_version_string(raw)
     local value = tostring(raw or "")
+	-- opkg and APK use different native RC separators; the UI uses the same
+	-- display version as the Go binary and the release tag.
+	value = value:gsub("~rc", "rc"):gsub("_rc", "rc")
     local version = value:match("^v?([0-9][%w%._%-]*)%-r?%d+$") or value:match("^v?([0-9][%w%._%-]*)$")
     if version and version ~= "" then
         version = version:gsub("_", "-")
