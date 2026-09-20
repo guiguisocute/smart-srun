@@ -65,6 +65,8 @@ python3 scripts/make_go_manifest.py sdk-a/artifacts/2.0.0rc1/build-record.json \
 
 成功更新或恢复后，保留最近两次任务的恢复包与独立配置备份，删除已完成任务的临时下载。进行中的任务、损坏的 journal、没有完成记录的旧目录、未知文件与符号链接均不自动清理；清理失败会提示并在下一次更新前重试，不会把已经核验成功的安装说成失败。
 
+本地上传包在复制、校验并同步到任务目录后会从上传区移除；任务成功完成后释放独立 worker 副本，避免持续占用 tmpfs。失败任务保留 worker 供恢复使用，持久恢复包与配置备份不受这项临时清理影响。
+
 Go 树中的 `scripts/hot_update.py` 已转为 SDK 包部署入口，需要设备已安装支持 `update inventory` 的 Go 版本。首次安装使用原生包管理器。开发主机使用 Python 3.11+ 与 OpenSSH，设备无需 Python；SSH 认证、跳板与主机密钥沿用本机配置：
 
 ```sh
