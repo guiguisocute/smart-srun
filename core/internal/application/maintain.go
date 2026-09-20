@@ -434,6 +434,12 @@ func (m *Maintainer) nextWake(cfg *domain.Config, quiet policy.QuietState,
 	if quiet.HasNext && quiet.Next.Before(soonest) {
 		soonest = quiet.Next
 	}
+	// Account retry deadlines cannot be consumed while maintenance is paused.
+	// An overdue deadline otherwise arms an immediate timer over and over for
+	// the entire quiet window (or while disabled), spinning the daemon CPU.
+	if !m.pause.AllowsMaintenance() {
+		return soonest
+	}
 	for _, state := range m.accounts {
 		if state.inFlight != "" || state.dueAt.IsZero() {
 			continue
