@@ -42,7 +42,7 @@ python3 scripts/verify_go_sdk.py sdk/artifacts/2.0.0rc1/build-record.json \
   --go /usr/local/go/bin/go --qemu /usr/bin/qemu-aarch64 --output checks/arm64
 ```
 
-APK 目标可通过 `--sign-key` 和 `--public-key` 传入维护者控制的密钥。私钥不得入库或上传到构建产物。脚本对自己的未签名输入执行离线签名，然后必须用公钥通过原生 `apk verify`，不能只相信签名命令的退出码。公钥信任引导、固件安装和发布验收是另外的步骤；不能在安装时加 `--allow-untrusted`。
+APK 目标可通过 `--sign-key` 和 `--public-key` 传入维护者控制的密钥。私钥不得入库或上传到构建产物。脚本对自己的未签名输入执行离线签名，然后必须用公钥通过原生 `apk verify`，不能只相信签名命令的退出码。用户可明确选择 `apk add --allow-untrusted` 手动安装已确认来源的文件，公钥为可选安装项；指南必须说明它跳过签名验证。内置更新、恢复、热部署和发布验收仍需受信原生验签，不能把手动绕过验证记为签名验收通过。
 
 ### GitHub Actions 与发布
 
