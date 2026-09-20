@@ -76,7 +76,7 @@ func Begin(paths Paths, candidate Candidate, wasRunning bool, executable string,
 	if err := privateDir(paths.Backup(task.JobID)); err != nil {
 		return Task{}, err
 	}
-	if err := checkSpace(paths, task); err != nil {
+	if err := checkSpace(paths, task, false); err != nil {
 		return Task{}, err
 	}
 	if err := copyWorker(executable, paths.Worker()); err != nil {
@@ -139,7 +139,11 @@ func copyWorker(source, destination string) error {
 	return syncDirectory(filepath.Dir(destination))
 }
 
-func checkSpace(paths Paths, task Task) error {
+func checkSpace(paths Paths, task Task, staged bool) error {
+	return checkSpaceWith(paths, task, staged, FreeBytes)
+}
+
+func checkSpaceWith(paths Paths, task Task, staged bool, freeBytes func(string) (uint64, error)) error {
 	var oldBytes int64
 	for _, asset := range task.Recovery.Assets {
 		oldBytes += asset.Bytes
@@ -148,11 +152,21 @@ func checkSpace(paths Paths, task Task) error {
 	// tmpfs needs the copied worker, new packages and two unpack/work buffers.
 	tmpNeed := int64(MaxPayloadBytes) + task.Plan.DownloadBytes + 2*task.Plan.InstalledBytes + (8 << 20)
 	flashNeed := oldBytes + task.Plan.InstalledBytes + (4 << 20)
+	if staged {
+		// Begin has already copied the independent worker. Existing package
+		// files also already consume the free space reported by statfs. Reserve
+		// only the remaining allocations, retaining both unpack/work buffers.
+		// This accounting grants no trust: VerifyFile and native verification
+		// still run for every package before any installation starts.
+		tmpNeed -= int64(MaxPayloadBytes)
+		tmpNeed -= stagedBytes(packageFiles(paths.Temporary(task.JobID), task.Plan.Assets))
+		flashNeed -= stagedBytes(packageFiles(paths.Backup(task.JobID), task.Recovery.Assets))
+	}
 	for _, requirement := range []struct {
 		path  string
 		bytes int64
 	}{{paths.Runtime, tmpNeed}, {paths.Config, flashNeed}} {
-		free, err := FreeBytes(requirement.path)
+		free, err := freeBytes(requirement.path)
 		if err != nil {
 			return err
 		}
@@ -161,6 +175,17 @@ func checkSpace(paths Paths, task Task) error {
 		}
 	}
 	return nil
+}
+
+func stagedBytes(files []LocalPackage) int64 {
+	var bytes int64
+	for _, file := range files {
+		info, err := os.Lstat(file.Path)
+		if err == nil && info.Mode().IsRegular() && info.Size() == file.Asset.Bytes {
+			bytes += file.Asset.Bytes
+		}
+	}
+	return bytes
 }
 
 type Worker struct {
@@ -234,7 +259,7 @@ func (w Worker) prepare(ctx context.Context, task *Task) error {
 	if !reflect.DeepEqual(inventory, task.Plan.Inventory) {
 		return domain.Errorf(domain.CodeConflict, "本机包版本或环境已变化，请重新检查更新")
 	}
-	if err := checkSpace(w.Paths, *task); err != nil {
+	if err := checkSpace(w.Paths, *task, true); err != nil {
 		return err
 	}
 	if err := privateDir(w.Paths.Temporary(task.JobID)); err != nil {
