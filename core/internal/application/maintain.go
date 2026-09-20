@@ -26,11 +26,12 @@ import (
 // publishes them from its own goroutine and two writers is the bug this shape
 // exists to prevent.
 type Maintainer struct {
-	clock    policy.Clock
-	settings Settings
-	submit   func(context.Context, Request) (Receipt, error)
-	line     func(Request) string
-	onEvent  func(MaintenanceEvent)
+	clock          policy.Clock
+	settings       Settings
+	submit         func(context.Context, Request) (Receipt, error)
+	line           func(Request) string
+	onEvent        func(MaintenanceEvent)
+	manuallyPaused func(domain.Config, string) bool
 
 	results chan Action
 	changes chan struct{}
@@ -110,6 +111,9 @@ type MaintainerOptions struct {
 	// ResumeQuiet is a validated runtime record from the daemon's single
 	// writer. It is never inferred from merely observing a hotspot connection.
 	ResumeQuiet *QuietResume
+	// ManuallyPaused reads explicit per-account logout intent. It also guards
+	// queued dispatch in the daemon, so an old maintenance request cannot race it.
+	ManuallyPaused func(domain.Config, string) bool
 }
 
 // NewMaintainer builds one.
@@ -132,12 +136,17 @@ func NewMaintainer(options MaintainerOptions) *Maintainer {
 	if onEvent == nil {
 		onEvent = func(MaintenanceEvent) {}
 	}
+	paused := options.ManuallyPaused
+	if paused == nil {
+		paused = func(domain.Config, string) bool { return false }
+	}
 	m := &Maintainer{
-		clock:    clock,
-		settings: options.Settings,
-		submit:   options.Submit,
-		line:     line,
-		onEvent:  onEvent,
+		clock:          clock,
+		settings:       options.Settings,
+		submit:         options.Submit,
+		line:           line,
+		onEvent:        onEvent,
+		manuallyPaused: paused,
 		// Buffered so the coordinator's observer never blocks on this loop, and
 		// bounded so it cannot become an unread backlog either.
 		results:  make(chan Action, 64),
@@ -279,6 +288,9 @@ func (m *Maintainer) maintain(ctx context.Context, cfg *domain.Config, now time.
 
 	blocked := m.reportConflicts(targets, now)
 	for _, target := range targets {
+		if m.manuallyPaused(*cfg, target.AccountID) {
+			continue
+		}
 		if target.AccountID == cfg.Selection.ActiveCampusID && m.quietSwitch.owned {
 			// The return action verifies the campus path before retiring the
 			// scheduled hotspot. Other managed wired lines remain independent.
@@ -311,6 +323,9 @@ func (m *Maintainer) sweepQuietHours(ctx context.Context, cfg *domain.Config,
 	m.occurrence = quiet.Occurrence
 	pending := m.sweep.Pending(quiet.Occurrence, policy.ForcedLogoutTargets(cfg))
 	for _, target := range pending {
+		if m.manuallyPaused(*cfg, target.AccountID) {
+			continue
+		}
 		state := m.stateFor(target.AccountID)
 		if state.sweepAction != "" || state.inFlight != "" || now.Before(state.sweepDueAt) {
 			continue
@@ -472,6 +487,9 @@ func (m *Maintainer) nextWake(cfg *domain.Config, quiet policy.QuietState,
 		return soonest
 	}
 	for id, state := range m.accounts {
+		if m.manuallyPaused(*cfg, id) {
+			continue
+		}
 		if id == cfg.Selection.ActiveCampusID && m.quietSwitch.owned {
 			continue
 		}

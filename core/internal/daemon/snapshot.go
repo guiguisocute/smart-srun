@@ -74,8 +74,9 @@ type Snapshot struct {
 	Version        string    `json:"version"`
 	WrittenAt      time.Time `json:"written_at"`
 
-	Accounts []observe.AccountView `json:"accounts"`
-	Actions  []ActionView          `json:"actions"`
+	Accounts             []observe.AccountView `json:"accounts"`
+	Actions              []ActionView          `json:"actions"`
+	ManualPausedAccounts []string              `json:"manual_paused_accounts,omitempty"`
 }
 
 // ViewOf converts a coordinator action into the wire shape.

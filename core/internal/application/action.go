@@ -80,7 +80,7 @@ func (k Kind) Discovery() bool {
 func (k Kind) Valid() bool { return slices.Contains(kinds, k) }
 
 func (k Kind) switches() bool {
-	return k == KindSwitchCampus || k == KindSwitchHotspot || k == KindQuietHotspot || k == KindQuietCampus || k.WifiSetup()
+	return k == KindLogout || k == KindSwitchCampus || k == KindSwitchHotspot || k == KindQuietHotspot || k == KindQuietCampus || k.WifiSetup()
 }
 
 // Priority is where this kind sits in spec 04's order.

@@ -48,6 +48,10 @@ type quietSwitchState struct {
 
 func (m *Maintainer) scheduleQuietSwitch(ctx context.Context, cfg *domain.Config, quiet policy.QuietState, now time.Time) {
 	s := &m.quietSwitch
+	if m.manuallyPaused(*cfg, cfg.Selection.ActiveCampusID) {
+		s.owned, s.done = false, true
+		return
+	}
 	if !cfg.Enabled || !cfg.Failover.Enabled {
 		s.owned = false
 		return
@@ -66,8 +70,12 @@ func (m *Maintainer) scheduleQuietSwitch(ctx context.Context, cfg *domain.Config
 		if s.done {
 			return
 		}
-		if quiet.ForceLogout && len(m.sweep.Pending(quiet.Occurrence, policy.ForcedLogoutTargets(cfg))) != 0 {
-			return // finish the configured logout sweep before moving its radio
+		if quiet.ForceLogout {
+			for _, target := range m.sweep.Pending(quiet.Occurrence, policy.ForcedLogoutTargets(cfg)) {
+				if !m.manuallyPaused(*cfg, target.AccountID) {
+					return // finish the configured logout sweep before moving its radio
+				}
+			}
 		}
 		s.hotspotID = cfg.Selection.ActiveHotspotID
 		if s.hotspotID == "" {

@@ -147,7 +147,7 @@ func (a *Authenticator) Run(ctx context.Context, action Action,
 		}
 		return a.logout(ctx, action, report)
 	case KindLogout:
-		return a.logout(ctx, action, report)
+		return a.manualLogout(ctx, action, report)
 	case KindSwitchHotspot:
 		return a.switchHotspot(ctx, action, report)
 	default:
@@ -383,16 +383,20 @@ func (a *Authenticator) clearAndRetry(ctx context.Context,
 // logout ends this account's own session on its own line.
 func (a *Authenticator) logout(ctx context.Context, action Action,
 	report func(Phase)) Outcome {
-	// A quiet-hours sweep must not contact a campus portal over a hotspot that
-	// now occupies the wireless interface. No association changes on logout.
-	if action.Request.Kind == KindForcedLogout && a.wireless != nil {
+	// No logout may contact a campus portal over a hotspot that now occupies
+	// the wireless interface. Logout never changes association to find a session.
+	if a.wireless != nil {
 		cfg := a.settings.Snapshot()
 		if account, ok := cfg.CampusAccountByID(action.Request.AccountID); ok && !account.IsWired() {
 			observed, err := a.wireless.Association(ctx, account.Radio)
 			if err != nil {
 				return failure(err)
 			}
-			if !observed.Joined() || observed.SSID != account.SSID {
+			dest, err := campusDestination(account)
+			if err != nil {
+				return failure(err)
+			}
+			if !dest.want.Satisfied(observed) {
 				return failure(domain.Errorf(domain.CodeBindingUnavailable, "当前无线连接不是该校园账号的线路，未发送退出请求"))
 			}
 		}

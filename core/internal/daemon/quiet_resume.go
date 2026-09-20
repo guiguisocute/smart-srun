@@ -1,13 +1,10 @@
 package daemon
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
 	"os"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/application"
-	"github.com/matthewlu070111/smart-srun/core/internal/config"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 	"github.com/matthewlu070111/smart-srun/core/internal/policy"
 )
@@ -22,53 +19,19 @@ func quietRecordError(err error) error {
 }
 
 func readQuietResume(paths Paths) (*application.QuietResume, error) {
-	info, err := os.Lstat(paths.QuietResume())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != RuntimeFileMode || info.Size() > 4096 {
-		return nil, quietRecordError(err)
-	}
-	f, err := os.Open(paths.QuietResume())
-	if err != nil {
-		return nil, quietRecordError(err)
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, 4097))
-	if err != nil || len(data) > 4096 {
-		return nil, quietRecordError(err)
-	}
 	var record quietRecord
-	if err := config.DecodePatch(data, &record); err != nil || record.SchemaVersion != 1 {
-		return nil, quietRecordError(err)
+	exists, err := readRuntimeRecord(paths.QuietResume(), &record)
+	if err != nil || !exists {
+		return nil, err
+	}
+	if record.SchemaVersion != 1 {
+		return nil, quietRecordError(nil)
 	}
 	return &record.Resume, nil
 }
 
 func writeQuietResume(paths Paths, resume application.QuietResume) error {
-	data, err := json.Marshal(quietRecord{SchemaVersion: 1, Resume: resume})
-	if err != nil || len(data) > 4096 {
-		return quietRecordError(err)
-	}
-	f, err := os.CreateTemp(paths.Runtime, ".quiet-uplink-*")
-	if err != nil {
-		return quietRecordError(err)
-	}
-	defer f.Close()
-	defer os.Remove(f.Name())
-	if err := f.Chmod(RuntimeFileMode); err != nil {
-		return quietRecordError(err)
-	}
-	if _, err := f.Write(data); err != nil {
-		return quietRecordError(err)
-	}
-	if err := f.Close(); err != nil {
-		return quietRecordError(err)
-	}
-	if err := os.Rename(f.Name(), paths.QuietResume()); err != nil {
-		return quietRecordError(err)
-	}
-	return nil
+	return writeRuntimeRecord(paths.QuietResume(), quietRecord{SchemaVersion: 1, Resume: resume})
 }
 
 func clearQuietResume(paths Paths) error {

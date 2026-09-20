@@ -15,6 +15,7 @@ func WriteHelp(out *os.File) {
   status [--json]          显示状态；不会启动服务
   login|logout|relogin [ID] [--json] [--no-wait] [--ignore-quiet]
                            省略 ID 使用当前校园账号；默认等到动作结束
+                           logout 暂停该账号自动认证，手动登录成功后恢复
   switch campus|hotspot [ID] [--json] [--no-wait] [--ignore-quiet]
                            省略 ID 使用对应默认项；成功后保存当前选择
   enable|disable           保存自动认证开关（JSON 结果）

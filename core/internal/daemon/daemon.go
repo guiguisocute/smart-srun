@@ -100,6 +100,7 @@ type Daemon struct {
 	publicPresets func() ([]presets.School, error)
 	configChanged func(uint64)
 	wizard        *wifiWizard
+	manualPauses  *manualPauses
 	updater       *updateController
 
 	// published is the last state an action was logged in, so a republication
@@ -295,10 +296,15 @@ func Run(ctx context.Context, options Options) error {
 	if resumeErr != nil {
 		report(resumeErr) // unknown ownership never grants permission to switch
 	}
+	service.manualPauses, resumeErr = loadManualPauses(paths, repository.Snapshot())
+	if resumeErr != nil {
+		report(resumeErr)
+	}
 	maintainer := application.NewMaintainer(application.MaintainerOptions{
-		Clock:       clock,
-		Settings:    repository,
-		ResumeQuiet: resumeQuiet,
+		Clock:          clock,
+		Settings:       repository,
+		ResumeQuiet:    resumeQuiet,
+		ManuallyPaused: service.manualPauses.paused,
 		Submit: func(ctx context.Context, request application.Request) (
 			application.Receipt, error) {
 			return service.actions.Submit(ctx, request)
@@ -323,13 +329,17 @@ func Run(ctx context.Context, options Options) error {
 		Clock:    clock,
 		Runner:   runner,
 		Lines:    service.lineOf,
-		Finalize: service.finishSwitch,
+		Finalize: service.finishUserAction,
+		Admit:    service.admitManualLogout,
 		Check: func(request application.Request) error {
 			if err := update.Guard(paths.Update()); err != nil {
 				return err
 			}
 			if request.CheckRevision && request.ConfigRevision != repository.Revision() {
 				return domain.Errorf(domain.CodeConflict, "配置已变化，请刷新后重试")
+			}
+			if !request.Kind.Manual() && service.manualPauses.paused(repository.Snapshot(), request.AccountID) {
+				return domain.Errorf(domain.CodeBusy, "该账号已手动暂停，可手动登录恢复")
 			}
 			return service.wizard.check(request)
 		},
@@ -576,15 +586,16 @@ func (d *Daemon) snapshotOf(actions []application.Action) Snapshot {
 	d.pauseMu.Unlock()
 
 	snapshot := Snapshot{
-		SchemaVersion:  SnapshotSchemaVersion,
-		WrittenAt:      d.clock.Now().UTC(),
-		Service:        ServiceRunning,
-		PID:            os.Getpid(),
-		Enabled:        cfg.Enabled,
-		Pause:          pause,
-		ConfigRevision: cfg.Revision,
-		Version:        d.version,
-		Accounts:       projection.Accounts,
+		SchemaVersion:        SnapshotSchemaVersion,
+		WrittenAt:            d.clock.Now().UTC(),
+		Service:              ServiceRunning,
+		PID:                  os.Getpid(),
+		Enabled:              cfg.Enabled,
+		Pause:                pause,
+		ConfigRevision:       cfg.Revision,
+		Version:              d.version,
+		Accounts:             projection.Accounts,
+		ManualPausedAccounts: d.manualPauses.accounts(cfg),
 	}
 
 	snapshot.Actions = make([]ActionView, 0, len(actions))

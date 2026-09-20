@@ -49,6 +49,9 @@ type Options struct {
 	// Check runs on the loop before a new request is queued. It rejects work
 	// prepared against a configuration that has since changed.
 	Check func(Request) error
+	// Admit records explicit user intent once, after validation and capacity
+	// checks, before any cancellation or network work. Duplicates skip it.
+	Admit func(Request) error
 	// Finalize commits local effects of a successful worker on the loop, before
 	// publishing success. It must not call back into the coordinator.
 	Finalize func(Action, Outcome) Outcome
@@ -92,6 +95,7 @@ type Coordinator struct {
 	runner        Runner
 	lines         func(Request) string
 	check         func(Request) error
+	admit         func(Request) error
 	finalize      func(Action, Outcome) Outcome
 	observer      func(Action)
 	record        func(observe.Observation)
@@ -179,6 +183,7 @@ func New(options Options) *Coordinator {
 		runner:        options.Runner,
 		lines:         options.Lines,
 		check:         options.Check,
+		admit:         options.Admit,
 		finalize:      options.Finalize,
 		observer:      observer,
 		record:        record,

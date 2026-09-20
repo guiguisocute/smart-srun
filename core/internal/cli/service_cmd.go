@@ -160,6 +160,9 @@ func printStatus(stdout *os.File, snapshot daemon.Snapshot) {
 	}
 	fmt.Fprintf(stdout, "自动认证：%s\n", onOff(snapshot.Enabled))
 	fmt.Fprintf(stdout, "配置版本：%d\n", snapshot.ConfigRevision)
+	for _, id := range snapshot.ManualPausedAccounts {
+		fmt.Fprintf(stdout, "账号 %s：已手动暂停自动认证，可手动登录恢复\n", id)
+	}
 
 	if len(snapshot.Accounts) == 0 {
 		fmt.Fprintln(stdout, "账号：尚无观测结果")
