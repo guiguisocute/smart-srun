@@ -7,17 +7,22 @@ import (
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 	"github.com/matthewlu070111/smart-srun/core/internal/policy/faketime"
+	"github.com/matthewlu070111/smart-srun/core/internal/wifi"
 )
 
-func TestManualTerminalChecksWaitWithoutRepeatingTheMutation(t *testing.T) {
-	for _, kind := range []Kind{KindLogin, KindLogout} {
+func TestManualAndScheduledTerminalChecksWaitWithoutRepeatingTheMutation(t *testing.T) {
+	for _, kind := range []Kind{KindLogin, KindLogout, KindQuietCampus, KindForcedLogout} {
 		t.Run(string(kind), func(t *testing.T) {
 			p := newPortal(t)
 			p.keepSessionAfterLogout = true
 			p.onlineAfter = func(count int) {
-				if kind == KindLogin {
+				if kind == KindLogin || kind == KindQuietCampus {
 					p.onlineBody = offlineAnswer
-					if count == 3 {
+					ready := 3
+					if kind == KindQuietCampus {
+						ready++ // automatic return checks the existing identity first
+					}
+					if count == ready {
 						p.onlineBody = `{"error":"ok","user_name":"2020123456","online_ip":"10.0.0.77"}`
 					}
 				} else if count == 4 {
@@ -25,16 +30,26 @@ func TestManualTerminalChecksWaitWithoutRepeatingTheMutation(t *testing.T) {
 				}
 			}
 			worker, _ := workerFor(t, p, &fakeBinder{})
-			clock := faketime.New(time.Now())
+			clock := faketime.New(maintainEpoch)
 			worker.clock = clock
 			settings := worker.settings.(*fakeSettings)
 			settings.cfg.Checks.TerminalAttempts = 3
 			settings.cfg.Checks.TerminalIntervalSeconds = 7
+			settings.cfg.Enabled = true
+			if kind == KindForcedLogout {
+				settings.cfg.Quiet = quietWorld(t).cfg.Quiet
+			}
+			if kind == KindQuietCampus {
+				settings.cfg.Failover.Enabled = true
+				settings.cfg.Selection.ActiveCampusID = "c1"
+				settings.cfg.HotspotProfiles = []domain.HotspotProfile{{ID: "h1", SSID: "phone", Radio: "radio0", Encryption: "none"}}
+				worker.wireless = &fakeWireless{association: wifi.Association{SSID: "phone", BSSID: "02:00:5e:00:53:01", HasIPv4: true}}
+			}
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			result := make(chan Outcome, 1)
 			go func() {
-				result <- worker.Run(ctx, Action{Request: Request{Kind: kind, AccountID: "c1"}}, func(Phase) {})
+				result <- worker.Run(ctx, Action{Request: Request{Kind: kind, AccountID: "c1", HotspotID: "h1"}}, func(Phase) {})
 			}()
 			for range 2 {
 				if err := clock.BlockUntilContext(ctx, 1); err != nil {
