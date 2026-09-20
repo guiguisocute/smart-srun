@@ -54,6 +54,7 @@ def inspect_binary(binary, target, go, execute, qemu, version):
     expected = {"CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": target["goarch"]}
     if target["goarch"] == "amd64":
         expected["GOAMD64"] = "v1"
+        expected["-gcflags"] = "github.com/matthewlu070111/smart-srun/core/...=-l"
     if target["goarch"] == "arm64":
         expected["GOARM64"] = "v8.0"
     if target["goarch"] == "arm" and settings.get("GOARM") not in ("7", "7,hardfloat"):
@@ -66,8 +67,8 @@ def inspect_binary(binary, target, go, execute, qemu, version):
             actual = actual.strip()
         if actual != value:
             raise ValueError("Unexpected Go build setting: " + key)
-    if target["goarch"] not in ("mips", "mipsle") and settings.get("-gcflags"):
-        raise ValueError("Non-MIPS build unexpectedly changes inlining")
+    if target["goarch"] not in ("mips", "mipsle", "amd64") and settings.get("-gcflags"):
+        raise ValueError("Build unexpectedly changes inlining")
     execution = None
     if execute or qemu:
         execution = run(([qemu] if qemu else []) + [binary, "version"]).strip()

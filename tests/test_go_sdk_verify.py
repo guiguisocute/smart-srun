@@ -47,6 +47,21 @@ class SDKVerifyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify.inspect_header(data, "amd64")
 
+    def test_amd64_keeps_standard_library_inlining_and_rejects_debug_flags(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "srunnet"
+            binary.write_bytes(header("amd64"))
+            base = '\tbuild\tCGO_ENABLED=0\n\tbuild\tGOOS=linux\n\tbuild\tGOARCH=amd64\n\tbuild\tGOAMD64=v1\n'
+            flags = 'github.com/matthewlu070111/smart-srun/core/...=-l'
+            for value in (flags, 'all=-l', flags + ' -N', ''):
+                info = base + '\tbuild\t-gcflags="' + value + ' "\n'
+                with self.subTest(flags=value), patch.object(verify, "run", side_effect=["  LOAD  0x000000", info]):
+                    if value == flags:
+                        verify.inspect_binary(binary, {"goarch": "amd64"}, "go", False, None, "2.0.0")
+                    else:
+                        with self.assertRaisesRegex(ValueError, "gcflags"):
+                            verify.inspect_binary(binary, {"goarch": "amd64"}, "go", False, None, "2.0.0")
+
     def test_dynamic_loader_and_hard_float_never_pass_static_mips_check(self):
         with tempfile.TemporaryDirectory() as temporary:
             binary = Path(temporary) / "srunnet"
