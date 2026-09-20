@@ -118,6 +118,9 @@ func TestARealmReportedInItsOwnFieldIsPartOfTheIdentity(t *testing.T) {
 	if identity.MatchesExpected {
 		t.Error("an account on another carrier was accepted as this one")
 	}
+	if identity.SessionUsername != "alice" {
+		t.Fatalf("DM logout must keep the reported session name: %q", identity.SessionUsername)
+	}
 
 	// And it is not appended twice when the name already carries one.
 	if got := (gatewayAnswer{UserName: "alice@cmcc", Domain: "ctcc"}).identity(); got != "alice@cmcc" {

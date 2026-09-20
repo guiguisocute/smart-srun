@@ -46,6 +46,7 @@ type portal struct {
 	// "already online, then fine" without a counter of its own.
 	loginBodies []string
 	logoutBody  string
+	logoutName  string // When set, the gateway rejects synthesized realm suffixes.
 	onlineBody  string
 	onlineFails bool
 	// onlineAfter runs on each online query with the number of queries so far,
@@ -86,6 +87,9 @@ func (p *portal) serve(w http.ResponseWriter, r *http.Request) {
 		body = `{"challenge":"` + p.challenge + `","client_ip":"` + p.clientIP + `"}`
 	case r.URL.Path == logoutPath:
 		body = p.logoutBody
+		if p.logoutName != "" && r.URL.Query().Get("username") != p.logoutName {
+			body = `{"error":"some_parameter_error"}`
+		}
 		// A gateway that accepts an unbind drops the session, so the next
 		// online query says so. Without this the fake would answer "still
 		// online" forever and no logout could ever be confirmed.
@@ -385,6 +389,33 @@ func TestAnExplicitLoginClearsThisLinesSessionExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestSessionCleanupDoesNotSynthesizeARealmInTheSignedName(t *testing.T) {
+	for _, test := range []struct{ name, online, session string }{
+		{"reported other", `{"user_name":"another","domain":"ctcc","online_ip":"10.0.0.77"}`, "another"},
+		{"stale own", offlineAnswer, "2020123456"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := newPortal(t)
+			p.loginBodies = []string{`{"error":"ip_already_online_error"}`, `{"error":"ok"}`}
+			p.onlineBody, p.logoutName = test.online, test.session
+			p.onlineAfter = func(count int) {
+				if count > 1 {
+					p.onlineBody = `{"user_name":"2020123456","domain":"cmcc","online_ip":"10.0.0.77"}`
+				}
+			}
+			worker, _ := workerFor(t, p, &fakeBinder{})
+			worker.settings.(*fakeSettings).cfg.CampusAccounts[0].OperatorSuffix = "cmcc"
+			out := runWorker(t, worker, KindLogin)
+			if out.State != StateSucceeded || p.count(logoutPath) != 1 || p.count(portalPath) != 2 {
+				t.Fatalf("cleanup and verified retry: %+v / %v", out, p.seen())
+			}
+			if out.Observation.Identity != "2020123456@cmcc" {
+				t.Fatal("successful retry lost its verified realm")
+			}
+		})
+	}
+}
+
 // And clearing really is once. A gateway that still says the line is taken is
 // not answered with another logout.
 //
@@ -573,6 +604,35 @@ func TestAManualLogoutActsOnTheIdentityThisLineReports(t *testing.T) {
 	}
 	if n := p.count(logoutPath); n != 1 {
 		t.Errorf("sent %d logouts, want 1", n)
+	}
+}
+
+func TestLogoutUsesReportedSessionNameButKeepsRealmIdentityChecks(t *testing.T) {
+	for _, test := range []struct {
+		name, body, session string
+		kind                Kind
+		want                State
+	}{
+		{"own separate realm", `{"user_name":"2020123456","domain":"cmcc","online_ip":"10.0.0.77"}`, "2020123456", KindLogout, StateSucceeded},
+		{"other realm automatic", `{"user_name":"2020123456","domain":"ctcc","online_ip":"10.0.0.77"}`, "2020123456", KindForcedLogout, StateFailed},
+		{"other identity manual", `{"user_name":"another","domain":"ctcc","online_ip":"10.0.0.77"}`, "another", KindLogout, StateSucceeded},
+		{"realm already in name", `{"user_name":"2020123456@cmcc","online_ip":"10.0.0.77"}`, "2020123456@cmcc", KindLogout, StateSucceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := newPortal(t)
+			p.onlineBody, p.logoutName = test.body, test.session
+			worker, _ := workerFor(t, p, &fakeBinder{})
+			worker.settings.(*fakeSettings).cfg.CampusAccounts[0].OperatorSuffix = "cmcc"
+			// Invoke the shared logout use case directly so the quiet-hours
+			// admission clock cannot hide the automatic identity guard.
+			out := worker.logout(t.Context(), Action{Request: Request{Kind: test.kind, AccountID: "c1"}}, func(Phase) {})
+			if out.State != test.want {
+				t.Fatalf("logout: %+v", out)
+			}
+			if test.kind == KindForcedLogout && p.count(logoutPath) != 0 {
+				t.Fatal("automatic logout ended another realm's session")
+			}
+		})
 	}
 }
 

@@ -298,13 +298,13 @@ func (a *Authenticator) settleAlreadyOnline(ctx context.Context,
 		// An explicit request may clear this line's session -- and it clears
 		// the identity the query just returned, not a name somebody passed in.
 		return a.clearAndRetry(ctx, transaction, prepared,
-			identity.Username, report)
+			identity.SessionUsername, identity.Username, report)
 
 	default:
 		// Nobody is online at this address, so the session the gateway is
 		// refusing over is on the one before the lease changed.
 		return a.clearAndRetry(ctx, transaction, prepared,
-			prepared.username, report)
+			prepared.account.UserID, prepared.username, report)
 	}
 }
 
@@ -343,12 +343,12 @@ func (a *Authenticator) attemptLogin(ctx context.Context,
 // clearAndRetry unbinds one session and logs in once more.
 func (a *Authenticator) clearAndRetry(ctx context.Context,
 	transaction *auth.Transaction, prepared *attempt,
-	username string, report func(Phase)) Outcome {
+	sessionUsername, identity string, report func(Phase)) Outcome {
 
 	report(PhaseLogout)
-	cleared, err := transaction.Logout(ctx, username, "")
+	cleared, err := transaction.Logout(ctx, sessionUsername, "")
 	if err != nil {
-		return prepared.failed(a, err, domain.AuthVerifiedOther, username)
+		return prepared.failed(a, err, domain.AuthVerifiedOther, identity)
 	}
 	if cleared.State == domain.AuthRejected {
 		// The gateway refused the unbind. Logging in again on the strength of a
@@ -356,7 +356,7 @@ func (a *Authenticator) clearAndRetry(ctx context.Context,
 		return prepared.failed(a,
 			domain.Errorf(domain.CodeConflict,
 				"网关拒绝了清理旧会话的请求：%s", gatewayWords(cleared)),
-			domain.AuthVerifiedOther, username)
+			domain.AuthVerifiedOther, identity)
 	}
 
 	result, err := a.attemptLogin(ctx, transaction, prepared, report)
@@ -370,7 +370,7 @@ func (a *Authenticator) clearAndRetry(ctx context.Context,
 		return prepared.failed(a,
 			domain.Errorf(domain.CodeConflict,
 				"清理旧会话后网关仍报该线路已有会话"),
-			domain.AuthAccepted, username)
+			domain.AuthAccepted, identity)
 	}
 	if result.State == domain.AuthRejected {
 		return prepared.failed(a,
@@ -428,7 +428,7 @@ func (a *Authenticator) logout(ctx context.Context, action Action,
 	}
 
 	report(PhaseLogout)
-	result, err := transaction.Logout(ctx, identity.Username, identity.ClientIP)
+	result, err := transaction.Logout(ctx, identity.SessionUsername, identity.ClientIP)
 	if err != nil {
 		return prepared.failed(a, err, identity.State(), identity.Username)
 	}

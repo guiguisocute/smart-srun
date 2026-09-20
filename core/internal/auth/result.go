@@ -44,7 +44,11 @@ type Identity struct {
 	// Username as the gateway reported it, including a realm the gateway
 	// reported separately.
 	Username string
-	ClientIP string
+	// SessionUsername is user_name exactly as reported (without synthesizing a
+	// separately returned realm). The signed DM logout uses this name, while
+	// Username retains the realm for identity checks and observations.
+	SessionUsername string
+	ClientIP        string
 	// MatchesExpected is whether this is the account that was asked about.
 	// See sameAccount for what that means and what it deliberately refuses.
 	MatchesExpected bool
@@ -171,6 +175,7 @@ func readIdentity(payload json.RawMessage, expected string) (Identity, error) {
 		return Identity{
 			Present:         true,
 			Username:        username,
+			SessionUsername: trimIdentity(answer.UserName),
 			ClientIP:        firstNonEmpty(answer.ClientIP, answer.OnlineIP),
 			MatchesExpected: sameAccount(username, expected),
 		}, nil
