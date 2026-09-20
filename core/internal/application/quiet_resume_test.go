@@ -53,3 +53,16 @@ func TestQuietResumeRejectsChangedConfigClockAndOwnership(t *testing.T) {
 		})
 	}
 }
+
+func TestManualQuietResumeDoesNotSkipManagedWiredLogout(t *testing.T) {
+	settings := quietWorld(t)
+	quiet := policy.EvaluateQuiet(settings.cfg.Quiet, maintainEpoch)
+	resume := QuietResume{Revision: settings.cfg.Revision, Occurrence: quiet.Occurrence,
+		AccountID: "c1", HotspotID: "h1", StartedAt: maintainEpoch, SweepPending: true}
+	sink := &recorder{}
+	loop := NewMaintainer(MaintainerOptions{Settings: settings, Clock: faketime.New(maintainEpoch), Submit: sink.submit, ResumeQuiet: &resume})
+	loop.tick(t.Context(), maintainEpoch)
+	if len(sink.submitted) != 1 || sink.submitted[0].Kind != KindForcedLogout {
+		t.Fatalf("manual hotspot was incorrectly treated as a completed logout sweep: %+v", sink.submitted)
+	}
+}

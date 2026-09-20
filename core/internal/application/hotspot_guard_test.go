@@ -52,8 +52,12 @@ func TestHotspotMaintenanceSurvivesFreshWorkerWithoutReassociation(t *testing.T)
 	settings.cfg.Quiet = domain.QuietConfig{Enabled: true, ForceLogout: true, Start: at(t, "20:00"), End: at(t, "21:00")}
 	worker.clock = faketime.New(maintainEpoch)
 	out := worker.Run(t.Context(), Action{Request: Request{Kind: KindForcedLogout, AccountID: "c1"}}, func(Phase) {})
+	if out.State != StateSucceeded || out.MaintenanceDeferred {
+		t.Fatalf("an absent campus wireless path must not block the timetable: %+v", out)
+	}
+	out = worker.Run(t.Context(), Action{Request: Request{Kind: KindLogout, AccountID: "c1"}}, func(Phase) {})
 	if out.Code != domain.CodeBindingUnavailable {
-		t.Fatalf("sweep contacted a campus portal on the hotspot: %+v", out)
+		t.Fatalf("manual logout must still refuse the wrong line: %+v", out)
 	}
 	// An explicit campus action remains allowed even while maintenance is paused.
 	settings.cfg.Quiet.Enabled = false

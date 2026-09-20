@@ -161,7 +161,7 @@ func NewMaintainer(options MaintainerOptions) *Maintainer {
 	if resume := options.ResumeQuiet; resume != nil && resume.Matches(cfg, clock.Now()) {
 		m.quietSwitch = quietSwitchState{occurrence: resume.Occurrence, hotspotID: resume.HotspotID, done: true, owned: true}
 		m.occurrence = resume.Occurrence
-		if cfg.Quiet.ForceLogout {
+		if cfg.Quiet.ForceLogout && !resume.SweepPending {
 			// A recorded transition was allowed only after the entire logout
 			// sweep completed. Do not contact those campus lines via the hotspot.
 			for _, target := range policy.ForcedLogoutTargets(&cfg) {

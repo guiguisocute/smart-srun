@@ -397,6 +397,12 @@ func (a *Authenticator) logout(ctx context.Context, action Action,
 				return failure(err)
 			}
 			if !dest.want.Satisfied(observed) {
+				if action.Request.Kind == KindForcedLogout {
+					// There is no usable campus wireless path to log out. Do not
+					// send credentials through a hotspot or retry this all night;
+					// completing this local step permits the scheduled transition.
+					return Outcome{State: StateSucceeded, Message: "校园无线未连接，未发送退出请求"}
+				}
 				return failure(domain.Errorf(domain.CodeBindingUnavailable, "当前无线连接不是该校园账号的线路，未发送退出请求"))
 			}
 		}

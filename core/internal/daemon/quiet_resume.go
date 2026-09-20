@@ -65,3 +65,26 @@ func (d *Daemon) finishQuietRecord(action application.Action, outcome applicatio
 	}
 	return outcome
 }
+
+// A manual hotspot choice during quiet hours changes the current connection,
+// not the configured morning deadline. Persist only after its selected profile
+// has been saved, so a service restart validates the correct revision.
+func (d *Daemon) retainManualQuietReturn(action application.Action, outcome application.Outcome) application.Outcome {
+	if action.Request.Kind != application.KindSwitchHotspot {
+		return outcome
+	}
+	cfg := d.config.Snapshot()
+	quiet := policy.EvaluateQuiet(cfg.Quiet, action.StartedAt)
+	if !cfg.Enabled || !cfg.Failover.Enabled || !quiet.Active || cfg.Selection.ActiveCampusID == "" {
+		return outcome
+	}
+	err := writeQuietResume(d.paths, application.QuietResume{Revision: cfg.Revision,
+		Occurrence: quiet.Occurrence, AccountID: cfg.Selection.ActiveCampusID,
+		HotspotID: action.Request.HotspotID, StartedAt: action.StartedAt, SweepPending: true})
+	if err != nil {
+		d.onError(err)
+		outcome.State, outcome.Code = application.StateFailed, domain.CodeInternal
+		outcome.Message = "热点已连接，但未能保存定时回切记录，请检查当前连接"
+	}
+	return outcome
+}

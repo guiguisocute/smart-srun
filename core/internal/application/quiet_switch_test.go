@@ -60,7 +60,7 @@ func TestQuietFailoverWaitsForLogoutAndReturnsOnlyItsOwnSwitch(t *testing.T) {
 	}
 }
 
-func TestQuietFailoverDisabledAndManualChoiceAreRespected(t *testing.T) {
+func TestQuietFailoverDisabledAndDaytimeManualChoiceAreRespected(t *testing.T) {
 	settings := quietWorld(t)
 	settings.cfg.Quiet.ForceLogout = false
 	settings.cfg.Failover.Enabled = false
@@ -72,7 +72,7 @@ func TestQuietFailoverDisabledAndManualChoiceAreRespected(t *testing.T) {
 	settings.cfg.Failover.Enabled = true
 	loop.tick(t.Context(), maintainEpoch)
 	loop.apply(finished(sink, 0, StateSucceeded), maintainEpoch)
-	loop.apply(Action{Request: Request{Kind: KindSwitchHotspot}, State: StateSucceeded}, maintainEpoch)
+	loop.apply(Action{Request: Request{Kind: KindSwitchHotspot}, StartedAt: maintainEpoch.Add(time.Hour), State: StateSucceeded}, maintainEpoch.Add(time.Hour))
 	loop.tick(t.Context(), maintainEpoch.Add(time.Hour))
 	for _, request := range sink.submitted[1:] {
 		if request.Kind == KindQuietCampus {
@@ -101,18 +101,18 @@ func TestDisabledOrExpiredQuietPolicyCannotLogOut(t *testing.T) {
 	}
 }
 
-func TestQuietWorkerRechecksWindowAndPreservesAnExistingHotspot(t *testing.T) {
+func TestQuietWorkerReusesSelectedHotspotAndRetainsTheScheduledReturn(t *testing.T) {
 	settings := switchWorld(true)
 	settings.cfg.Enabled, settings.cfg.Failover.Enabled = true, true
 	settings.cfg.Quiet = domain.QuietConfig{Enabled: true, Start: at(t, "20:00"), End: at(t, "21:00")}
-	radio := &fakeWireless{association: wifi.Association{SSID: "phone", BSSID: "aa:bb:cc:dd:ee:ff", HasIPv4: true}}
+	radio := &fakeWireless{association: wifi.Association{SSID: "phone", BSSID: "aa:bb:cc:dd:ee:ff", HasIPv4: true, Encrypted: true}}
 	worker := switcherFor(t, settings, radio)
 	clock := faketime.New(maintainEpoch)
 	worker.clock = clock
 	action := Action{Request: Request{Kind: KindQuietHotspot, AccountID: "c1", HotspotID: "h1"}}
 	out := worker.Run(t.Context(), action, func(Phase) {})
-	if !out.MaintenanceDeferred || len(radio.moves()) != 0 {
-		t.Fatalf("schedule took ownership of existing hotspot: %+v", out)
+	if out.State != StateSucceeded || out.MaintenanceDeferred || len(radio.moves()) != 0 || radio.scanCount() != 0 {
+		t.Fatalf("schedule must retain its return without changing an existing hotspot: %+v", out)
 	}
 	clock.Advance(time.Hour)
 	out = worker.Run(t.Context(), action, func(Phase) {})
@@ -124,6 +124,17 @@ func TestQuietWorkerRechecksWindowAndPreservesAnExistingHotspot(t *testing.T) {
 	out = worker.Run(t.Context(), action, func(Phase) {})
 	if !out.MaintenanceDeferred || len(radio.moves()) != 0 {
 		t.Fatalf("return action overwrote another network choice: %+v", out)
+	}
+}
+
+func TestManualHotspotDuringQuietWindowStillReturnsAtTheDeadline(t *testing.T) {
+	settings := quietWorld(t)
+	loop, sink := maintainerFor(t, settings, faketime.New(maintainEpoch))
+	loop.apply(Action{Request: Request{Kind: KindSwitchHotspot, HotspotID: "h1"},
+		StartedAt: maintainEpoch, State: StateSucceeded}, maintainEpoch)
+	loop.tick(t.Context(), maintainEpoch.Add(time.Hour))
+	if len(sink.submitted) != 1 || sink.submitted[0].Kind != KindQuietCampus || sink.submitted[0].HotspotID != "h1" {
+		t.Fatalf("manual hotspot erased the configured morning deadline: %+v", sink.submitted)
 	}
 }
 

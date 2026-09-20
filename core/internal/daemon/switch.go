@@ -41,8 +41,8 @@ func (d *Daemon) finishSwitch(action application.Action, outcome application.Out
 		selection.ActiveHotspotID = request.HotspotID
 	}
 	if selection == before.Selection {
-		d.configChanged(before.Revision) // invalidate observations from the old line
-		return outcome                   // repeating the selected target does not write flash
+		d.configChanged(before.Revision)                  // invalidate observations from the old line
+		return d.retainManualQuietReturn(action, outcome) // no persistent config write
 	}
 	updated, err := d.config.Update(before.Revision, func(cfg *domain.Config) error {
 		cfg.Selection = selection
@@ -63,7 +63,7 @@ func (d *Daemon) finishSwitch(action application.Action, outcome application.Out
 		observed.Revision = updated.Revision
 		outcome.Observation = &observed
 	}
-	return outcome
+	return d.retainManualQuietReturn(action, outcome)
 }
 
 func switchSaveFailed(outcome application.Outcome) application.Outcome {
