@@ -23,6 +23,7 @@ concurrency:
 jobs:
   candidate:
     uses: ./.github/workflows/build-go.yml
+    secrets: inherit
     with:
       version: ${{ inputs.version }}
       channel: rc
