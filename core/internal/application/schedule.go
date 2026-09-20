@@ -74,7 +74,7 @@ func (c *Coordinator) onSubmit(request Request) (Receipt, error) {
 
 	c.nextID++
 	action := &Action{
-		ID:       formatID(c.nextID),
+		ID:       c.instanceID + "-" + formatID(c.nextID),
 		ordinal:  c.nextID,
 		Request:  request,
 		Line:     c.lines(request),

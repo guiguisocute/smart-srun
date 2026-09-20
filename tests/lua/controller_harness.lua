@@ -22,6 +22,7 @@ return function(repo_root)
         commands = {},
         helpers = {},
         now = 1000,
+        security_allowed = true,
     }
 
     local function encode(value)
@@ -43,6 +44,10 @@ return function(repo_root)
             parse = function(text) return harness.parsed and harness.parsed[text] or nil end,
             stringify = encode,
         }
+    end
+    package.preload["luci.dispatcher"] = function()
+        return { context = { authsession = "browser-session" },
+            test_post_security = function() return harness.security_allowed end }
     end
     package.preload["luci.sys"] = function()
         return {

@@ -38,6 +38,28 @@ func TestARepeatedKeyReturnsTheSameAction(t *testing.T) {
 	h.expectNoStart("one key, one action")
 }
 
+func TestReceiptsCannotReferToActionsInAnotherCoordinatorLifetime(t *testing.T) {
+	old := newHarness(t, nil)
+	first := old.submit(KindLogin, "campus", "click-1")
+	old.awaitStart()
+	old.shutdown()
+
+	restarted := newHarness(t, nil)
+	second := restarted.submit(KindLogin, "campus", "click-1")
+	if second.ActionID == first.ActionID {
+		t.Fatal("restart reused an action receipt")
+	}
+	ctx, cancel := restarted.callContext()
+	defer cancel()
+	_, err := restarted.Action(ctx, first.ActionID)
+	if codeOf(t, err) != domain.CodeNotFound {
+		t.Fatalf("old receipt returned another action: %v", err)
+	}
+	if repeated := restarted.submit(KindLogin, "campus", "click-1"); repeated.ActionID != second.ActionID || !repeated.Duplicate {
+		t.Fatalf("same-lifetime idempotency changed: %+v", repeated)
+	}
+}
+
 // T23 -- the same key for different work is a conflict.
 //
 // Handing back the first action's id would report the wrong thing as finished:

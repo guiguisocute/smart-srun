@@ -151,6 +151,11 @@ end
 -- 状态改为从 Go 守护进程的组合快照读取。
 -- 轮询只读缓存：不启动服务，也不触发认证或同步探测（规范 02/03）。
 function action_status()
+    local action_id = http.formvalue("action_id")
+    if action_id ~= nil then
+        write_json_response(bridge.action_feedback(action_id))
+        return
+    end
     local payload, err = bridge.status()
     if not payload then
         payload = bridge.offline_view(rpc.message(err, "无法读取认证服务状态"), os.time())
@@ -255,10 +260,8 @@ local function shape_user_preset_store(raw, revision)
 end
 
 function action_user_presets_set()
-    if http.getenv("REQUEST_METHOD") ~= "POST" then
-        write_json_response({ ok = false, message = "仅支持 POST" })
-        return
-    end
+    local dispatcher = require "luci.dispatcher"
+    if not dispatcher.test_post_security() then return end
     local parsed = jsonc.parse(tostring(http.formvalue("data") or ""))
     if type(parsed) ~= "table" then
         write_json_response({ ok = false, message = "数据格式错误" })
@@ -567,6 +570,8 @@ local function config_write(method, params, success_message)
 end
 
 function action_enqueue()
+    local dispatcher = require "luci.dispatcher"
+    if not dispatcher.test_post_security() then return end
     local action = fv("action")
 
     if action == "force_stop" then
@@ -583,8 +588,6 @@ function action_enqueue()
     local setup_job = fv("setup_job")
     local setup_session
     if setup_job ~= "" then
-        local dispatcher = require "luci.dispatcher"
-        if not dispatcher.test_post_security() then return end
         setup_session = dispatcher.context.authsession
         if action ~= "add_campus" or type(setup_session) ~= "string" or setup_session == "" then
             write_json_response({ ok = false, message = "无线向导会话或保存操作无效", action = action })
@@ -1496,6 +1499,8 @@ function action_log_tail()
 end
 
 function action_log_clear()
+    local dispatcher = require "luci.dispatcher"
+    if not dispatcher.test_post_security() then return end
     local channel = http.formvalue("channel") or "plugin"
     if channel ~= "plugin" then
         write_json_response({ ok = false, message = "系统网络日志不能由插件清空", channel = channel })

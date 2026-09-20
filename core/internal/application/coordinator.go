@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -105,6 +106,7 @@ type Coordinator struct {
 	queueWait     time.Duration
 	actionBudget  time.Duration
 	shutdownGrace time.Duration
+	instanceID    string
 
 	calls   chan func()
 	finish  chan completion
@@ -193,6 +195,9 @@ func New(options Options) *Coordinator {
 		queueWait:     orDefault(options.QueueWait, QueueWait),
 		actionBudget:  orDefault(options.ActionBudget, ActionBudget),
 		shutdownGrace: orDefault(options.ShutdownGrace, ShutdownGrace),
+		// Receipts outlive the process in browser tabs. A fresh namespace keeps
+		// a restarted daemon from assigning an old receipt to unrelated work.
+		instanceID: rand.Text(),
 
 		calls:     make(chan func()),
 		done:      make(chan struct{}),

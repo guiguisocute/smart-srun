@@ -89,10 +89,13 @@
     xhr.send(null);
   }
 
+  function requestToken() {
+    var tokenNode = document.querySelector('input[name="token"]');
+    return (tokenNode ? tokenNode.value : ((window.L && L.env) ? L.env.token : '')) || '';
+  }
+
   function startUpdate(planId, callback) {
     var xhr = new XMLHttpRequest();
-    var tokenNode = document.querySelector('input[name="token"]');
-    var token = tokenNode ? tokenNode.value : ((window.L && L.env) ? L.env.token : '');
     xhr.open('POST', UPDATE_START_URL, true);
     xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
     xhr.onreadystatechange = function() {
@@ -100,7 +103,7 @@
       if (xhr.status !== 200) { callback(new Error('http_' + xhr.status)); return; }
       try { callback(null, JSON.parse(xhr.responseText || '{}')); } catch (err) { callback(err); }
     };
-    xhr.send('plan_id=' + encodeURIComponent(planId || '') + '&token=' + encodeURIComponent(token || ''));
+    xhr.send('plan_id=' + encodeURIComponent(planId || '') + '&token=' + encodeURIComponent(requestToken()));
   }
 
   function isPageHidden() {
@@ -243,7 +246,7 @@
     container.style.display = '';
   }
 
-  function openBlockingFeedback(action, requestedAt) {
+  function openBlockingFeedback(action, requestedAt, actionId) {
     var result = document.getElementById('smart-srun-manual-result') || document.getElementById('smart-srun-switch-result');
     var resultPortal = document.getElementById('smart-srun-manual-portal');
     renderPortalGuidance(resultPortal, '');
@@ -293,7 +296,7 @@
           }
           unlock(text, false);
         };
-        xhr.send('action=' + encodeURIComponent('force_stop'));
+        xhr.send('action=' + encodeURIComponent('force_stop') + '&token=' + encodeURIComponent(requestToken()));
       }
     }, '强制停止');
 
@@ -328,8 +331,8 @@
 
     function checkTerminal(statusData) {
       if (!statusData) return false;
-      if (statusData.last_action !== action) return false;
-      if ((statusData.last_action_ts || 0) < requestedAt) return false;
+      if (statusData.action_id !== actionId) return false;
+      if (statusData.last_action && statusData.last_action !== action) return false;
       if (statusData.action_result === 'forced') {
         unlock(statusData.last_action_message || statusData.status || '已强制停止', false);
         return true;
@@ -353,13 +356,17 @@
         }
       });
 
-      fetchJson('/cgi-bin/luci/admin/services/smart_srun/status?_=' + Date.now(), function(err, statusData) {
+      fetchJson('/cgi-bin/luci/admin/services/smart_srun/status?action_id=' + encodeURIComponent(actionId) + '&_=' + Date.now(), function(err, statusData) {
         if (err) return;
         checkTerminal(statusData);
       });
     }
 
     L.showModal(titles[action] || '正在执行动作', [ tip, logBox, portalHelp, footer ], 'cbi-modal');
+    if (typeof actionId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(actionId)) {
+      unlock('无法读取操作回执，请查看当前状态', false);
+      return;
+    }
     timer = window.setInterval(poll, 1000);
     poll();
   }
@@ -545,6 +552,7 @@
 
   function pushUserPresetStore(callback) {
     var fd = new FormData();
+    fd.append('token', requestToken());
     fd.append('data', JSON.stringify(userPresetStore));
     var xhr = new XMLHttpRequest();
     xhr.open('POST', USER_PRESETS_SET_URL, true);
@@ -589,6 +597,7 @@
 
   window.smartSetDefault = function(kind, id) {
     var fd = new FormData();
+    fd.append('token', requestToken());
     fd.append('action', 'set_default_' + kind);
     fd.append('id', id);
     var xhr = new XMLHttpRequest();
@@ -610,6 +619,7 @@
   window.smartDelete = function(kind, id) {
     if (!confirm('确定要删除此项吗？')) return;
     var fd = new FormData();
+    fd.append('token', requestToken());
     fd.append('action', 'delete_' + kind);
     fd.append('id', id);
     var xhr = new XMLHttpRequest();
@@ -1137,6 +1147,7 @@
     }
     window.__smartModalSaving = true;
     var fd = new FormData();
+    fd.append('token', requestToken());
     fd.append('action', (modalEditId ? 'edit_' : 'add_') + modalType);
     if (modalEditId) fd.append('id', modalEditId);
 
@@ -1333,13 +1344,13 @@
           var message = (typeof data.message === 'string' && data.message !== '') ? data.message : '已提交';
           result.textContent = message;
           if (data.ok) {
-            openBlockingFeedback(action, parseInt(data.requested_at || 0, 10) || 0);
+            openBlockingFeedback(action, parseInt(data.requested_at || 0, 10) || 0, data.action_id);
           }
         } catch (e) {
           result.textContent = '提交失败';
         }
       };
-      xhr.send('action=' + encodeURIComponent(action));
+      xhr.send('action=' + encodeURIComponent(action) + '&token=' + encodeURIComponent(requestToken()));
     }
 
     login.addEventListener('click', function() { submit('manual_login'); });
@@ -1377,13 +1388,13 @@
           var message = (typeof data.message === 'string' && data.message !== '') ? data.message : '已提交';
           result.textContent = message;
           if (data.ok) {
-            openBlockingFeedback(action, parseInt(data.requested_at || 0, 10) || 0);
+            openBlockingFeedback(action, parseInt(data.requested_at || 0, 10) || 0, data.action_id);
           }
         } catch (e) {
           result.textContent = '提交失败';
         }
       };
-      xhr.send('action=' + encodeURIComponent(action));
+      xhr.send('action=' + encodeURIComponent(action) + '&token=' + encodeURIComponent(requestToken()));
     }
 
     function enqueueForceClose() {
@@ -1417,7 +1428,7 @@
           result.textContent = '强制关闭失败';
         }
       };
-      xhr.send('action=' + encodeURIComponent('force_stop'));
+      xhr.send('action=' + encodeURIComponent('force_stop') + '&token=' + encodeURIComponent(requestToken()));
     }
 
     hotspot.addEventListener('click', function() { enqueue('switch_hotspot'); });
@@ -1548,7 +1559,7 @@
           alert(data.message || '清空失败');
         }
       };
-      xhr.send('channel=plugin');
+      xhr.send('channel=plugin&token=' + encodeURIComponent(requestToken()));
     }
 
     function triggerBlobDownload(text) {

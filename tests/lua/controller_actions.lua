@@ -65,7 +65,75 @@ assert(harness.output.service == "stopped", harness.output.service)
 assert(harness.output.connectivity_level == "offline")
 harness.responses["status.get"] = RUNNING
 
+-- Overview history is in completion order; wall-clock corrections must not
+-- select an older result or uplink. An ID query remains independent of both.
+local rolled = { service = "running", actions = {
+    {id = "old", kind = "switch_hotspot", state = "succeeded", ended_at = "2026-09-18T12:00:00Z"},
+    {id = "new", kind = "switch_campus", state = "succeeded", ended_at = "2026-09-18T11:00:00Z"},
+} }
+local rolled_view = harness.bridge.status_view(rolled, CONFIG)
+assert(rolled_view.last_action == "switch_campus" and rolled_view.mode == "campus")
+
+for _, state in ipairs({ "queued", "running", "succeeded", "failed", "cancelled", "interrupted" }) do
+    harness.reset()
+    harness.form = { action_id = "instance-a1" }
+    harness.responses["action.get"] = {id = "instance-a1", kind = "manual_login", state = state,
+        message = "this request", ended_at = "2026-09-18T11:00:00Z", result = { secret = "private" }}
+    controller.action_status()
+    assert(#harness.calls == 1 and #harness.helpers == 0)
+    local read = harness.calls[1]
+    assert(read.method == "action.get" and not read.started)
+    assert(read.params.action_id == "instance-a1" and read.params.session == nil)
+    assert(harness.output.action_id == "instance-a1" and harness.output.last_action_message == "this request")
+    local expected = ({queued = "pending", running = "pending", succeeded = "ok", failed = "error",
+        cancelled = "forced", interrupted = "forced"})[state]
+    assert(harness.output.action_result == expected)
+    assert(harness.output.result == nil)
+end
+
+for _, response in ipairs({
+    {id = "instance-a2", kind = "manual_login", state = "succeeded", message = "someone else"},
+    {id = "instance-a1", kind = "detect_operators", state = "succeeded", result = { secret = "private" }},
+    {id = "instance-a1", kind = "manual_login", state = "unknown"},
+    {error = {code = "NotFound"}}, {error = {code = "ServiceStopped", message = "认证服务未在运行"}},
+}) do
+    harness.reset()
+    harness.responses["action.get"] = response
+    controller.action_status()
+    assert(harness.output.action_id == "instance-a1" and harness.output.action_result == "error")
+    assert(harness.output.last_action == "" and harness.output.result == nil)
+    assert(#harness.calls == 1 and not harness.calls[1].started and #harness.helpers == 0)
+end
+for _, invalid in ipairs({ "", string.rep("a", 65), "a/1", "a 1", {} }) do
+    harness.reset()
+    harness.form = { action_id = invalid }
+    controller.action_status()
+    assert(harness.output.action_result == "error" and #harness.calls == 0)
+end
+harness.form = {}
+
 -- A manual action names the active account and carries the revision it read.
+-- Rejected method/token checks must run before any read that starts a service,
+-- submission, config write, log clear or lifecycle helper.
+for _, action in ipairs({ "manual_login", "manual_logout", "switch_campus", "switch_hotspot",
+    "force_stop", "add_campus", "edit_campus", "delete_campus", "set_default_campus",
+    "add_hotspot", "edit_hotspot", "delete_hotspot", "set_default_hotspot" }) do
+    harness.reset()
+    harness.security_allowed = false
+    harness.form = { action = action }
+    controller.action_enqueue()
+    assert(#harness.calls == 0 and #harness.helpers == 0, action .. " bypassed security rejection")
+end
+for _, handler in ipairs({controller.action_log_clear, controller.action_user_presets_set}) do
+    harness.reset()
+    harness.env = { REQUEST_METHOD = "POST" }
+    harness.form = { data = "presets" }
+    harness.parsed = { presets = { presets = {}, operators = {} } }
+    handler()
+    assert(#harness.calls == 0 and #harness.helpers == 0, "write endpoint bypassed security rejection")
+end
+harness.security_allowed = true
+
 harness.reset()
 harness.responses["action.submit"] = { action_id = "a2", state = "queued" }
 harness.form = { action = "manual_login" }

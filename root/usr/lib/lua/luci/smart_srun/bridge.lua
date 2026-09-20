@@ -490,15 +490,13 @@ end
 -- failed left the uplink where it was, and reporting the requested mode would
 -- describe a network the device is not on.
 local function mode_of(snapshot)
-    local mode, best = "campus", nil
+    local mode = "campus"
     for _, action in ipairs(snapshot.actions or {}) do
         if action.state == "succeeded" and action.ended_at
             and (action.kind == "switch_campus" or action.kind == "switch_hotspot") then
-            local ended = M.utc_seconds(action.ended_at)
-            if ended and (not best or ended >= best) then
-                best = ended
-                mode = action.kind == "switch_hotspot" and "hotspot" or "campus"
-            end
+            -- Retained terminals are ordered by retirement, including when
+            -- the router's wall clock moves backwards during a switch.
+            mode = action.kind == "switch_hotspot" and "hotspot" or "campus"
         end
     end
     return mode
@@ -553,10 +551,7 @@ function M.status_view(snapshot, config, now)
             end
             if feedback then feedback_pending = true end
         elseif feedback and ACTION_RESULT[state] then
-            local ended = M.utc_seconds(action.ended_at)
-            if ended and (not last_ended or ended >= last_ended) then
-                last, last_ended = action, ended
-            end
+            last, last_ended = action, M.utc_seconds(action.ended_at)
         end
     end
     -- A new manual request clears the old terminal message until it completes.
@@ -565,9 +560,8 @@ function M.status_view(snapshot, config, now)
     local written = M.utc_seconds(snapshot.written_at)
     local last_action_ts = 0
     if last_ended and written then
-        -- Ages, not absolute times: both timestamps come from the daemon's
-        -- clock and the page's comes from this one, so only their difference
-        -- carries over safely.
+        -- Display only. Wall clocks can move backwards; the dialog uses the
+        -- receipt ID and never uses this timestamp as proof of completion.
         last_action_ts = now - (written - last_ended)
     end
 
@@ -756,6 +750,36 @@ function M.status()
     end
     local config = rpc.call("config.get", nil) or {}
     return M.status_view(snapshot, config, os.time())
+end
+
+-- A dialog reads its own receipt, not the overview's latest manual action.
+-- Do not start/replay work or expose discovery results through this channel.
+function M.action_feedback(action_id)
+    local id = type(action_id) == "string" and action_id or ""
+    local payload = { action_id = id, action_result = "error", last_action = "",
+        last_action_message = "操作记录已失效，请查看当前状态", last_action_portal_url = "" }
+    if #id == 0 or #id > 64 or not id:match("^[%w_-]+$") then
+        payload.action_id = ""
+        payload.last_action_message = "操作编号无效"
+        return payload
+    end
+    -- session is a discovery owner guard, not a generic LuCI auth parameter.
+    -- Access to this controller already requires an authenticated LuCI user.
+    local action, err = rpc.call("action.get", { action_id = id })
+    if not action then
+        if err and err.code ~= "NotFound" then
+            payload.last_action_message = rpc.message(err, payload.last_action_message)
+        end
+        return payload
+    end
+    if action.id ~= id or not FEEDBACK_ACTION[action.kind] then return payload end
+    local result = ACTION_RESULT[action.state]
+    if action.state == "queued" or action.state == "running" then result = "pending" end
+    if not result then return payload end
+    payload.last_action = action.kind
+    payload.action_result = result
+    payload.last_action_message = tostring(action.message or "")
+    return payload
 end
 
 return M

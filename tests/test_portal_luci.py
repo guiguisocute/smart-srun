@@ -16,7 +16,16 @@ CBI_FILE = REPO_ROOT / "root/usr/lib/lua/luci/model/cbi/smart_srun.lua"
 
 
 class PortalLuciTests(unittest.TestCase):
-    def _run_ui(self, status):
+    def test_mutation_handlers_send_csrf_token(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed")
+        subprocess.run(
+            [node, str(REPO_ROOT / "tests/js/luci_action_transport_test.js"), str(JS_FILE)],
+            check=True, capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
+
+    def _run_ui(self, status, receipt="instance-a1"):
         node = shutil.which("node")
         if not node:
             self.skipTest("node is not installed")
@@ -75,13 +84,13 @@ const context = {
   Date, JSON
 };
 vm.runInNewContext(source, context);
-context.window.smartOpenBlockingFeedback('manual_login', 100);
+context.window.smartOpenBlockingFeedback('manual_login', 100, JSON.parse(process.argv[3]));
 console.log(JSON.stringify({result: nodes['smart-srun-manual-result'].textContent,
   tip: modal[0].textContent, portal: modal[2].children,
   resultPortal: nodes['smart-srun-manual-portal'].children, urls, cleared}));
 """
         result = subprocess.run(
-            [node, "-e", script, json.dumps(status), str(JS_FILE)],
+            [node, "-e", script, json.dumps(status), str(JS_FILE), json.dumps(receipt)],
             stdin=subprocess.DEVNULL,
             check=True,
             capture_output=True,
@@ -92,6 +101,7 @@ console.log(JSON.stringify({result: nodes['smart-srun-manual-result'].textConten
 
     def _status(self, **extra):
         status = {
+            "action_id": "instance-a1",
             "last_action": "manual_login",
             "last_action_ts": 101,
             "action_result": "error",
@@ -128,11 +138,27 @@ console.log(JSON.stringify({result: nodes['smart-srun-manual-result'].textConten
         self.assertEqual("后续守护状态", rendered["tip"])
         self.assertEqual([], rendered["portal"])
 
-    def test_stale_action_does_not_finish_current_modal(self):
-        rendered = self._run_ui(self._status(last_action_ts=99))
+    def test_another_actions_result_does_not_finish_current_modal(self):
+        rendered = self._run_ui(self._status(action_id="instance-a2"))
         self.assertEqual(0, rendered["cleared"])
         self.assertEqual([], rendered["portal"])
         self.assertIn("正在执行", rendered["tip"])
+
+    def test_clock_rollback_cannot_hide_own_terminal_result(self):
+        rendered = self._run_ui(self._status(last_action_ts=-3600))
+        self.assertEqual(1, rendered["cleared"])
+        self.assertIn("尚未联网", rendered["tip"])
+        self.assertTrue(any("status?action_id=instance-a1&" in url for url in rendered["urls"]))
+
+    def test_lost_history_or_stopped_service_is_a_closable_error(self):
+        rendered = self._run_ui(self._status(last_action="", last_action_message="操作记录已失效"))
+        self.assertEqual("操作记录已失效", rendered["tip"])
+        self.assertEqual(1, rendered["cleared"])
+
+    def test_missing_receipt_does_not_poll_global_state(self):
+        rendered = self._run_ui(self._status(), receipt=None)
+        self.assertIn("无法读取操作回执", rendered["tip"])
+        self.assertEqual([], rendered["urls"])
 
     def test_unsafe_portal_urls_are_never_rendered(self):
         for url in (
