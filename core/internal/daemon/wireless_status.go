@@ -14,16 +14,18 @@ import (
 // (which includes household Wi-Fi keys). Status polling reads this cache and
 // cannot trigger scans, authentication, or shell commands.
 type WirelessView struct {
-	State     string `json:"state"`
-	Radio     string `json:"radio,omitempty"`
-	Section   string `json:"section,omitempty"`
-	Device    string `json:"device,omitempty"`
-	Interface string `json:"iface,omitempty"`
-	Address   string `json:"address,omitempty"`
-	SSID      string `json:"ssid,omitempty"`
-	BSSID     string `json:"bssid,omitempty"`
-	Signal    int    `json:"signal,omitempty"`
-	Channel   int    `json:"channel,omitempty"`
+	State        string              `json:"state"`
+	Radio        string              `json:"radio,omitempty"`
+	Section      string              `json:"section,omitempty"`
+	Device       string              `json:"device,omitempty"`
+	Interface    string              `json:"iface,omitempty"`
+	Address      string              `json:"address,omitempty"`
+	SSID         string              `json:"ssid,omitempty"`
+	BSSID        string              `json:"bssid,omitempty"`
+	Signal       int                 `json:"signal,omitempty"`
+	Channel      int                 `json:"channel,omitempty"`
+	HotspotID    string              `json:"hotspot_id,omitempty"`
+	Connectivity domain.Connectivity `json:"connectivity,omitempty"`
 }
 
 type wirelessObservation struct {
@@ -52,11 +54,19 @@ func (o *wirelessObservation) store(view WirelessView, revision uint64) {
 func (d *Daemon) observeWireless(ctx context.Context, adapter *openwrt.Adapter) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+	monitor := hotspotMonitor{read: func(ctx context.Context, cfg domain.Config) WirelessView {
+		return readWirelessView(ctx, adapter, cfg)
+	}, resolve: adapter.ResolveBinding, probe: probeHotspotBinding}
 	for {
 		cfg := d.config.Snapshot()
 		read, cancel := context.WithTimeout(ctx, 3*time.Second)
 		view := readWirelessView(read, adapter, cfg)
 		cancel()
+		view = monitor.current(cfg, view, time.Now())
+		// Publish link loss or a changed connection before waiting for HTTP.
+		d.wirelessState.store(view, cfg.Revision)
+		d.markDirty()
+		view = monitor.refresh(ctx, cfg, view, time.Now())
 		d.wirelessState.store(view, cfg.Revision)
 		d.markDirty()
 		select {

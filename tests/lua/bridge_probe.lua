@@ -302,6 +302,41 @@ equal("status.mode_after_switch", switched_view.current_mode, "hotspot")
 equal("status.mode_label_hotspot", switched_view.mode_label, "热点模式")
 equal("status.failed_switch_result", switched_view.action_result, "error")
 
+-- Hotspot connectivity never inherits a campus identity or a campus probe.
+-- The observed profile also survives service restart/action-history expiry.
+local hotspot_snapshot = { service = "running", enabled = false, accounts = snapshot.accounts,
+    actions = {}, wireless = { state = "associated", hotspot_id = "h1", radio = "radio0",
+        ssid = "iPhone", iface = "wwan", device = "phy0-sta0", address = "192.0.2.2" } }
+for _, case in ipairs({
+    { "InternetReachable", "热点已联网", "online", "互联网可达" },
+    { "Limited", "热点联网受限", "limited", "已连接但受限" },
+    { "Offline", "热点联网检测失败", "offline", "互联网探测未通过" },
+    { "Unknown", "热点已连接", "offline", "等待联网检测" },
+}) do
+    hotspot_snapshot.wireless.connectivity = case[1]
+    local result = bridge.status_view(hotspot_snapshot, CONFIG, 1000)
+    equal("hotspot.mode", result.mode, "hotspot")
+    equal("hotspot.status_" .. case[1], result.status, case[2])
+    equal("hotspot.level_" .. case[1], result.connectivity_level, case[3])
+    equal("hotspot.connectivity_" .. case[1], result.connectivity, case[4])
+    equal("hotspot.no_campus_identity", result.online_account_label, "")
+    equal("hotspot.own_interface", result.current_iface, "wwan")
+    equal("hotspot.own_address", result.current_ip, "192.0.2.2")
+end
+hotspot_snapshot.accounts = {}
+hotspot_snapshot.wireless.address = ""
+equal("hotspot.awaiting_lease", bridge.status_view(hotspot_snapshot, CONFIG, 1000).status, "热点等待 IP 地址")
+hotspot_snapshot.actions = switched.actions
+hotspot_snapshot.wireless = { state = "disconnected" }
+local disconnected_hotspot = bridge.status_view(hotspot_snapshot, CONFIG, 1000)
+equal("hotspot.disconnected", disconnected_hotspot.status, "热点未连接")
+equal("hotspot.no_old_ip", disconnected_hotspot.current_ip, "")
+hotspot_snapshot.wireless = nil
+equal("hotspot.expired", bridge.status_view(hotspot_snapshot, CONFIG, 1000).status, "正在读取热点状态")
+hotspot_snapshot.wireless = {state = "associated", hotspot_id = "h1", address = "192.0.2.2", connectivity = "InternetReachable"}
+hotspot_snapshot.service = "stopped"
+equal("hotspot.stopped", bridge.status_view(hotspot_snapshot, CONFIG, 1000).connectivity_level, "offline")
+
 -- A cancelled action is "forced", which is what the dialog's stop button means.
 local cancelled = {
     service = "running", enabled = true, written_at = "2026-09-18T12:00:10Z", accounts = {},

@@ -491,7 +491,15 @@ end
 -- The last switch that succeeded, not the last one submitted: an attempt that
 -- failed left the uplink where it was, and reporting the requested mode would
 -- describe a network the device is not on.
-local function mode_of(snapshot)
+local function mode_of(snapshot, account)
+    local wireless = type(snapshot.wireless) == "table" and snapshot.wireless or {}
+    if wireless.state == "associated" then
+        if tostring(wireless.hotspot_id or "") ~= "" then return "hotspot" end
+        if account and account.access_mode ~= "wired"
+            and wireless.radio == account.radio and wireless.ssid == account.ssid then
+            return "campus"
+        end
+    end
     local mode = "campus"
     for _, action in ipairs(snapshot.actions or {}) do
         if action.state == "succeeded" and action.ended_at
@@ -502,6 +510,27 @@ local function mode_of(snapshot)
         end
     end
     return mode
+end
+
+local function hotspot_status(wireless)
+    if wireless.state == "disconnected" then
+        return "热点未连接", CONNECTIVITY.Offline
+    elseif wireless.state == "unavailable" or wireless.state == "ambiguous" then
+        return "无法读取热点连接", CONNECTIVITY.Unknown
+    elseif wireless.state ~= "associated" then
+        return "正在读取热点状态", CONNECTIVITY.Unknown
+    elseif tostring(wireless.address or "") == "" then
+        return "热点等待 IP 地址", CONNECTIVITY.Unknown
+    end
+    local level = tostring(wireless.connectivity or "")
+    if level == "InternetReachable" then
+        return "热点已联网", CONNECTIVITY.InternetReachable
+    elseif level == "Limited" then
+        return "热点联网受限", CONNECTIVITY.Limited
+    elseif level == "Offline" then
+        return "热点联网检测失败", { text = "互联网探测未通过", level = "offline" }
+    end
+    return "热点已连接", { text = "等待联网检测", level = "offline" }
 end
 
 -- status_view is the one combined answer the page polls.
@@ -515,7 +544,8 @@ function M.status_view(snapshot, config, now)
     local active_id = tostring(selection.active_campus_id or "")
     local account = account_by_id(config, active_id)
     local view = view_by_id(snapshot, active_id)
-    local mode = mode_of(snapshot)
+    local wireless = type(snapshot.wireless) == "table" and snapshot.wireless or {}
+    local mode = mode_of(snapshot, account)
 
     local wired = account ~= nil and tostring(account.access_mode or "") == "wired"
     local mode_label = "未知模式"
@@ -531,6 +561,9 @@ function M.status_view(snapshot, config, now)
     local status = "未知"
     if not running then
         status = "认证服务已停止"
+        connectivity = CONNECTIVITY.Unknown
+    elseif mode == "hotspot" then
+        status, connectivity = hotspot_status(wireless)
     elseif not account then
         status = "尚未配置校园网账号"
     elseif not view then
@@ -566,7 +599,7 @@ function M.status_view(snapshot, config, now)
     end
 
     local link_ready = view ~= nil and tostring(view.link or "") == "Ready"
-    local line = type(view) == "table" and type(view.line) == "table" and view.line or {}
+    local line = mode ~= "hotspot" and type(view) == "table" and type(view.line) == "table" and view.line or {}
     -- Quiet hours suspend a service the user has switched on; the page has
     -- always shown that separately from the switch itself.
     local paused = {}
@@ -583,7 +616,7 @@ function M.status_view(snapshot, config, now)
         pending_action = pending,
         current_campus_access_mode = access_mode,
         campus_account_label = account and tostring(account.label or "") or "",
-        online_account_label = view and tostring(view.identity or "") or "",
+        online_account_label = mode ~= "hotspot" and view and tostring(view.identity or "") or "",
         campus_ssid = account and tostring(account.ssid or "") or "",
         campus_bssid = account and tostring(account.bssid or "") or "",
         current_ssid = "",
@@ -619,11 +652,10 @@ function M.status_view(snapshot, config, now)
     -- The observed line is preferred; the configured one only stands in while
     -- the link is ready and nothing has reported a device yet, which is the
     -- first moment after a save.
-    if payload.current_iface == "" and link_ready and account and wired then
+    if mode ~= "hotspot" and payload.current_iface == "" and link_ready and account and wired then
         payload.current_iface = tostring(account.wired_iface or "")
     end
     if running and (mode == "hotspot" or (account and not wired)) then
-        local wireless = type(snapshot.wireless) == "table" and snapshot.wireless or {}
         payload.current_wireless_ifname = tostring(wireless.device or "")
         payload.ap_selection_policy = mode == "hotspot" and "auto"
             or M.normalize_ap_selection(account.ap_selection, account.bssid)
@@ -656,6 +688,9 @@ function M.status_view(snapshot, config, now)
     end
 
     local hotspot_id = tostring(selection.active_hotspot_id or "")
+    if mode == "hotspot" and tostring(wireless.hotspot_id or "") ~= "" then
+        hotspot_id = tostring(wireless.hotspot_id)
+    end
     for _, hotspot in ipairs(config.hotspot_profiles or {}) do
         if hotspot.id == hotspot_id then
             payload.hotspot_profile_label = tostring(hotspot.label or "")
