@@ -454,7 +454,7 @@ func (d *Daemon) lineOf(request application.Request) string {
 // wirelessKind reports that an action touches the radio whatever account it
 // names.
 func wirelessKind(kind application.Kind) bool {
-	return kind == application.KindSwitchHotspot
+	return kind == application.KindSwitchHotspot || kind == application.KindQuietHotspot || kind == application.KindQuietCampus
 }
 
 // onMaintenanceEvent is where the maintenance loop's narration goes until M11

@@ -46,8 +46,9 @@ type Maintainer struct {
 	reported string
 	// occurrence is the quiet-hours visit the sweep is currently recording
 	// against. policy.Sweep keys on it and does not hand it back.
-	occurrence string
-	revision   uint64
+	occurrence  string
+	revision    uint64
+	quietSwitch quietSwitchState
 }
 
 // accountState is what the loop remembers about one account between ticks.
@@ -62,6 +63,7 @@ type accountState struct {
 	inFlight string
 	// sweepAction is the forced-logout action in flight for this account.
 	sweepAction string
+	sweepDueAt  time.Time
 }
 
 // MaintenanceEvent is something the loop wants a log to record.
@@ -212,6 +214,7 @@ func (m *Maintainer) tick(ctx context.Context, now time.Time) time.Time {
 		m.occurrence = ""
 		m.reported = ""
 		m.revision = cfg.Revision
+		m.quietSwitch = quietSwitchState{}
 	}
 
 	quiet := policy.EvaluateQuiet(cfg.Quiet, now)
@@ -233,9 +236,10 @@ func (m *Maintainer) tick(ctx context.Context, now time.Time) time.Time {
 	// quiet hours that stop maintenance are the same quiet hours that require
 	// the logout. Checking AllowsMaintenance first would mean the window could
 	// never sweep.
-	if quiet.Active && quiet.ForceLogout {
+	if cfg.Enabled && quiet.Active && quiet.ForceLogout {
 		m.sweepQuietHours(ctx, &cfg, quiet, now)
 	}
+	m.scheduleQuietSwitch(ctx, &cfg, quiet, now)
 
 	if m.pause.AllowsMaintenance() {
 		m.maintain(ctx, &cfg, now)
@@ -258,6 +262,11 @@ func (m *Maintainer) maintain(ctx context.Context, cfg *domain.Config, now time.
 
 	blocked := m.reportConflicts(targets, now)
 	for _, target := range targets {
+		if target.AccountID == cfg.Selection.ActiveCampusID && m.quietSwitch.owned {
+			// The return action verifies the campus path before retiring the
+			// scheduled hotspot. Other managed wired lines remain independent.
+			continue
+		}
 		if blocked[target.AccountID] {
 			// Two accounts on one line cannot both be online; whichever
 			// authenticates second knocks the first off and they take turns
@@ -286,7 +295,7 @@ func (m *Maintainer) sweepQuietHours(ctx context.Context, cfg *domain.Config,
 	pending := m.sweep.Pending(quiet.Occurrence, policy.ForcedLogoutTargets(cfg))
 	for _, target := range pending {
 		state := m.stateFor(target.AccountID)
-		if state.sweepAction != "" || state.inFlight != "" {
+		if state.sweepAction != "" || state.inFlight != "" || now.Before(state.sweepDueAt) {
 			continue
 		}
 		receipt, err := m.submit(ctx, Request{
@@ -294,9 +303,10 @@ func (m *Maintainer) sweepQuietHours(ctx context.Context, cfg *domain.Config,
 			CheckRevision:  true,
 			ConfigRevision: cfg.Revision,
 			AccountID:      target.AccountID,
-			// The occurrence is in the key, so the same account is swept once
-			// per visit to the window and not once per tick for six hours.
-			IdempotencyKey: "sweep:" + quiet.Occurrence + ":" + target.AccountID + ":" + strconv.FormatUint(cfg.Revision, 10),
+			// Sweep records successful targets once per occurrence. A failed
+			// action needs a fresh key: reusing its key just returns the cached
+			// failure from the coordinator instead of running a retry.
+			IdempotencyKey: m.key("sweep:"+quiet.Occurrence+":"+strconv.FormatUint(cfg.Revision, 10), target.AccountID),
 		})
 		if err != nil {
 			continue
@@ -331,6 +341,9 @@ func (m *Maintainer) apply(action Action, now time.Time) {
 	if action.Request.CheckRevision && action.Request.ConfigRevision != cfg.Revision {
 		return
 	}
+	if m.applyQuietSwitch(action, cfg, now) {
+		return
+	}
 	accountID := action.Request.AccountID
 	if accountID == "" {
 		return
@@ -338,7 +351,8 @@ func (m *Maintainer) apply(action Action, now time.Time) {
 	state := m.stateFor(accountID)
 	if action.ID == state.sweepAction {
 		state.sweepAction = ""
-		if action.State == StateSucceeded {
+		state.sweepDueAt = now.Add(checkInterval(&cfg))
+		if action.State == StateSucceeded && !action.MaintenanceDeferred {
 			// Only a success is recorded. A failure comes back on the next tick,
 			// which is what "仅重试失败的账号" means: the ones that worked are
 			// not swept again this occurrence.
@@ -440,7 +454,10 @@ func (m *Maintainer) nextWake(cfg *domain.Config, quiet policy.QuietState,
 	if !m.pause.AllowsMaintenance() {
 		return soonest
 	}
-	for _, state := range m.accounts {
+	for id, state := range m.accounts {
+		if id == cfg.Selection.ActiveCampusID && m.quietSwitch.owned {
+			continue
+		}
 		if state.inFlight != "" || state.dueAt.IsZero() {
 			continue
 		}

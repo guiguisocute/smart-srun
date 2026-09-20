@@ -53,6 +53,9 @@ const (
 	KindMaintain Kind = "maintain"
 	// KindForcedLogout is one account's share of the quiet-hours sweep.
 	KindForcedLogout Kind = "forced_logout"
+	// Quiet transitions are scheduler-only and retain automatic identity rules.
+	KindQuietHotspot Kind = "quiet_hotspot"
+	KindQuietCampus  Kind = "quiet_campus"
 	// KindPresetsRefresh reads a selected line without authenticating an account.
 	KindPresetsRefresh Kind = "presets_refresh"
 	// KindDetectACID reads portal pages on a selected line without credentials.
@@ -66,7 +69,7 @@ const (
 )
 
 var kinds = []Kind{KindLogin, KindLogout, KindRelogin, KindSwitchCampus,
-	KindSwitchHotspot, KindMaintain, KindForcedLogout, KindPresetsRefresh, KindDetectACID, KindDetectEnvironment, KindDetectOperators, KindDetectIdentity, KindDetectVerify, KindWifiSetupStart, KindWifiSetupCancel}
+	KindSwitchHotspot, KindMaintain, KindForcedLogout, KindQuietHotspot, KindQuietCampus, KindPresetsRefresh, KindDetectACID, KindDetectEnvironment, KindDetectOperators, KindDetectIdentity, KindDetectVerify, KindWifiSetupStart, KindWifiSetupCancel}
 
 func (k Kind) WifiSetup() bool { return k == KindWifiSetupStart || k == KindWifiSetupCancel }
 
@@ -77,7 +80,7 @@ func (k Kind) Discovery() bool {
 func (k Kind) Valid() bool { return slices.Contains(kinds, k) }
 
 func (k Kind) switches() bool {
-	return k == KindSwitchCampus || k == KindSwitchHotspot || k.WifiSetup()
+	return k == KindSwitchCampus || k == KindSwitchHotspot || k == KindQuietHotspot || k == KindQuietCampus || k.WifiSetup()
 }
 
 // Priority is where this kind sits in spec 04's order.
@@ -87,7 +90,7 @@ func (k Kind) Priority() policy.Priority {
 		return policy.PriorityPeriodic
 	case KindMaintain:
 		return policy.PriorityMaintenance
-	case KindForcedLogout:
+	case KindForcedLogout, KindQuietHotspot, KindQuietCampus:
 		return policy.PriorityQuietBoundary
 	default:
 		return policy.PriorityUserAction
@@ -97,7 +100,7 @@ func (k Kind) Priority() policy.Priority {
 // Manual reports whether a user asked for this directly. Manual actions still
 // run while automatic authentication is switched off.
 func (k Kind) Manual() bool {
-	return k != KindMaintain && k != KindForcedLogout && k != KindPresetsRefresh
+	return k != KindMaintain && k != KindForcedLogout && k != KindQuietHotspot && k != KindQuietCampus && k != KindPresetsRefresh
 }
 
 // State is the action lifecycle from spec 04. The four terminal states are
@@ -227,7 +230,7 @@ func (r Request) Validate() error {
 	if r.AccountID == "" && r.Kind != KindSwitchHotspot && r.Kind != KindPresetsRefresh && !r.Kind.Discovery() && !r.Kind.WifiSetup() {
 		return domain.Errorf(domain.CodeInvalidArgument, "动作 %s 需要指定账号", string(r.Kind))
 	}
-	if r.Kind == KindSwitchHotspot && r.HotspotID == "" {
+	if (r.Kind == KindSwitchHotspot || r.Kind == KindQuietHotspot || r.Kind == KindQuietCampus) && r.HotspotID == "" {
 		return domain.Errorf(domain.CodeInvalidArgument, "切换热点需要指定热点")
 	}
 	if r.IdempotencyKey == "" {

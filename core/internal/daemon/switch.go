@@ -10,6 +10,13 @@ import (
 // publishing a new config cannot invalidate somebody else's running auth.
 func (d *Daemon) finishSwitch(action application.Action, outcome application.Outcome) application.Outcome {
 	request := action.Request
+	if request.Kind == application.KindQuietHotspot || request.Kind == application.KindQuietCampus {
+		// Temporary scheduling never changes the user's selected profiles.
+		if !outcome.MaintenanceDeferred {
+			d.configChanged(d.config.Revision())
+		}
+		return outcome
+	}
 	if request.Kind != application.KindSwitchCampus && request.Kind != application.KindSwitchHotspot {
 		return outcome
 	}

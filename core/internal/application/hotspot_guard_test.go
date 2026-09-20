@@ -49,11 +49,14 @@ func TestHotspotMaintenanceSurvivesFreshWorkerWithoutReassociation(t *testing.T)
 		t.Fatal("maintenance changed preference or moved the hotspot")
 	}
 	worker := switcherFor(t, settings, radio)
+	settings.cfg.Quiet = domain.QuietConfig{Enabled: true, ForceLogout: true, Start: at(t, "20:00"), End: at(t, "21:00")}
+	worker.clock = faketime.New(maintainEpoch)
 	out := worker.Run(t.Context(), Action{Request: Request{Kind: KindForcedLogout, AccountID: "c1"}}, func(Phase) {})
 	if out.Code != domain.CodeBindingUnavailable {
 		t.Fatalf("sweep contacted a campus portal on the hotspot: %+v", out)
 	}
 	// An explicit campus action remains allowed even while maintenance is paused.
+	settings.cfg.Quiet.Enabled = false
 	worker.Run(t.Context(), Action{Request: Request{Kind: KindSwitchCampus, AccountID: "c1"}}, func(Phase) {})
 	if len(radio.moves()) != 1 || radio.moves()[0].SSID != "jxnu_stu" {
 		t.Fatal("manual return to campus was suppressed")

@@ -50,6 +50,19 @@ func (c *Coordinator) onSubmit(request Request) (Receipt, error) {
 		return Receipt{}, domain.Errorf(domain.CodeBusy,
 			"动作队列已满（上限 %d 个），请稍后重试", c.queueLimit)
 	}
+	if request.Kind == KindSwitchCampus || request.Kind == KindSwitchHotspot {
+		// An explicit network choice supersedes pending schedule transitions.
+		// Cancellation retains the running worker's lock until it has stopped.
+		var superseded []string
+		for id, previous := range c.index {
+			if !previous.State.Terminal() && (previous.Request.Kind == KindQuietHotspot || previous.Request.Kind == KindQuietCampus) {
+				superseded = append(superseded, id)
+			}
+		}
+		for _, id := range superseded {
+			_ = c.onCancel(id)
+		}
+	}
 
 	c.nextID++
 	action := &Action{

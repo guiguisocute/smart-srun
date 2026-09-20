@@ -170,6 +170,8 @@ type SubmitResult struct {
 var schedulerOnly = map[application.Kind]bool{
 	application.KindMaintain:          true,
 	application.KindForcedLogout:      true,
+	application.KindQuietHotspot:      true,
+	application.KindQuietCampus:       true,
 	application.KindPresetsRefresh:    true, // submitted through presets.refresh
 	application.KindDetectACID:        true, // submitted through detect.acid
 	application.KindDetectEnvironment: true, // submitted through detect.environment

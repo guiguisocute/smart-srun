@@ -133,11 +133,20 @@ func (a *Authenticator) Run(ctx context.Context, action Action,
 		}
 	}
 	switch action.Request.Kind {
+	case KindQuietHotspot, KindQuietCampus:
+		return a.quietSwitch(ctx, action, report)
 	case KindLogin, KindRelogin, KindMaintain:
 		return a.authenticate(ctx, action, report)
 	case KindSwitchCampus:
 		return a.switchCampus(ctx, action, report)
-	case KindLogout, KindForcedLogout:
+	case KindForcedLogout:
+		cfg := a.settings.Snapshot()
+		quiet := policy.EvaluateQuiet(cfg.Quiet, a.clock.Now())
+		if !cfg.Enabled || !quiet.Active || !quiet.ForceLogout {
+			return quietSwitchDeferred("静默下线条件已变化，未发送退出请求")
+		}
+		return a.logout(ctx, action, report)
+	case KindLogout:
 		return a.logout(ctx, action, report)
 	case KindSwitchHotspot:
 		return a.switchHotspot(ctx, action, report)
@@ -181,7 +190,7 @@ func (a *Authenticator) authenticate(ctx context.Context, action Action,
 		return outcome
 	}
 	transaction := auth.NewTransaction(prepared.line, prepared.gateway)
-	if action.Request.Kind == KindMaintain {
+	if action.Request.Kind == KindMaintain || action.Request.Kind == KindQuietCampus {
 		if outcome, stop := a.checkExisting(ctx, transaction, prepared, report); stop {
 			return outcome
 		}
