@@ -23,7 +23,25 @@ func TestQuietTransitionSurvivesServiceRestartWithoutReclaimingManualHotspot(t *
 		}
 		t.Run(name, func(t *testing.T) {
 			clock := faketime.New(time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC))
-			r := start(t, func(o *Options) { o.Clock, o.Runner = clock, switchRunner{} })
+			r := start(t, func(o *Options) {
+				o.Clock, o.Runner = clock, switchRunner{}
+				// This test starts after the default daily preset refresh time.
+				// Disable that unrelated job before Run starts: otherwise its
+				// first snapshot can race with account setup and block the next
+				// config write while the refresh action is in flight.
+				cfg := config.Defaults()
+				cfg.PresetUpdates.Enabled = false
+				data, err := config.Marshal(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(o.Paths.Config, config.DirMode); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(o.Paths.ConfigFile(), data, config.FileMode); err != nil {
+					t.Fatal(err)
+				}
+			})
 			r.writeConfig("campus.upsert", `{"expected_revision":0,"account":{"user_id":"student","password":"private-password","wired_iface":"wan"}}`)
 			r.writeConfig("hotspot.upsert", `{"expected_revision":1,"profile":{"ssid":"phone","radio":"radio0","encryption":"none"}}`)
 			r.writeConfig("config.apply", `{"expected_revision":2,"settings":{"enabled":true,"quiet":{"enabled":true,"start":"20:00","end":"21:00","force_logout":true},"failover":{"enabled":true}}}`)
