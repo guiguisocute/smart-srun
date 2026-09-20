@@ -206,7 +206,7 @@ def add_release_extras(release, records, keys, fingerprints, args):
                 archive.add(path.parent/filename, arcname=target+'/'+filename)
     if args.official:
         shutil.copyfile(keys[0], output/'smart-srun-apk.pem')
-    template = ROOT/'.github'/('prerelease-template.md' if 'rc' in release['release'] else 'release-template.md')
+    template = ROOT/'.github'/'release-template.md'
     text = template.read_text(encoding='utf-8')
     replacements = {'VERSION': release['release'], 'SOURCE_COMMIT': release['source_commit'],
                     'APK_FINGERPRINT': ', '.join(sorted(fingerprints)),

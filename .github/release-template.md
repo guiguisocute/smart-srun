@@ -1,6 +1,6 @@
 # smart-srun ${VERSION}
 
-Go 正式版候选，源码 `${SOURCE_COMMIT}`。请维护者补充本次变更与验收结论后发布此草稿。
+Go 发布候选，源码 `${SOURCE_COMMIT}`。请维护者补充本次变更与验收结论后发布此草稿。
 
 ## 安装与更新
 
