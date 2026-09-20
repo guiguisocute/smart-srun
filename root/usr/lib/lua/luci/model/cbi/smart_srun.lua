@@ -902,6 +902,9 @@ if saved_preset_time and saved_preset_time:sub(4) ~= "00" then
 end
 preset_update_time:depends("preset_auto_update_enabled", "1")
 bind_text(preset_update_time, "preset_update_time", validate_hhmm)
+-- CBI calls remove for an unmet dependency. Keep the chosen time when the
+-- checkbox is off, including in the page rendered immediately after saving.
+function preset_update_time.remove() end
 preset_update_time.description = "到点后检查；错过时间会补查一次。更新失败时继续使用本地预设。"
 
 local preset_refresh = s:taboption("advanced", DummyValue, "_preset_refresh", "学校预设")

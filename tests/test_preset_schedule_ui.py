@@ -10,6 +10,44 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PresetScheduleUITests(unittest.TestCase):
+    def test_cbi_disabled_dependency_retains_saved_clock(self):
+        lua = shutil.which("lua")
+        if not lua:
+            self.skipTest("lua is not installed")
+        script = r'''
+local f = assert(io.open(arg[1], 'rb'))
+local source = f:read('*a'):gsub('\r\n', '\n'); f:close()
+local binders = assert(source:match('(local function bind_flag.-)\nlocal quiet_desc'))
+local controls = assert(source:match('(local preset_auto_update.-)\nbackoff_enable ='))
+local options = {}
+local s = {taboption=function(self, tab, kind, name)
+    local opt = {values={}}
+    function opt:value(value) self.values[value]=true end
+    function opt:depends() end
+    options[name]=opt; return opt
+end}
+for _, time in ipairs({'09:00', '23:45'}) do
+    local cfg={preset_auto_update_enabled='1', preset_update_time=time}
+    local env=setmetatable({cfg=cfg,s=s,util={trim=function(v) return v end},
+        validate_hhmm=function(v) return v end,
+        set_value=function(k,v) cfg[k]=v end}, {__index=_G})
+    local chunk=assert(loadstring(binders .. controls)); setfenv(chunk,env); chunk()
+    local toggle=options.preset_auto_update_enabled
+    local clock=options.preset_update_time
+    assert(clock.values[time] and clock:cfgvalue()==time)
+    toggle:write('main','0'); clock:remove('main')
+    assert(cfg.preset_auto_update_enabled=='0' and clock:cfgvalue()==time)
+    toggle:write('main','1')
+    assert(clock:cfgvalue()==time)
+    clock:write('main','22:00')
+    assert(cfg.preset_update_time=='22:00')
+end
+'''
+        # Lua 5.1 -e does not provide the remaining argv as arg reliably.
+        script = script.replace("arg[1]", json.dumps((ROOT / "root/usr/lib/lua/luci/model/cbi/smart_srun.lua").as_posix()))
+        result = subprocess.run([lua, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_page_open_does_not_refresh_and_manual_refresh_can_retry(self):
         node = shutil.which("node")
         if not node:
