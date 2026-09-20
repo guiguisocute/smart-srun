@@ -441,6 +441,13 @@ local ACTION_RESULT = {
     interrupted = "forced",
 }
 
+-- Only explicit login/logout/switch actions own the frozen progress dialog.
+-- Maintenance, preset refresh and wizard jobs expose their results elsewhere.
+local FEEDBACK_ACTION = {
+    manual_login = true, manual_logout = true, relogin = true,
+    switch_campus = true, switch_hotspot = true,
+}
+
 local function account_by_id(config, id)
     for _, account in ipairs(config.campus_accounts or {}) do
         if account.id == id then
@@ -534,22 +541,26 @@ function M.status_view(snapshot, config, now)
         status = LINK_TEXT[tostring(view.link or "")] or AUTH_TEXT[tostring(view.auth or "")] or "状态未知"
     end
 
-    -- Pending is the first action still on its way through the queue; the
-    -- newest terminal is the one the progress dialog is waiting to see.
-    local pending, last, last_ended = "", nil, nil
+    -- Keep background work visible in the overview without letting it replace
+    -- a manual result or hold that action's progress dialog open.
+    local pending, feedback_pending, last, last_ended = "", false, nil, nil
     for _, action in ipairs(snapshot.actions or {}) do
         local state = tostring(action.state or "")
+        local feedback = FEEDBACK_ACTION[tostring(action.kind or "")]
         if state == "queued" or state == "running" then
             if pending == "" then
                 pending = tostring(action.kind or "")
             end
-        elseif ACTION_RESULT[state] then
+            if feedback then feedback_pending = true end
+        elseif feedback and ACTION_RESULT[state] then
             local ended = M.utc_seconds(action.ended_at)
             if ended and (not last_ended or ended >= last_ended) then
                 last, last_ended = action, ended
             end
         end
     end
+    -- A new manual request clears the old terminal message until it completes.
+    if feedback_pending then last, last_ended = nil, nil end
 
     local written = M.utc_seconds(snapshot.written_at)
     local last_action_ts = 0
@@ -602,13 +613,13 @@ function M.status_view(snapshot, config, now)
         last_action_portal_url = "",
         action_result = last and ACTION_RESULT[tostring(last.state or "")] or "",
         last_action_ts = last_action_ts,
-        action_started_at = pending ~= "" and now or 0,
+        action_started_at = feedback_pending and now or 0,
         config_revision = tonumber(snapshot.config_revision) or 0,
         last_log = "",
         updated_at = now,
         ts = now,
     }
-    if pending ~= "" then
+    if feedback_pending then
         payload.action_result = "pending"
     end
     -- The observed line is preferred; the configured one only stands in while

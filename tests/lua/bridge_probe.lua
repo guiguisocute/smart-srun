@@ -232,6 +232,54 @@ local busy = {
 local busy_view = bridge.status_view(busy, CONFIG, 1000)
 equal("status.pending_kind", busy_view.pending_action, "switch_campus")
 equal("status.pending_result", busy_view.action_result, "pending")
+equal("status.pending_clears_last_action", busy_view.last_action, "")
+equal("status.pending_clears_message", busy_view.last_action_message, "")
+equal("status.pending_clears_timestamp", busy_view.last_action_ts, 0)
+
+-- Background work and wizard jobs have their own results. They must not hide
+-- the manual terminal the frozen progress dialog matches by kind and time.
+for _, state in ipairs({ "succeeded", "failed", "cancelled", "interrupted" }) do
+    for _, kind in ipairs({ "presets_refresh", "maintain", "forced_logout",
+        "quiet_hotspot", "quiet_campus", "detect_acid", "detect_verify", "wifi_setup_start" }) do
+        local mixed = {
+            service = "running", written_at = "2026-09-18T12:00:30Z", actions = {
+                { kind = "manual_logout", state = state, message = "manual result",
+                  ended_at = "2026-09-18T12:00:10Z" },
+                { kind = kind, state = "succeeded", message = "unrelated result",
+                  ended_at = "2026-09-18T12:00:20Z" },
+                { kind = "maintain", state = "running" },
+            },
+        }
+        local result = bridge.status_view(mixed, CONFIG, 1000)
+        local name = "status.manual_" .. state .. "_after_" .. kind
+        equal(name .. ".kind", result.last_action, "manual_logout")
+        equal(name .. ".message", result.last_action_message, "manual result")
+        equal(name .. ".timestamp", result.last_action_ts, 980)
+        equal(name .. ".result", result.action_result,
+            state == "succeeded" and "ok" or state == "failed" and "error" or "forced")
+        equal(name .. ".background_visible", result.pending_action, "maintain")
+        equal(name .. ".no_manual_start", result.action_started_at, 0)
+    end
+end
+
+local background_only = bridge.status_view({ actions = {
+    { kind = "presets_refresh", state = "succeeded", message = "refreshed",
+      ended_at = "2026-09-18T12:00:00Z" },
+    { kind = "maintain", state = "queued" },
+} }, CONFIG, 1000)
+equal("status.background_has_no_manual_result", background_only.action_result, "")
+equal("status.background_has_no_manual_message", background_only.last_action_message, "")
+
+for _, kind in ipairs({ "manual_login", "manual_logout", "relogin", "switch_campus", "switch_hotspot" }) do
+    local queued = bridge.status_view({ actions = {
+        { kind = "maintain", state = "running" },
+        { kind = kind, state = "queued" },
+        { kind = "manual_login", state = "succeeded", message = "old result",
+          ended_at = "2026-09-18T12:00:00Z" },
+    } }, CONFIG, 1000)
+    equal("status.queued_" .. kind, queued.action_result, "pending")
+    equal("status.queued_clears_" .. kind, queued.last_action_message, "")
+end
 
 -- Mode follows the switch that actually succeeded, not the one requested.
 local switched = {
