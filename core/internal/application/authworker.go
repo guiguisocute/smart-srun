@@ -529,6 +529,7 @@ func (a *Authenticator) observeLine(ctx context.Context, accountID,
 	}
 	binding, err := a.binder.ResolveBinding(ctx, iface, stamp)
 	if err != nil {
+		a.invalidateLine(accountID, stamp)
 		return domain.Binding{}, err
 	}
 	binding.Generation = stamp
@@ -548,6 +549,23 @@ func (a *Authenticator) observeLine(ctx context.Context, accountID,
 		a.lines.Retire(accountID, binding.Generation)
 	}
 	return binding, nil
+}
+
+// An observed outage ends this binding even if DHCP later gives back the same
+// address. Otherwise that recovery could reuse a connection from before the
+// outage. The generation check keeps a late failed observation from retiring
+// a newer binding that has already replaced it.
+func (a *Authenticator) invalidateLine(accountID string, generation uint64) {
+	a.mu.Lock()
+	previous, known := a.seen[accountID]
+	if !known || previous.Generation != generation {
+		a.mu.Unlock()
+		return
+	}
+	delete(a.seen, accountID)
+	retired := a.generation.Add(1)
+	a.mu.Unlock()
+	a.lines.Retire(accountID, retired)
 }
 
 // sameLine reports whether two observations describe the same way out.
@@ -576,11 +594,11 @@ func (a *Authenticator) confirmUnchanged(ctx context.Context, prepared *attempt)
 	}
 	now, err := a.binder.ResolveBinding(ctx, iface, prepared.binding.Generation)
 	if err != nil {
+		a.invalidateLine(prepared.account.ID, prepared.binding.Generation)
 		return err
 	}
-	if now.L3Device != prepared.binding.L3Device ||
-		now.IfIndex != prepared.binding.IfIndex ||
-		now.SourceIPv4 != prepared.binding.SourceIPv4 {
+	if !sameLine(now, prepared.binding) {
+		a.invalidateLine(prepared.account.ID, prepared.binding.Generation)
 		return domain.Errorf(domain.CodeBindingChanged,
 			"线路在取得挑战值之后发生变化，本次认证作废")
 	}
