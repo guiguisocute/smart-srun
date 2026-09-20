@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 	"github.com/matthewlu070111/smart-srun/core/internal/update"
@@ -23,6 +24,16 @@ type installedPackage struct {
 type PackageDevice struct {
 	Runner       Runner
 	Capabilities Capabilities
+}
+
+// CurrentPackageInventory does not reuse startup capability failures. Native
+// postinst can start the daemon while opkg still holds its database lock, so
+// that transient failure must not disable updates for the process lifetime.
+func CurrentPackageInventory(ctx context.Context, runner Runner, displayVersion string) (update.Inventory, error) {
+	probe, cancel := context.WithTimeout(ctx, 5*time.Second)
+	capabilities := Detect(probe, runner)
+	cancel()
+	return (PackageDevice{Runner: runner, Capabilities: capabilities}).Inventory(ctx, displayVersion)
 }
 
 func (d PackageDevice) Inventory(ctx context.Context, displayVersion string) (update.Inventory, error) {

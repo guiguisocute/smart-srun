@@ -17,15 +17,15 @@ import (
 )
 
 type updateController struct {
-	mu      sync.Mutex
-	wg      sync.WaitGroup
-	ctx     context.Context
-	cancel  context.CancelFunc
-	closing bool
-	check   update.CheckResult
-	source  update.ReleaseSource
-	device  update.Device
-	launch  func() error
+	mu        sync.Mutex
+	wg        sync.WaitGroup
+	ctx       context.Context
+	cancel    context.CancelFunc
+	closing   bool
+	check     update.CheckResult
+	source    update.ReleaseSource
+	inventory func(context.Context, string) (update.Inventory, error)
+	launch    func() error
 }
 
 type UpdateCheckParams struct {
@@ -43,12 +43,14 @@ func (d *Daemon) initUpdater(ctx context.Context, options Options) {
 	if source == nil {
 		source = update.NewSource()
 	}
-	device := options.UpdateDevice
-	if device == nil {
-		device = openwrt.PackageDevice{Runner: openwrt.Runner{}, Capabilities: d.capabilities}
+	inventory := func(ctx context.Context, version string) (update.Inventory, error) {
+		return openwrt.CurrentPackageInventory(ctx, openwrt.Runner{}, version)
+	}
+	if options.UpdateDevice != nil {
+		inventory = options.UpdateDevice.Inventory
 	}
 	background, cancel := context.WithCancel(ctx)
-	d.updater = &updateController{ctx: background, cancel: cancel, source: source, device: device, launch: options.UpdateLaunch}
+	d.updater = &updateController{ctx: background, cancel: cancel, source: source, inventory: inventory, launch: options.UpdateLaunch}
 	if d.updater.launch == nil {
 		d.updater.launch = func() error {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -95,7 +97,7 @@ func (d *Daemon) updateCheck(_ context.Context, raw json.RawMessage) (any, error
 		defer u.wg.Done()
 		ctx, cancel := context.WithTimeout(u.ctx, 3*time.Minute)
 		defer cancel()
-		inventory, err := u.device.Inventory(ctx, d.version)
+		inventory, err := u.inventory(ctx, d.version)
 		result := update.CheckResult{CurrentVersion: d.version}
 		if err == nil {
 			var candidate update.Candidate
@@ -153,7 +155,7 @@ func (d *Daemon) updateStart(ctx context.Context, raw json.RawMessage) (any, err
 	if err != nil {
 		return nil, err
 	}
-	inventory, err := d.updater.device.Inventory(ctx, d.version)
+	inventory, err := d.updater.inventory(ctx, d.version)
 	if err != nil {
 		return nil, err
 	}
