@@ -116,6 +116,36 @@ class ReleaseAutomationTests(unittest.TestCase):
                  '.codex/private.json', 'root/etc/smart-srun/config.json', 'signing.key', 'old.apk']
         self.assertEqual(source.inspect(paths), sorted(paths[2:]))
 
+    def test_published_draft_checks_server_names_and_digests(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            candidate = root / 'candidate'
+            candidate.mkdir()
+            data = {'release': '2.0.0rc1', 'source_commit': 'a' * 40, 'channel': 'rc'}
+            (candidate / 'release-manifest.json').write_text(json.dumps(data))
+            (candidate / 'smart-srun_2.0.0.rc1-r1_x86_64.ipk').write_bytes(b'exact package bytes')
+            assets = [{'name': p.name, 'size': p.stat().st_size,
+                       'digest': 'sha256:' + hashlib.sha256(p.read_bytes()).hexdigest()}
+                      for p in candidate.iterdir()]
+            original = dict(draft=True, prerelease=True, tag_name=data['release'],
+                            target_commitish=data['source_commit'], assets=assets)
+            path = root / 'github.json'
+            args = SimpleNamespace(candidate=candidate, metadata=path)
+            path.write_text(json.dumps(original))
+            release.verify_published(args)
+            for field, value in [('name', 'github-renamed.ipk'), ('size', 0), ('digest', None)]:
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'asset names'):
+                    changed = json.loads(json.dumps(original))
+                    changed['assets'][0][field] = value
+                    path.write_text(json.dumps(changed))
+                    release.verify_published(args)
+            for field, value in [('draft', False), ('prerelease', False), ('tag_name', 'wrong'),
+                                 ('target_commitish', 'b' * 40)]:
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'draft identity'):
+                    changed = dict(original, **{field: value})
+                    path.write_text(json.dumps(changed))
+                    release.verify_published(args)
+
     def test_workflows_pin_actions_and_use_verified_candidate(self):
         import yaml
         for path in (ROOT/'.github/workflows').glob('*.yml'):
@@ -130,6 +160,7 @@ class ReleaseAutomationTests(unittest.TestCase):
         self.assertIn('--draft --latest=false', publish)
         self.assertNotIn('--clobber', publish)
         self.assertNotIn('build_go_sdk.py', publish)
+        self.assertIn('verify-published', publish)
 
     def test_release_callers_forward_signing_context_only_to_builder(self):
         import yaml

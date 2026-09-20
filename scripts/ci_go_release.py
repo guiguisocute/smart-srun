@@ -222,6 +222,24 @@ def add_release_extras(release, records, keys, fingerprints, args):
     (output/'SHA256SUMS').write_text(sums, encoding='utf-8')
 
 
+def verify_published(args):
+    """Publication is incomplete until GitHub retains every expected name/byte."""
+    candidate = args.candidate
+    expected = {p.name: (p.stat().st_size, 'sha256:' + hashlib.sha256(p.read_bytes()).hexdigest())
+                for p in candidate.iterdir() if p.is_file()}
+    release = json.loads((candidate / 'release-manifest.json').read_text())
+    published = json.loads(args.metadata.read_text())
+    if (published.get('draft') is not True
+            or published.get('prerelease') != (release['channel'] == 'rc')
+            or published.get('tag_name') != release['release']
+            or published.get('target_commitish') != release['source_commit']):
+        raise ValueError('Published draft identity differs from the verified candidate')
+    assets = published.get('assets', [])
+    actual = {a['name']: (a['size'], a.get('digest')) for a in assets}
+    if len(actual) != len(assets) or actual != expected:
+        raise ValueError('Published asset names, sizes or SHA256 digests differ from the candidate')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -235,12 +253,16 @@ def main():
     exporter = sub.add_parser('assemble')
     exporter.add_argument('--input', type=Path, required=True)
     exporter.add_argument('--output', type=Path, required=True)
+    published = sub.add_parser('verify-published')
+    published.add_argument('--candidate', type=Path, required=True)
+    published.add_argument('--metadata', type=Path, required=True)
     for command in [meta, builder, exporter]:
         command.add_argument('--version', required=True)
     for command in [builder, exporter]:
         command.add_argument('--official', action='store_true')
     args = parser.parse_args()
-    {'metadata': metadata, 'build': build, 'assemble': assemble}[args.command](args)
+    {'metadata': metadata, 'build': build, 'assemble': assemble,
+     'verify-published': verify_published}[args.command](args)
 
 
 if __name__ == '__main__':
