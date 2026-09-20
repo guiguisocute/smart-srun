@@ -365,13 +365,16 @@ end
 function action_config_export()
     if not require("luci.dispatcher").test_post_security() then return end
     http.header("Cache-Control", "no-store")
-    local backup, err = rpc.call("config.export", { include_secrets = true })
-    if not backup then
+    local backup, err = rpc.call("config.export", { include_secrets = true, as_json = true })
+    if not backup or type(backup.data) ~= "string" or #backup.data > 524288 then
         write_json_response({ ok = false, message = rpc.message(err, "导出失败") })
         return
     end
     http.header("Content-Disposition", 'attachment; filename="smart-srun-config.json"')
-    write_json_response(backup)
+    -- Preserve {} versus [] (and every credential byte) across Lua's JSON
+    -- table representation, just as the import path preserves uploaded text.
+    http.prepare_content("application/json")
+    http.write(backup.data)
 end
 
 function action_config_import()

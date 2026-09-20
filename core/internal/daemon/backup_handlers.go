@@ -28,11 +28,25 @@ type BackupImportResult struct {
 func (d *Daemon) configExport(_ context.Context, raw json.RawMessage) (any, error) {
 	var params struct {
 		IncludeSecrets bool `json:"include_secrets"`
+		AsJSON         bool `json:"as_json,omitempty"`
 	}
 	if config.DecodePatch(raw, &params) != nil || !params.IncludeSecrets {
 		return nil, domain.Errorf(domain.CodeInvalidArgument, "导出备份需要明确 include_secrets=true；文件含账号密码")
 	}
-	return config.ExportBackup(d.config.Snapshot())
+	backup, err := config.ExportBackup(d.config.Snapshot())
+	if err != nil || !params.AsJSON {
+		return backup, err
+	}
+	// Lua's JSON decoder loses the distinction between empty objects and
+	// arrays. Carry the serialized document as a string through the bridge so
+	// a download preserves the exact typed JSON accepted by config.import.
+	data, err := json.Marshal(backup)
+	if err != nil {
+		return nil, err
+	}
+	return struct {
+		Data string `json:"data"`
+	}{Data: string(data)}, nil
 }
 
 func (d *Daemon) configImport(ctx context.Context, raw json.RawMessage) (any, error) {

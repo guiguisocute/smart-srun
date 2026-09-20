@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"strings"
@@ -11,6 +12,40 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/config"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 )
+
+func TestBackupJSONExportPreservesEmptyObjectsAndCredentials(t *testing.T) {
+	service := start(t, nil)
+	service.writeConfig("campus.upsert", `{"expected_revision":0,"account":{"user_id":"student","password":"synthetic-\"secret\\\u4e2d\u6587","wired_iface":"wan","login":{}}}`)
+	before := service.call("config.get", nil)
+	want := service.call("config.export", json.RawMessage(`{"include_secrets":true}`))
+	for _, field := range []string{`"school_extra":{}`, `"login":{}`, `"hotspot_profiles":[]`} {
+		if !bytes.Contains(want, []byte(field)) {
+			t.Fatalf("fixture no longer exercises %s", field)
+		}
+	}
+	raw := service.call("config.export", json.RawMessage(`{"include_secrets":true,"as_json":true}`))
+	var transfer struct {
+		Data string `json:"data"`
+	}
+	if json.Unmarshal(raw, &transfer) != nil || transfer.Data != string(want) {
+		t.Fatal("JSON transport changed the serialized backup")
+	}
+	decoded, _, err := config.ParseBackup([]byte(transfer.Data))
+	if err != nil || decoded.CampusAccounts[0].Password != "synthetic-\"secret\\中文" {
+		t.Fatal("serialized export is not restorable with exact credentials")
+	}
+	preview := service.call("config.import", BackupImportParams{Data: transfer.Data, CheckOnly: true})
+	var result BackupImportResult
+	if json.Unmarshal(preview, &result) != nil || !result.OK || result.CampusAccounts != 1 {
+		t.Fatal("self-export preview failed")
+	}
+	if !bytes.Equal(before, service.call("config.get", nil)) {
+		t.Fatal("export or preview modified configuration")
+	}
+	if codeOf(t, service.callExpectingError("config.export", json.RawMessage(`{"as_json":true}`))) != domain.CodeInvalidArgument {
+		t.Fatal("JSON mode bypassed explicit credential consent")
+	}
+}
 
 func TestBackupRPCPreviewCASAndCredentialIsolation(t *testing.T) {
 	service := start(t, nil)
