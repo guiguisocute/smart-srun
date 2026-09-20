@@ -54,6 +54,27 @@ def metadata(args):
             output.write(key + '=' + value + '\n')
 
 
+def export_apk_tool(apk, output, keys):
+    # Relocatable OpenWrt SDKs wrap bin/apk in a shell script which refers to
+    # ../lib and .apk.bin. The wrapper alone cannot run in the assembly job.
+    # Both jobs use the same Ubuntu image; export the real host ELF and prove
+    # that its verification and metadata commands work outside the SDK tree.
+    binary = apk
+    if binary.read_bytes()[:4] != b'\x7fELF':
+        binary = apk.with_name('.apk.bin')
+    if not binary.is_file() or binary.read_bytes()[:4] != b'\x7fELF':
+        raise ValueError('SDK APK host tool is missing its native executable')
+    exported = output / 'apk-tools'
+    shutil.copyfile(binary, exported)
+    exported.chmod(0o755)
+    env = dict(os.environ)
+    for key in ('LD_LIBRARY_PATH', 'LD_PRELOAD', 'RUNAS_ARG0'):
+        env.pop(key, None)
+    for package in sorted(output.glob('*.apk')):
+        run([exported, '--keys-dir', keys, 'verify', package], cwd=output, env=env, timeout=30)
+        run([exported, 'adbdump', '--format', 'json', package], cwd=output, env=env, timeout=30)
+
+
 def build(args):
     validate_version(args.version)
     _, target = sdk.load_target(ROOT / 'targets.json', args.target)
@@ -112,7 +133,7 @@ def build(args):
             # The exporter compares noarch APK metadata with the same native
             # verifier. This host tool remains an internal workflow artifact.
             if target['goarch'] == 'amd64':
-                shutil.copyfile(apk, output/'apk-tools')
+                export_apk_tool(apk, output, public.parent)
         (output/'ci.json').write_text(json.dumps({'official_signing': args.official,
             'run_id': os.environ.get('GITHUB_RUN_ID'), 'repository': os.environ.get('GITHUB_REPOSITORY')})+'\n')
     finally:

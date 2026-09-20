@@ -17,6 +17,35 @@ import check_go_source as source  # noqa: E402
 
 
 class ReleaseAutomationTests(unittest.TestCase):
+    def test_apk_export_unwraps_sdk_launcher_and_checks_relocated_tool(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            sdk, output = root/'sdk', root/'artifact'
+            sdk.mkdir()
+            output.mkdir()
+            apk = sdk/'apk'
+            apk.write_text('#!/bin/sh\nexec "$0.missing" "$@"\n')
+            native = b'\x7fELF synthetic host executable'
+            (sdk/'.apk.bin').write_bytes(native)
+            package = output/'luci.apk'
+            package.write_bytes(b'synthetic signed archive')
+            loader = {name: 'sdk-only' for name in ('LD_LIBRARY_PATH', 'LD_PRELOAD', 'RUNAS_ARG0')}
+            with patch.dict(os.environ, loader), patch.object(release, 'run') as run:
+                release.export_apk_tool(apk, output, root/'trusted')
+            self.assertEqual((output/'apk-tools').read_bytes(), native)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].args[0],
+                             [output/'apk-tools', '--keys-dir', root/'trusted', 'verify', package])
+            for call in run.call_args_list:
+                self.assertEqual(call.kwargs['cwd'], output)
+                self.assertTrue(set(loader).isdisjoint(call.kwargs['env']))
+            with patch.object(release, 'run', side_effect=RuntimeError('cannot verify')):
+                with self.assertRaisesRegex(RuntimeError, 'cannot verify'):
+                    release.export_apk_tool(apk, output, root/'trusted')
+            (sdk/'.apk.bin').unlink()
+            with self.assertRaisesRegex(ValueError, 'missing its native executable'):
+                release.export_apk_tool(apk, output, root/'trusted')
+
     def test_versions_reject_shell_paths_and_wrong_channels(self):
         for value in ['1.6.0', 'v2.0.0', '2.0.0rc0', '2.0.0;echo bad', '../../2.0.0', '2.0.0\n']:
             with self.subTest(value=value), self.assertRaises(ValueError):
