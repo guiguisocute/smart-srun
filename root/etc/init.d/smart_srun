@@ -31,7 +31,7 @@ stop_service() {
 # inside /etc/smart-srun/config.json, which ships off. Conflating the two is how
 # a fresh install starts logging in with credentials nobody has entered yet.
 start_service() {
-	procd_open_instance
+	procd_open_instance instance1
 	procd_set_param command "$PROG" daemon
 
 	# retry=0 means unlimited respawn, and it is deliberate. With a finite

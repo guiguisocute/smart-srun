@@ -52,6 +52,8 @@ APK 目标可通过 `--sign-key` 和 `--public-key` 传入维护者控制的密�
 
 发布清单由 `scripts/make_go_manifest.py` 从真实 SDK `build-record.json` 生成。验证报告按包 SHA256 关联，构建通过不会自动变成真机或校园验收通过。未提交源码的构建只能用 `--internal-test` 生成内部测试清单，不得公开发布。
 
+部分衍生固件的版本号与包管理器不同步，例如 Kwrt 25.12 仍使用 opkg。额外固件系列必须先用相同 SHA256 的包完成原生安装验证，再在验证报告中添加 `"firmware_compatibility": {"包的 SHA256": {"25.12": {"openwrt_install": true}}}`。生成器保留实际 SDK 版本，并拒绝会让同一设备匹配多个包的兼容范围；这项证据不代表校园认证或长测通过。
+
 ```sh
 python3 scripts/make_go_manifest.py sdk-a/artifacts/2.0.0rc1/build-record.json \
   sdk-b/artifacts/2.0.0rc1/build-record.json --evidence validation.json --output release/2.0.0rc1
