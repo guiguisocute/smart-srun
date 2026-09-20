@@ -58,6 +58,17 @@ func Begin(paths Paths, candidate Candidate, wasRunning bool, executable string,
 	if err := pruneCompleted(paths, previous.JobID); err != nil {
 		return Task{}, err
 	}
+	// Older successful workers left their executable on tmpfs. The control
+	// lock, absent journal and idle worker prove it is no longer needed; drop
+	// it before reserving space for the new atomic copy. Otherwise the first
+	// update after upgrading from such a version can still count two workers.
+	if stale, err := os.Lstat(paths.Worker()); err == nil {
+		if err := cleanupCompletedWorker(paths, stale); err != nil {
+			return Task{}, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Task{}, storageError(err)
+	}
 	task := Task{SchemaVersion: 1, JobID: newID(), Plan: candidate.Plan, Recovery: candidate.Recovery,
 		Phase: "queued", CreatedAt: time.Now().UTC(), WasRunning: wasRunning, Local: candidate.Local}
 	journalWritten := false

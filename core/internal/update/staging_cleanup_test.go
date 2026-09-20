@@ -76,3 +76,31 @@ func TestCompletedWorkerCleanupRefusesAReplacement(t *testing.T) {
 		t.Fatal("replacement worker deleted")
 	}
 }
+
+func TestBeginReclaimsLegacyWorkerBeforePreparingANewCopy(t *testing.T) {
+	w, task, _, _, executable := workerFixture(t, "bundle", true)
+	if err := w.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(w.Paths.Worker(), []byte("leftover-from-an-older-successful-worker"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Fail the next copy. Reclamation must already have happened, and this
+	// preparation failure must not leave an update gate or mutate packages.
+	if err := os.Remove(executable); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Begin(w.Paths, Candidate{Plan: task.Plan, Recovery: task.Recovery}, true, executable, func() error {
+		t.Fatal("invalid executable launched")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("missing executable accepted")
+	}
+	if _, err := os.Lstat(w.Paths.Worker()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("legacy worker still occupies temporary space")
+	}
+	if err := Guard(w.Paths); err != nil {
+		t.Fatal("copy failure left a recovery gate")
+	}
+}
