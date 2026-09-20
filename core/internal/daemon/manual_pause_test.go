@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,8 @@ func TestManualLogoutIntentSurvivesFailureAndServiceRestartUntilLogin(t *testing
 	}
 	if action := r.awaitTerminal(logout.ActionID); action.State != application.StateFailed {
 		t.Fatal("fixture logout did not fail")
+	} else if !strings.Contains(action.Message, "自动认证已暂停") || strings.Contains(action.Message, "已登出") {
+		t.Fatalf("failed logout must explain the retained pause without claiming logout success: %q", action.Message)
 	}
 	if got := r.status().ManualPausedAccounts; !slices.Equal(got, []string{"c1"}) {
 		t.Fatalf("failed logout lost user intent: %v", got)
@@ -96,6 +99,8 @@ func TestOtherWANLogoutRetainsTheScheduledHotspotReturn(t *testing.T) {
 	}
 	if action := r.awaitTerminal(receipt.ActionID); action.State != application.StateSucceeded {
 		t.Fatal("other WAN logout failed")
+	} else if strings.Count(action.Message, "自动认证已暂停") != 1 {
+		t.Fatalf("successful logout must explain its pause once: %q", action.Message)
 	}
 	got, err := readQuietResume(r.paths)
 	if err != nil || got == nil || got.AccountID != want.AccountID || got.HotspotID != want.HotspotID {

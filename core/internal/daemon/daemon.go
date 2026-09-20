@@ -327,7 +327,7 @@ func Run(ctx context.Context, options Options) error {
 	}
 	service.actions = application.New(application.Options{
 		Clock:    clock,
-		Runner:   runner,
+		Runner:   manualPauseRunner{actions: runner, daemon: service},
 		Lines:    service.lineOf,
 		Finalize: service.finishUserAction,
 		Admit:    service.admitManualLogout,

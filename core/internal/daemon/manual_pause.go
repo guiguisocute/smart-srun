@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"sync"
@@ -118,6 +119,23 @@ func (d *Daemon) admitManualLogout(request application.Request) error {
 	return nil
 }
 
+type manualPauseRunner struct {
+	actions application.Runner
+	daemon  *Daemon
+}
+
+func (r manualPauseRunner) Run(ctx context.Context, action application.Action, report func(application.Phase)) application.Outcome {
+	out := r.actions.Run(ctx, action, report)
+	// Admission already retained this pause even when the gateway could not
+	// confirm logout. Explain it alongside the failure so a user knows why
+	// automatic authentication is no longer running for this account. Keep
+	// this separate from Finalize, which commits only successful actions.
+	if action.Request.Kind == application.KindLogout && r.daemon.manualPauses.paused(r.daemon.config.Snapshot(), action.Request.AccountID) {
+		out.Message += "；该账号自动认证已暂停，可手动登录恢复"
+	}
+	return out
+}
+
 func (d *Daemon) finishUserAction(action application.Action, out application.Outcome) application.Outcome {
 	out = d.finishSwitch(action, out)
 	if out.State != application.StateSucceeded {
@@ -129,9 +147,6 @@ func (d *Daemon) finishUserAction(action application.Action, out application.Out
 			out.State, out.Code = application.StateFailed, domain.CodeInternal
 			out.Message += "；未能解除手动暂停，请检查临时状态目录"
 		}
-	}
-	if action.Request.Kind == application.KindLogout {
-		out.Message += "；该账号自动认证已暂停，可手动登录恢复"
 	}
 	return out
 }
