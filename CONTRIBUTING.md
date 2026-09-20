@@ -22,7 +22,7 @@
 
 ### Go SDK 开发包
 
-`targets.json` 锁定 SDK 下载哈希、feeds 提交和 Go 工具链。已检查 x86_64、aarch64_cortex-a53 两格式，以及 mips_24kc、arm_cortex-a7_neon-vfpv4 的 IPK 产物；录入目标不等于构建或真机验收。`pending_architectures` 仍是待完成的架构，不能宣称已经支持。只有纯 LuCI 包使用 `all`/`noarch`，核心和 bundle 使用实际 SDK 架构。
+`targets.json` 锁定 SDK 下载哈希、feeds 提交和 Go 工具链。14 个 SDK 目标（12 种架构，其中 x86_64、aarch64_cortex-a53 各含两种包格式）已完成首构、ELF/ABI、安装载荷和版本命令检查；这些检查不等于完整核心、OpenWrt 安装或真机验收。`pending_architectures` 记录尚未完成首构检查的架构，具体产物的验收等级仍以发布清单为准。只有纯 LuCI 包使用 `all`/`noarch`，核心和 bundle 使用实际 SDK 架构。
 
 在 Linux（Python 3.12+、OpenWrt SDK 主机依赖及现有 Go 引导工具链）运行：
 

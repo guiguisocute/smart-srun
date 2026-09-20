@@ -250,15 +250,6 @@
       }
     }
   ],
-  "pending_architectures": [
-    "aarch64_generic",
-    "aarch64_cortex-a72",
-    "aarch64_cortex-a76",
-    "arm_cortex-a9_vfpv3-d16",
-    "arm_cortex-a15_neon-vfpv4",
-    "mipsel_24kc",
-    "mipsel_24kc_24kf",
-    "mipsel_74kc"
-  ],
+  "pending_architectures": [],
   "validation_policy": "Targets pin build inputs only. Per-artifact build, ELF, emulation, installation, hardware and campus authentication evidence belongs in the release manifest. Pending architectures remain required work; they are not published as supported artifacts."
 }
