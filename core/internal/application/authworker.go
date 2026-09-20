@@ -12,6 +12,7 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
 	"github.com/matthewlu070111/smart-srun/core/internal/observe"
 	"github.com/matthewlu070111/smart-srun/core/internal/policy"
+	portalprobe "github.com/matthewlu070111/smart-srun/core/internal/portal"
 )
 
 // Binder answers where a line is and whether it can carry traffic.
@@ -64,11 +65,12 @@ type Settings interface {
 // between actions except the binding generation counter -- which only ever goes
 // up, so two observations can always be ordered.
 type Authenticator struct {
-	binder   Binder
-	lines    Lines
-	settings Settings
-	wireless Wireless
-	clock    policy.Clock
+	binder    Binder
+	lines     Lines
+	settings  Settings
+	wireless  Wireless
+	clock     policy.Clock
+	probeURLs []string
 
 	generation atomic.Uint64
 
@@ -92,6 +94,9 @@ type AuthenticatorOptions struct {
 	// is nil.
 	Wireless Wireless
 	Clock    policy.Clock
+	// ConnectivityURLs replaces the ordered, credential-free probe endpoints
+	// for an isolated environment. Nil uses the shipped endpoint list.
+	ConnectivityURLs []string
 }
 
 // NewAuthenticator wires one.
@@ -100,13 +105,18 @@ func NewAuthenticator(options AuthenticatorOptions) *Authenticator {
 	if clock == nil {
 		clock = policy.SystemClock{}
 	}
+	urls := options.ConnectivityURLs
+	if urls == nil {
+		urls = portalprobe.ConnectivityURLs()
+	}
 	return &Authenticator{
-		binder:   options.Binder,
-		lines:    options.Lines,
-		settings: options.Settings,
-		wireless: options.Wireless,
-		clock:    clock,
-		seen:     map[string]domain.Binding{},
+		binder:    options.Binder,
+		lines:     options.Lines,
+		settings:  options.Settings,
+		wireless:  options.Wireless,
+		clock:     clock,
+		probeURLs: append([]string(nil), urls...),
+		seen:      map[string]domain.Binding{},
 	}
 }
 
@@ -139,15 +149,16 @@ func (a *Authenticator) Run(ctx context.Context, action Action,
 
 // attempt is everything one action needs, resolved once at its start.
 type attempt struct {
-	account  domain.CampusAccount
-	username string
-	shape    auth.Shape
-	intent   auth.Intent
-	revision uint64
-	binding  domain.Binding
-	line     auth.Line
-	gateway  auth.Gateway
-	sequence uint64
+	account   domain.CampusAccount
+	username  string
+	shape     auth.Shape
+	intent    auth.Intent
+	checkMode domain.CheckMode
+	revision  uint64
+	binding   domain.Binding
+	line      auth.Line
+	gateway   auth.Gateway
+	sequence  uint64
 }
 
 // authenticate is the login path: challenge, login, and then ask whose session
@@ -169,6 +180,11 @@ func (a *Authenticator) authenticate(ctx context.Context, action Action,
 		return outcome
 	}
 	transaction := auth.NewTransaction(prepared.line, prepared.gateway)
+	if action.Request.Kind == KindMaintain {
+		if outcome, stop := a.checkExisting(ctx, transaction, prepared, report); stop {
+			return outcome
+		}
+	}
 
 	result, err := a.attemptLogin(ctx, transaction, prepared, report)
 	if err != nil {
@@ -207,7 +223,7 @@ func (a *Authenticator) verify(ctx context.Context, transaction *auth.Transactio
 
 	switch identity.State() {
 	case domain.AuthVerifiedSelf:
-		return prepared.succeeded(a, "认证完成", identity.Username)
+		return a.verifyConnectivity(ctx, prepared, "认证完成", identity.Username)
 	case domain.AuthVerifiedOther:
 		return prepared.failed(a,
 			domain.Errorf(domain.CodeOnlineIdentityMismatch,
@@ -247,7 +263,7 @@ func (a *Authenticator) settleAlreadyOnline(ctx context.Context,
 
 	switch identity.State() {
 	case domain.AuthVerifiedSelf:
-		return prepared.succeeded(a, "本线路已是该账号的在线会话", identity.Username)
+		return a.verifyConnectivity(ctx, prepared, "本线路已是该账号的在线会话", identity.Username)
 
 	case domain.AuthVerifiedOther:
 		if prepared.intent != auth.IntentManual {
@@ -440,12 +456,13 @@ func (a *Authenticator) prepare(ctx context.Context, action Action,
 	}
 
 	prepared := &attempt{
-		account:  account,
-		username: config.EffectiveUsername(account),
-		shape:    shapeOf(config.EffectiveLogin(cfg, account)),
-		intent:   intentOf(action.Request.Kind),
-		revision: revision,
-		sequence: action.Sequence,
+		account:   account,
+		username:  config.EffectiveUsername(account),
+		shape:     shapeOf(config.EffectiveLogin(cfg, account)),
+		intent:    intentOf(action.Request.Kind),
+		checkMode: cfg.Checks.Mode,
+		revision:  revision,
+		sequence:  action.Sequence,
 	}
 
 	iface, err := lineInterface(cfg, account)

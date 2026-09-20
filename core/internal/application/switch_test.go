@@ -83,6 +83,7 @@ func switchWorld(failback bool) *fakeSettings {
 	return &fakeSettings{
 		revision: 3,
 		cfg: domain.Config{
+			Checks:    domain.ChecksConfig{Mode: domain.CheckPortal},
 			STAIface:  "wwan",
 			Selection: domain.Selection{ActiveCampusID: "c1"},
 			Failover:  domain.FailoverConfig{HotspotFailbackEnabled: failback},
@@ -418,6 +419,13 @@ func TestAMaintenanceTickDoesNotScanAnAssociatedClient(t *testing.T) {
 // would pass while every wired router had stopped logging in.
 func TestAWiredAccountSkipsTheRadioAndStillAuthenticates(t *testing.T) {
 	p := newPortal(t)
+	p.onlineAfter = func(count int) {
+		if count == 1 {
+			p.onlineBody = offlineAnswer
+		} else {
+			p.onlineBody = `{"error":"ok","user_name":"2020123456","online_ip":"10.0.0.77"}`
+		}
+	}
 	settings := switchWorld(true)
 	account := &settings.cfg.CampusAccounts[0]
 	account.AccessMode = domain.AccessModeWired

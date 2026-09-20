@@ -248,6 +248,7 @@ func workerFor(t *testing.T, p *portal, binder *fakeBinder) (*Authenticator, *fa
 	settings := &fakeSettings{
 		revision: 7,
 		cfg: domain.Config{
+			Checks: domain.ChecksConfig{Mode: domain.CheckPortal},
 			CampusAccounts: []domain.CampusAccount{{
 				ID:         "c1",
 				Label:      "校园网",
