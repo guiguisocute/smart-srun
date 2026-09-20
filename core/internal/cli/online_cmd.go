@@ -29,7 +29,7 @@ func OnlineConfig(args []string) bool {
 		return false
 	}
 	switch args[0] {
-	case "show", "get", "set", "account", "hotspot":
+	case "show", "get", "set", "account", "hotspot", "export", "import":
 		return true
 	}
 	return false
@@ -78,6 +78,9 @@ func runOnline(ctx context.Context, client onlineClient, args []string, stdin io
 }
 
 func onlineConfig(ctx context.Context, client onlineClient, args []string, stdin io.Reader, stdout, stderr *os.File) int {
+	if len(args) > 0 && (args[0] == "export" || args[0] == "import") {
+		return onlineBackup(ctx, client, args, stdin, stdout, stderr)
+	}
 	explicit := len(args) > 0 && args[len(args)-1] == "--interactive"
 	if explicit {
 		return runInteractiveConfig(ctx, client, args[:len(args)-1], stdin, stdout, stderr)

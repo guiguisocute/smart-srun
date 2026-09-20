@@ -74,6 +74,8 @@ local MONTH_MAP = {
 }
 
 function index()
+    entry({"admin", "services", "smart_srun", "config_export"}, call("action_config_export")).leaf = true
+    entry({"admin", "services", "smart_srun", "config_import"}, call("action_config_import")).leaf = true
     entry({"admin", "services", "smart_srun"}, cbi("smart_srun"), _("SMART SRun"), 80).dependent = true
     entry({"admin", "services", "smart_srun", "status"}, call("action_status")).leaf = true
     entry({"admin", "services", "smart_srun", "enqueue"}, call("action_enqueue")).leaf = true
@@ -358,6 +360,37 @@ local function discovery_job(method)
         payload.result.ac_id = tostring(payload.result.acid or "")
     end
     write_json_response(payload)
+end
+
+function action_config_export()
+    if not require("luci.dispatcher").test_post_security() then return end
+    http.header("Cache-Control", "no-store")
+    local backup, err = rpc.call("config.export", { include_secrets = true })
+    if not backup then
+        write_json_response({ ok = false, message = rpc.message(err, "导出失败") })
+        return
+    end
+    http.header("Content-Disposition", 'attachment; filename="smart-srun-config.json"')
+    write_json_response(backup)
+end
+
+function action_config_import()
+    if not require("luci.dispatcher").test_post_security() then return end
+    http.header("Cache-Control", "no-store")
+    local data = http.formvalue("data")
+    local preview = http.formvalue("check") == "1"
+    local revision = http.formvalue("expected_revision")
+    if type(data) ~= "string" or #data > 524288 or
+        (not preview and (type(revision) ~= "string" or not revision:match("^%d+$") or #revision > 15)) then
+        write_json_response({ ok = false, message = "备份或配置版本无效，请重新选择备份" })
+        return
+    end
+    -- Preserve the original JSON string for Go's duplicate/type/depth checks.
+    local result, err = rpc.call("config.import", {
+        data = data, check_only = preview,
+        expected_revision = not preview and tonumber(revision) or nil,
+    })
+    write_json_response(result or { ok = false, message = rpc.message(err, "导入失败") })
 end
 
 function action_presets_refresh()

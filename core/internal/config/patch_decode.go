@@ -13,10 +13,20 @@ import (
 // semantics. Only explicitly listed paths may contain null. Error messages do
 // not include input values: a malformed credential must not reach the log.
 func DecodePatch(data []byte, target any, nullablePaths ...string) error {
+	return decodePatchBounded(data, target, MaxConfigBytes, nullablePaths...)
+}
+
+// DecodeBackupTransfer permits JSON escaping of a bounded backup string. The
+// contained document still goes through ParseBackup's 512 KiB limit.
+func DecodeBackupTransfer(data []byte, target any) error {
+	return decodePatchBounded(data, target, 2*MaxConfigBytes+4096)
+}
+
+func decodePatchBounded(data []byte, target any, limit int, nullablePaths ...string) error {
 	invalid := func() error {
 		return domain.Errorf(domain.CodeInvalidArgument, "参数必须是有效的 JSON 对象；请检查字段名、类型和重复字段")
 	}
-	if len(data) > MaxConfigBytes {
+	if len(data) > limit {
 		return invalid()
 	}
 	nullable := make(map[string]bool, len(nullablePaths))
@@ -42,6 +52,18 @@ func DecodePatch(data []byte, target any, nullablePaths ...string) error {
 func exactFields(data json.RawMessage, typ reflect.Type) bool {
 	for typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
+	}
+	if typ.Kind() == reflect.Slice && typ.Elem().Kind() != reflect.Uint8 {
+		var items []json.RawMessage
+		if json.Unmarshal(data, &items) != nil {
+			return false
+		}
+		for _, item := range items {
+			if !exactFields(item, typ.Elem()) {
+				return false
+			}
+		}
+		return true
 	}
 	if typ.Kind() != reflect.Struct {
 		return true // map keys belong to the strategy; RawMessage is checked later.

@@ -36,6 +36,7 @@ return function(repo_root)
             formvalue = function(key) return harness.form[key] end,
             getenv = function(key) return harness.env and harness.env[key] end,
             prepare_content = function() end,
+            header = function(key, value) harness.headers = harness.headers or {}; harness.headers[key] = value end,
             write = function(value) harness.output = value end,
         }
     end

@@ -91,3 +91,9 @@ python3 scripts/hot_update.py --host router \
 ```
 
 `--dry-run` 只校验本地文件；`--probe` 读取设备安装信息并选择包，不上传或安装；`--prepare` 上传并完成设备端核验但不安装。去掉这些参数后执行更新，或加 `--background` 提交后返回。必须同时提供当前精确版本的恢复包，不能混用 bundle 与 split，也不能降级成逐文件覆盖。实际安装仍由独立 Worker 处理，主服务停止不会中断它。
+
+### Versioned configuration backups
+
+LuCI Advanced Settings and `srunnet config export FILE|-` produce a credential-bearing `smart-srun-config` envelope (`format_version: 1`). Explicit `config import FILE|- --check` previews 1.6.1 (`config_schema: 1`) or Go (`config_schema: 2`) exports; commit with `--expected-revision` from that preview. Imports replace configuration, remain subject to actor/update/wizard guards and CAS, and leave automatic authentication disabled. Startup still never reads the old Python config path. User-preset catalogues and system network state are separate. Never attach real backups to tests, Issues or logs.
+
+The synthetic cross-version fixture is `tests/fixtures/config-backup-v1.json`; runtime, RPC, CLI and LuCI checks cover secret preservation, malformed input, stale previews and interrupted browser requests.

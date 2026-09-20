@@ -25,7 +25,8 @@ const Version = 1
 // Wire limits. They bound allocation before it happens: the reader stops at the
 // limit instead of reading an unbounded line and checking its size afterwards.
 const (
-	MaxRequestBytes  = 512 * 1024
+	// Backup JSON is transported intact inside a JSON string (up to 2x escaping).
+	MaxRequestBytes  = 1024*1024 + 4096
 	MaxResponseBytes = 1024 * 1024
 )
 
