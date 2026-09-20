@@ -181,6 +181,17 @@ func (a *Authenticator) switchHotspot(ctx context.Context, action Action,
 	if err := a.moveTo(ctx, dest, report); err != nil {
 		return a.failBack(ctx, cfg, dest, err, report)
 	}
+	report(PhaseVerify)
+	level, err := a.checkHotspot(ctx, cfg, hotspot)
+	if err != nil {
+		return a.failBack(ctx, cfg, dest, err, report)
+	}
+	if level != domain.ConnectivityInternetReachable {
+		if cfg.Failover.HotspotFailbackEnabled {
+			return a.failBack(ctx, cfg, dest, domain.Errorf(domain.CodeTransportFailure, "热点尚未确认互联网连通"), report)
+		}
+		return Outcome{State: StateSucceeded, Message: "已连接热点 " + dest.label + "，但尚未确认互联网连通"}
+	}
 	return Outcome{State: StateSucceeded,
 		Message: "已切换到" + dest.what + " " + dest.label}
 }

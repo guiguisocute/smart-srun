@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"net/netip"
 	"strings"
 	"sync"
@@ -63,6 +65,7 @@ func (w *fakeWireless) Apply(_ context.Context, plan WirelessPlan) error {
 		return err
 	}
 	w.applied = append(w.applied, plan)
+	w.association = wifi.Association{SSID: plan.SSID, BSSID: "02:00:5e:00:53:02", HasIPv4: true, Encrypted: plan.Encryption != "none"}
 	return nil
 }
 
@@ -118,10 +121,16 @@ func switcherFor(t *testing.T, settings *fakeSettings,
 	t.Helper()
 	return NewAuthenticator(AuthenticatorOptions{
 		Binder:   &fakeBinder{},
-		Lines:    &fakeLines{},
+		Lines:    &fakeLines{client: &http.Client{Transport: hotspotProbeTransport{}}, source: steadyBinding().SourceIPv4},
 		Settings: settings,
 		Wireless: radio,
 	})
+}
+
+type hotspotProbeTransport struct{}
+
+func (hotspotProbeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}, Request: req}, nil
 }
 
 func switchAction() Action {

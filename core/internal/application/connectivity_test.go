@@ -110,6 +110,8 @@ func TestSSIDModeStillRequiresTheSelectedAssociationAndAddress(t *testing.T) {
 				cfg.CampusAccounts[0].AccessMode = domain.AccessModeWiFi
 				cfg.CampusAccounts[0].SSID = "campus"
 				cfg.CampusAccounts[0].Radio = "radio0"
+				cfg.CampusAccounts[0].Encryption = "none"
+				cfg.CampusAccounts[0].APSelection = domain.APSelectionAuto
 				// Call the terminal check directly: changing association after
 				// authentication must not be hidden by another moveTo transaction.
 				if name != "wifi-unavailable" {

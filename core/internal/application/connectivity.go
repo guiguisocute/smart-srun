@@ -45,16 +45,8 @@ func (a *Authenticator) verifyConnectivity(ctx context.Context, p *attempt, mess
 	case domain.CheckPortal:
 		// The verified identity was read from this bound portal just now.
 	case domain.CheckSSID:
-		if !p.account.IsWired() {
-			if a.wireless == nil {
-				err = domain.Errorf(domain.CodeUnsupportedCapability, "无法确认所选校园无线的实际连接状态")
-			} else {
-				observed, cause := a.wireless.Association(ctx, p.account.Radio)
-				err = cause
-				if err == nil && (!observed.Joined() || !observed.HasIPv4 || observed.SSID != p.account.SSID) {
-					err = domain.Errorf(domain.CodeBindingChanged, "当前无线连接不是所选校园网络")
-				}
-			}
+		if !p.account.IsWired() && a.wireless == nil {
+			err = domain.Errorf(domain.CodeUnsupportedCapability, "无法确认所选校园无线的实际连接状态")
 		}
 	default:
 		err = domain.Errorf(domain.CodeInvalidConfig, "在线判定模式无效")
@@ -63,6 +55,19 @@ func (a *Authenticator) verifyConnectivity(ctx context.Context, p *attempt, mess
 	// the probe. This also requires a usable IPv4 for wired SSID mode.
 	if changed := a.confirmUnchanged(ctx, p); changed != nil {
 		return p.failed(a, changed, domain.AuthUnknown, "")
+	}
+	if !p.account.IsWired() && a.wireless != nil {
+		dest, cause := campusDestination(p.account)
+		if cause != nil {
+			return p.failed(a, cause, domain.AuthUnknown, "")
+		}
+		observed, cause := a.wireless.Association(ctx, p.account.Radio)
+		if cause != nil {
+			return p.failed(a, cause, domain.AuthUnknown, "")
+		}
+		if !dest.want.Satisfied(observed) {
+			return p.failed(a, domain.Errorf(domain.CodeBindingChanged, "当前无线关联与所选校园网络或接入点不符"), domain.AuthUnknown, "")
+		}
 	}
 	if err != nil {
 		out.State, out.Code, out.Message = StateFailed, domain.CodeTransportFailure, userMessage(err)
