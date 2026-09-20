@@ -116,6 +116,12 @@ func TestDamagedManualPauseRecordFailsClosedWithoutTreatingItAsConfig(t *testing
 		if err == nil || !p.paused(cfg, "c1") || !p.paused(cfg, "c2") {
 			t.Fatal("invalid record permitted automatic login")
 		}
+		// Restart still retains the safe pause, but the corrupt bytes no longer
+		// turn a later deliberate settings change back into a new pause.
+		p, err = loadManualPauses(paths, cfg)
+		if err != nil || !p.paused(cfg, "c1") || !p.paused(cfg, "c2") {
+			t.Fatal("conservative recovery was not retained")
+		}
 		if err := p.set(cfg, "c1", false); err != nil {
 			t.Fatal(err)
 		}
@@ -124,8 +130,9 @@ func TestDamagedManualPauseRecordFailsClosedWithoutTreatingItAsConfig(t *testing
 			t.Fatal("manual recovery changed another account")
 		}
 		cfg.Revision++
-		if p.paused(cfg, "c2") {
-			t.Fatal("new settings kept an old pause revision")
+		p, err = loadManualPauses(paths, cfg)
+		if err != nil || p.paused(cfg, "c2") {
+			t.Fatal("restart after new settings restored an obsolete pause")
 		}
 		cfg.Revision--
 	}

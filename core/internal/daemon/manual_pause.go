@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"slices"
 	"sync"
 
@@ -45,6 +46,12 @@ func loadManualPauses(paths Paths, cfg domain.Config) (*manualPauses, error) {
 		p.record = manualPauseRecord{SchemaVersion: 1, Revision: cfg.Revision}
 		for _, account := range cfg.CampusAccounts {
 			p.record.Accounts = append(p.record.Accounts, account.ID)
+		}
+		// Retain this conservative state as a valid record. Otherwise saving
+		// new settings only recovers until the next restart, when the same bad
+		// bytes would pause every account again under the new revision.
+		if saveErr := writeRuntimeRecord(paths.ManualPauses(), p.record); saveErr != nil {
+			err = errors.Join(err, saveErr)
 		}
 	}
 	return p, err
