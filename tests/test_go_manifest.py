@@ -119,6 +119,19 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "existing release directory"):
                 manifest.export_release([first, second], out)
 
+    def test_ipk_prerelease_names_survive_github_upload_without_changing_native_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record, package, _, digest = self.fixture(root)
+            out = root / "release"
+            release = manifest.export_release([record], out)
+            asset = release["assets"][0]
+            name = asset["url"].rsplit("/", 1)[1]
+            self.assertEqual(name, "smart-srun_2.0.0.rc2-r1_x86_64_openwrt-24.10.8.ipk")
+            self.assertEqual(asset["package_version"], "2.0.0~rc2-r1")
+            self.assertEqual((out / name).read_bytes(), package.read_bytes())
+            self.assertIn(digest + "  " + name, (out / "SHA256SUMS").read_text())
+
     def test_export_distinguishes_sdk_families_and_rejects_copy_corruption(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

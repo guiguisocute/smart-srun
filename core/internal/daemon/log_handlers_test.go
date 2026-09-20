@@ -46,6 +46,18 @@ func containsLine(lines []string, want string) bool {
 	return false
 }
 
+// Ready means the socket is listening, not that the initial maintenance tick
+// has published its pause. Cursor and clear tests need that real log producer
+// to settle before asserting an otherwise idle log boundary.
+func startSettledLog(t *testing.T) *running {
+	t.Helper()
+	service := start(t, nil)
+	awaitPause(t, service, func(reasons []string) bool {
+		return len(reasons) == 1 && reasons[0] == "UserDisabled"
+	})
+	return service
+}
+
 // A run says so. Without it, an empty log and a service that never started look
 // the same to somebody reading the panel.
 func TestTheLogOpensWithWhatTheServiceStartedWith(t *testing.T) {
@@ -108,7 +120,7 @@ func TestAnActionsTimelineReachesTheLog(t *testing.T) {
 // scheduler-only kind -- never becomes an action, so there is nothing for the
 // log to record and the caller gets the refusal in its own answer instead.
 func TestARefusedSubmissionWritesNothing(t *testing.T) {
-	service := start(t, nil)
+	service := startSettledLog(t)
 	service.writeConfig("campus.upsert",
 		`{"expected_revision":0,"account":{"user_id":"2021001","wired_iface":"wan"}}`)
 	before := tailLog(t, service, LogTailParams{}).Cursor
@@ -139,7 +151,7 @@ func countLines(lines []string, want string) int {
 // The cursor is what makes a one-second poll cheap: the second call returns
 // what arrived since the first, not the whole window again.
 func TestTheCursorReturnsOnlyWhatIsNew(t *testing.T) {
-	service := start(t, nil)
+	service := startSettledLog(t)
 	first := tailLog(t, service, LogTailParams{})
 	if len(first.Lines) == 0 {
 		t.Fatal("the first page was empty")
@@ -205,7 +217,7 @@ func TestAnUnknownChannelIsRefused(t *testing.T) {
 // Clearing is a user action with a boundary: the log a user just emptied says
 // who emptied it, so an empty page and a cleared one are different states.
 func TestClearingEmptiesTheLogAndRecordsThat(t *testing.T) {
-	service := start(t, nil)
+	service := startSettledLog(t)
 	if len(tailLog(t, service, LogTailParams{}).Lines) == 0 {
 		t.Fatal("there was nothing to clear")
 	}

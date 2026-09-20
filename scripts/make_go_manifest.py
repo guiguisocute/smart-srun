@@ -40,8 +40,15 @@ def firmware_compatibility(evidence):
 def release_filename(package, native_version, architecture, sdk, fmt):
     # Native APK filenames omit architecture. Both formats also omit the SDK,
     # so never flatten their original names into a multi-target Release.
+    # GitHub rewrites '~' during asset upload. Keep the native package version
+    # intact in its metadata, but use the upload-safe spelling in every URL,
+    # checksum entry and split archive member from the beginning.
+    filename_version = native_version.replace("~", ".")
     separator = "_" if fmt == "ipk" else "-"
-    return f"{package}{separator}{native_version}_{architecture}_openwrt-{sdk}.{fmt}"
+    name = f"{package}{separator}{filename_version}_{architecture}_openwrt-{sdk}.{fmt}"
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,199}", name):
+        raise ValueError("Release filename is not safe for GitHub asset upload")
+    return name
 
 
 def apk_contents(path, apk, keys, version):
