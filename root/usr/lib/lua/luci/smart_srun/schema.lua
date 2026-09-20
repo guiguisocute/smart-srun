@@ -9,6 +9,25 @@ local DEFAULT_VERSION = "v0.0.0"
 
 local M = {}
 
+-- Keep credentials private from the first write; failed writes never truncate
+-- the previous configuration, and pre-existing temporary paths are not followed.
+function M.write_private_json(path, data)
+    local body = assert(jsonc.stringify(data)) .. "\n"
+    local tmp = path .. ".tmp." .. tostring(nixio.getpid())
+    local handle = nixio.open(tmp, nixio.open_flags("wronly", "creat", "excl"), "600")
+    if not handle then error("无法创建安全配置文件") end
+    local written = handle:write(body)
+    handle:close()
+    if written ~= #body then
+        fs.unlink(tmp)
+        error("配置未完整写入，原配置已保留")
+    end
+    if not os.rename(tmp, path) then
+        fs.unlink(tmp)
+        error("配置保存失败，原配置已保留")
+    end
+end
+
 M.POINTER_KEYS = {
     "active_campus_id", "default_campus_id",
     "active_hotspot_id", "default_hotspot_id",

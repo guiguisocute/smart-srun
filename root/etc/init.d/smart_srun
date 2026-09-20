@@ -11,6 +11,8 @@ find_python() {
 }
 
 start_service() {
+	# Upgrade existing credential files created by older versions.
+	[ ! -f /usr/lib/smart_srun/config.json ] || chmod 600 /usr/lib/smart_srun/config.json
 	PYTHON_BIN="$(find_python)"
 	if [ -z "$PYTHON_BIN" ]; then
 		logger -t "$SERVICE_NAME" "python3 not found, please install python3-light"

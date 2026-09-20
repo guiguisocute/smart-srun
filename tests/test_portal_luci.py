@@ -185,6 +185,7 @@ files[state_path] = stringify({
     last_action="manual_login", action_result="error", message="later tick",
     last_action_message="original failure", last_action_portal_url=portal_url
 })
+package.preload["luci.dispatcher"] = function() return {test_post_security=function() return true end} end
 package.preload["luci.http"] = function() return {
     formvalue=function(key) return form[key] end, prepare_content=function() end,
     write=function(value) output = parse(value) end
@@ -204,7 +205,8 @@ package.preload["nixio.fs"] = function() return {
 } end
 package.preload["luci.smart_srun.schema"] = function() return {
     POINTER_KEYS={}, LIST_KEYS={}, global_scalar_key_set=function() return {} end,
-    with_file_lock=function(_, callback) return callback() end
+    with_file_lock=function(_, callback) return callback() end,
+    write_private_json=function(path, value) files[path] = stringify(value) end
 } end
 dofile(CONTROLLER_PATH)
 local controller = package.loaded["luci.controller.smart_srun"]

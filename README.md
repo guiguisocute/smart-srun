@@ -22,3 +22,9 @@
 账号、无线、多 WAN 配置与开发说明请访问 [智慧深澜文档站](https://srun-doc.guiguisocute.com/)；参与项目见 [贡献说明与致谢](https://srun-doc.guiguisocute.com/contribute/)。
 
 ![智慧深澜 LuCI 界面，包含校园网账号与热点配置](doc/img/smart-srun-overview.png)
+
+### 1.6.1 配置备份
+
+进阶设置中的「配置备份」可导出含账号与热点密码的 JSON，选择文件后先预览，再确认导入。导入会替换配置并关闭自动守护；先检查账号与网口，再启用。备份包含明文凭据，请勿公开。自建学校预设和系统网络配置需单独备份。
+
+CLI：`srunnet config export /tmp/backup.json`，`srunnet config import /tmp/backup.json --check`；正式导入可带 `--expected-revision` 使用预览版本，避免覆盖其他页面的新修改。Go 2.0 支持显式导入该格式；反向导入不支持。

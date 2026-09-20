@@ -901,7 +901,7 @@ class ForceClosePluginSourceTests(unittest.TestCase):
             js_source,
         )
         self.assertIn(
-            "xhr.send('action=' + encodeURIComponent('force_stop'));", js_source
+            "encodeURIComponent('force_stop')", js_source
         )
 
     def test_shared_force_stop_controller_path_stays_smart_only(self):
@@ -1064,10 +1064,8 @@ class LuciSourceHardeningTests(unittest.TestCase):
             "root", "usr", "lib", "lua", "luci", "model", "cbi", "smart_srun.lua"
         )
 
-        self.assertIn('local tmp = CONFIG_FILE .. ".tmp"', controller_source)
-        self.assertIn("os.rename(tmp, CONFIG_FILE)", controller_source)
-        self.assertIn('local tmp = CONFIG_FILE .. ".tmp"', model_source)
-        self.assertIn("os.rename(tmp, CONFIG_FILE)", model_source)
+        self.assertIn("schema.write_private_json(CONFIG_FILE, data)", controller_source)
+        self.assertIn("schema.write_private_json(CONFIG_FILE, out)", model_source)
         self.assertNotIn(
             'fs.writefile(CONFIG_FILE, (jsonc.stringify(out) or "{}") .. "\\n")',
             model_source,
