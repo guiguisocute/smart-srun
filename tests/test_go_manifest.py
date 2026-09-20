@@ -145,6 +145,41 @@ class ManifestTests(unittest.TestCase):
             self.assertTrue(result["assets"][0]["validation"]["elf"])
             self.assertFalse(result["assets"][0]["validation"]["campus_auth"])
 
+    def test_fork_firmware_requires_exact_package_native_install_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, _, _, digest = self.fixture(directory)
+            evidence = {"schema_version": 1, "assets": {}, "firmware_compatibility": {
+                digest: {"25.12": {"openwrt_install": True}},
+                "b" * 64: {"23.05": {"openwrt_install": True}}}}
+            result, _ = manifest.generate([path], evidence)
+            asset = result["assets"][0]
+            self.assertEqual(asset["firmware_compat"], ["24.10", "25.12"])
+            self.assertEqual(asset["sdk_release"], "24.10.8")
+            self.assertFalse(asset["validation"]["hardware_core"])
+            self.assertFalse(asset["validation"]["campus_auth"])
+            for value in (False, 1, None, "true"):
+                evidence["firmware_compatibility"][digest]["25.12"]["openwrt_install"] = value
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    manifest.generate([path], evidence)
+            for reports in (["25.12"], {digest: {}}, {digest: {"25.12-SNAPSHOT": {"openwrt_install": True}}},
+                            {digest: {"25.12": {"build": True}}}, {"bad": {"25.12": {"openwrt_install": True}}}):
+                evidence["firmware_compatibility"] = reports
+                with self.subTest(reports=reports), self.assertRaises(ValueError):
+                    manifest.generate([path], evidence)
+
+    def test_extra_family_cannot_make_two_sdk_packages_match_one_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "first").mkdir(); (root / "second").mkdir()
+            first, _, _, digest = self.fixture(root / "first")
+            second, _, record, _ = self.fixture(root / "second")
+            record["target"]["sdk_release"] = "25.12.2"
+            second.write_text(json.dumps(record))
+            evidence = {"schema_version": 1, "assets": {}, "firmware_compatibility": {
+                digest: {"25.12": {"openwrt_install": True}}}}
+            with self.assertRaisesRegex(ValueError, "overlapping firmware"):
+                manifest.generate([first, second], evidence)
+
     def test_corruption_dirty_build_and_ambiguous_selection_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             path, package, record, _ = self.fixture(directory)

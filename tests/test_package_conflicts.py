@@ -17,9 +17,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGES = ("smart-srun", "luci-app-smart-srun", "luci-app-smart-srun-bundle")
 BUILD_DEPENDS = {
-    "smart-srun": {"+ca-bundle", "+uci", "+ubus", "+procd", "+iwinfo", "+rpcd", "+rpcd-mod-iwinfo"},
+    "smart-srun": {"+ca-bundle", "+uci", "+ubus", "+procd", "+rpcd", "+rpcd-mod-iwinfo"},
     "luci-app-smart-srun": {"+smart-srun", "+luci-base", "+luci-compat"},
-    "luci-app-smart-srun-bundle": {"+ca-bundle", "+uci", "+ubus", "+procd", "+iwinfo", "+rpcd", "+rpcd-mod-iwinfo", "+luci-base", "+luci-compat"},
+    "luci-app-smart-srun-bundle": {"+ca-bundle", "+uci", "+ubus", "+procd", "+rpcd", "+rpcd-mod-iwinfo", "+luci-base", "+luci-compat"},
 }
 CONFLICTS = {
     "smart-srun": {"luci-app-smart-srun-bundle"},

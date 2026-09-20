@@ -198,7 +198,7 @@ def prepare_sdk(work, catalog, target, log):
     command(["./scripts/feeds", "update", "-i", "packages"], sdk, log)
     go_package = "golang" + ".".join(catalog["go_version"].split(".")[:2])
     command(["./scripts/feeds", "install", go_package, "luci-base", "luci-compat",
-             "ca-bundle", "uci", "ubus", "procd", "iwinfo", "rpcd", "rpcd-mod-iwinfo"], sdk, log)
+             "ca-bundle", "uci", "ubus", "procd", "rpcd", "rpcd-mod-iwinfo"], sdk, log)
     marker.write_text(json.dumps(inputs, indent=2) + "\n")
     return sdk
 

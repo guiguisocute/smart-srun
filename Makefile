@@ -32,7 +32,9 @@ ifneq ($(filter mips mipsle,$(GO_ARCH)),)
   GO_PKG_GCFLAGS:=all=-l
 endif
 
-RUNTIME_DEPENDS:=+ca-bundle +uci +ubus +procd +iwinfo +rpcd +rpcd-mod-iwinfo
+# Wireless observations use the iwinfo ubus object from rpcd-mod-iwinfo.
+# Some forks ship the optional iwinfo CLI inside wifi-scripts instead.
+RUNTIME_DEPENDS:=+ca-bundle +uci +ubus +procd +rpcd +rpcd-mod-iwinfo
 LUCI_FILE_DEPENDS:=+luci-base +luci-compat
 
 # core/ is the module root; no Python sources enter the build directory.

@@ -19,6 +19,24 @@ KINDS = {"smart-srun": "core", "luci-app-smart-srun": "luci", "luci-app-smart-sr
 CHECKS = ("build", "elf", "emulated_core", "openwrt_install", "hardware_core", "campus_auth")
 
 
+def firmware_compatibility(evidence):
+    # Forks may keep opkg after upstream moved to APK. Keep the build's SDK
+    # identity intact and accept extra families only from exact-byte native
+    # installation reports, never from a firmware label or CPU/model guess.
+    reports = evidence.get("firmware_compatibility", {})
+    if not isinstance(reports, dict):
+        raise ValueError("Invalid firmware compatibility evidence")
+    result = {}
+    for digest, families in reports.items():
+        if not isinstance(digest, str) or not re.fullmatch("[0-9a-f]{64}", digest) or not isinstance(families, dict) or not 0 < len(families) <= 16:
+            raise ValueError("Invalid firmware compatibility evidence")
+        for family, report in families.items():
+            if not isinstance(family, str) or not re.fullmatch(r"\d{2}\.\d{2}", family) or report != {"openwrt_install": True} or type(report.get("openwrt_install")) is not bool:
+                raise ValueError("Extra firmware families require successful native installation evidence")
+        result[digest] = set(families)
+    return result
+
+
 def release_filename(package, native_version, architecture, sdk, fmt):
     # Native APK filenames omit architecture. Both formats also omit the SDK,
     # so never flatten their original names into a multi-target Release.
@@ -55,9 +73,10 @@ def generate(records, evidence=None, internal=False, *, package_sources=None, ap
     evidence = evidence or {"schema_version": 1, "assets": {}}
     if evidence.get("schema_version") != 1 or not isinstance(evidence.get("assets"), dict):
         raise ValueError("Invalid validation evidence")
+    compatibility = firmware_compatibility(evidence)
     manifest = None
     source_files = None
-    selections, names, sources = {}, {}, {}
+    selections, names, sources, device_selections = {}, {}, {}, set()
     for path in records:
         path = Path(path)
         record = json.loads(path.read_text(encoding="utf-8"))
@@ -149,11 +168,11 @@ def generate(records, evidence=None, internal=False, *, package_sources=None, ap
                          sdk_release=sdk, target=target["target"], goos=target["goos"], goarch=target["goarch"],
                          url=f"https://github.com/{REPOSITORY}/releases/download/{version}/{export_name}",
                          sha256=digest, bytes=size, installed_bytes=installed,
-                         firmware_compat=[family], validation=validation)
+                         firmware_compat=sorted({family} | compatibility.get(digest, set())), validation=validation)
             if identifier in selections:
                 previous = selections[identifier]
                 if kind != "luci" or any(previous[key] != asset[key] for key in
-                                        ("package_version", "installed_bytes", "validation", "sdk_release")):
+                                        ("package_version", "installed_bytes", "validation", "sdk_release", "firmware_compat")):
                     raise ValueError("Ambiguous packages for the same device selection")
                 if previous["sha256"] != digest:
                     previous_name = previous["url"].rsplit("/", 1)[1]
@@ -164,6 +183,10 @@ def generate(records, evidence=None, internal=False, *, package_sources=None, ap
                 # Keep the FIRST verified archive's exact bytes/hash/evidence;
                 # never transfer acceptance from the discarded signature variant.
                 continue  # identical architecture-neutral LuCI from another SDK target
+            compatible = {(kind, manager, architecture, item) for item in asset["firmware_compat"]}
+            if device_selections & compatible:
+                raise ValueError("Ambiguous packages for overlapping firmware compatibility")
+            device_selections.update(compatible)
             if export_name in names:
                 raise ValueError("Duplicate release asset filename")
             selections[identifier], names[export_name] = asset, digest
