@@ -50,11 +50,10 @@ func TestAssociationOnARealAssociatedRadio(t *testing.T) {
 		t.Skipf("%s is not up on %s; this test needs an associated station",
 			section, radio)
 	}
-	t.Logf("section %s -> ifname %s (network %v)", section, iface.IfName, iface.Network)
 	if iface.IfName == "" {
 		t.Fatal("netifd named no device for a section it reports as up")
 	}
-	if !strings.HasPrefix(iface.IfName, "phy") {
+	if _, valid := openwrt.NormalizeDeviceName(iface.IfName); !valid {
 		t.Errorf("ifname = %q, which is not a device name iwinfo will answer to",
 			iface.IfName)
 	}
@@ -70,8 +69,7 @@ func TestAssociationOnARealAssociatedRadio(t *testing.T) {
 
 	// SSIDs and BSSIDs are broadcast; neither is a secret. The passphrase is,
 	// and Association never reads one.
-	t.Logf("association: ssid=%q bssid=%q ipv4=%v",
-		observed.SSID, observed.BSSID, observed.HasIPv4)
+	t.Logf("association verified; ipv4=%v", observed.HasIPv4)
 
 	if !observed.Joined() {
 		t.Fatalf("the station is up but reported as not joined: %+v", observed)
@@ -128,4 +126,17 @@ func TestAMissingRadioIsReportedOnTheDevice(t *testing.T) {
 	if _, err := radioWireless.Association(t.Context(), "radio_not_here"); err == nil {
 		t.Error("a radio that does not exist was accepted")
 	}
+}
+
+// This only reads netifd and iwinfo; it never scans or changes a station.
+func TestWirelessStatusOnARealClient(t *testing.T) {
+	iface := os.Getenv("SMARTSRUN_DEVICE_STA_IFACE")
+	if iface == "" {
+		t.Skip("set SMARTSRUN_DEVICE_STA_IFACE for the read-only device test")
+	}
+	view := readWirelessView(t.Context(), openwrt.NewAdapter(openwrt.Runner{}), domain.Config{STAIface: iface})
+	if view.State != "associated" || view.Device == "" || view.SSID == "" || view.BSSID == "" || view.Signal >= 0 || view.Channel <= 0 || view.Address == "" {
+		t.Fatal("live client observation missing associated device, AP, signal, channel or IPv4")
+	}
+	t.Log("live client: association, interface, AP, signal, channel and IPv4 verified; no network mutation")
 }

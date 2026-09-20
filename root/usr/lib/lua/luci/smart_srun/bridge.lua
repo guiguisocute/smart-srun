@@ -504,10 +504,8 @@ end
 
 -- status_view is the one combined answer the page polls.
 --
--- What it cannot know, it leaves empty. The daemon reports link, authentication
--- and connectivity per account, plus the line each attempt actually used;
--- SSID, BSSID, signal and channel are not in it yet, and filling those in from
--- the configuration would state as observed what is only configured.
+-- Connection details come from the daemon's bounded, passive wireless cache.
+-- Configured SSIDs and BSSIDs are never used as proof of an association.
 function M.status_view(snapshot, config, now)
     now = now or os.time()
     local running = tostring(snapshot.service or "") == "running"
@@ -622,9 +620,37 @@ function M.status_view(snapshot, config, now)
     if payload.current_iface == "" and link_ready and account and wired then
         payload.current_iface = tostring(account.wired_iface or "")
     end
-    if link_ready and account and not wired then
-        payload.current_ssid = tostring(account.ssid or "")
-        payload.current_bssid = tostring(account.bssid or "")
+    if running and (mode == "hotspot" or (account and not wired)) then
+        local wireless = type(snapshot.wireless) == "table" and snapshot.wireless or {}
+        payload.current_wireless_ifname = tostring(wireless.device or "")
+        payload.ap_selection_policy = mode == "hotspot" and "auto"
+            or M.normalize_ap_selection(account.ap_selection, account.bssid)
+        local reasons = {
+            disconnected = "尚未连接无线网络",
+            unavailable = "暂时无法读取无线状态",
+            ambiguous = "检测到多个上联客户端，请检查无线配置",
+        }
+        payload.ap_selection_reason = reasons[wireless.state] or "等待无线状态检测"
+        if wireless.state == "associated" then
+            payload.current_ssid = tostring(wireless.ssid or "")
+            payload.current_bssid = tostring(wireless.bssid or "")
+            payload.current_iface = tostring(wireless.iface or "")
+            payload.current_device = tostring(wireless.device or "")
+            payload.current_ip = tostring(wireless.address or "")
+            local signal, channel = tonumber(wireless.signal), tonumber(wireless.channel)
+            payload.current_signal = signal and signal < 0 and signal >= -127 and signal or nil
+            payload.current_channel = channel and channel > 0 and channel or nil
+            if mode ~= "hotspot" and payload.current_ssid ~= tostring(account.ssid or "") then
+                payload.ap_selection_reason = "当前无线连接与所选校园网配置不同"
+            elseif payload.ap_selection_policy == "fixed" then
+                payload.ap_selection_reason = payload.current_bssid == tostring(account.bssid or ""):lower()
+                    and "已连接指定接入点" or "当前接入点与固定 BSSID 不同"
+            elseif payload.ap_selection_policy == "strongest" then
+                payload.ap_selection_reason = "连接时优先信号较强的接入点，保持当前连接"
+            else
+                payload.ap_selection_reason = "由无线系统选择接入点"
+            end
+        end
     end
 
     local hotspot_id = tostring(selection.active_hotspot_id or "")

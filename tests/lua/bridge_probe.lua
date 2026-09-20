@@ -351,6 +351,26 @@ local pending_link = {
 equal("status.link_problem", bridge.status_view(pending_link, CONFIG, 1000).status, "等待 IPv4 地址")
 equal("status.link_iface_unknown", bridge.status_view(pending_link, CONFIG, 1000).current_iface, "")
 
+-- Actual association data must win over a configured fixed BSSID. No radio
+-- observation may borrow the old address or invent a current AP from config.
+local wifi_config = { selection = {active_campus_id = "wifi"}, campus_accounts = {
+    {id = "wifi", access_mode = "wifi", ssid = "campus", bssid = "02:00:00:00:00:01", ap_selection = "fixed"}
+} }
+local wifi_state = {service = "running", accounts = {{account_id = "wifi", link = "Ready"}}, actions = {},
+    wireless = {state = "associated", device = "phy1-sta0", iface = "wwan", address = "192.0.2.9",
+        ssid = "campus", bssid = "02:00:00:00:00:02", signal = -53, channel = 44}}
+local wifi_view = bridge.status_view(wifi_state, wifi_config, 1000)
+equal("wifi.real_ap", wifi_view.current_bssid, "02:00:00:00:00:02")
+equal("wifi.device", wifi_view.current_wireless_ifname, "phy1-sta0")
+equal("wifi.signal", wifi_view.current_signal, -53)
+equal("wifi.channel", wifi_view.current_channel, 44)
+equal("wifi.policy", wifi_view.ap_selection_policy, "fixed")
+equal("wifi.mismatch", wifi_view.ap_selection_reason, "当前接入点与固定 BSSID 不同")
+wifi_state.wireless = nil
+wifi_view = bridge.status_view(wifi_state, wifi_config, 1000)
+equal("wifi.no_invented_ap", wifi_view.current_bssid, "")
+equal("wifi.no_invented_ssid", wifi_view.current_ssid, "")
+
 if failures > 0 then
     io.stderr:write(string.format("%d check(s) failed\n", failures))
     os.exit(1)

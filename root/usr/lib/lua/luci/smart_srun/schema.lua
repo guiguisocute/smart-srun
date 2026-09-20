@@ -117,6 +117,9 @@ end
 
 local function normalize_version_string(raw)
     local value = tostring(raw or "")
+	-- opkg and APK use different native RC separators; the UI uses the same
+	-- display version as the Go binary and the release tag.
+	value = value:gsub("~rc", "rc"):gsub("_rc", "rc")
     local version = value:match("^v?([0-9][%w%._%-]*)%-r?%d+$") or value:match("^v?([0-9][%w%._%-]*)$")
     if version and version ~= "" then
         version = version:gsub("_", "-")

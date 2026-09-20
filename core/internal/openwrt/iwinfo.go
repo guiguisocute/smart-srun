@@ -41,7 +41,13 @@ type RadioInfo struct {
 // still reports the SSID it is trying to reach on some drivers. A BSSID is the
 // AP it is talking to, and the all-zero one is the placeholder for "nobody".
 func (r RadioInfo) Associated() bool {
-	return r.SSID != "" && r.BSSID != "" && r.BSSID != "00:00:00:00:00:00"
+	return r.Client() && r.SSID != "" && r.BSSID != "" && r.BSSID != "00:00:00:00:00:00"
+}
+
+// Client distinguishes an uplink station from the router's own access point.
+func (r RadioInfo) Client() bool {
+	mode := strings.ToLower(strings.TrimSpace(r.Mode))
+	return mode == "client" || mode == "sta" || mode == "station" || mode == "managed"
 }
 
 type radioInfoJSON struct {

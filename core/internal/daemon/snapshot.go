@@ -75,6 +75,7 @@ type Snapshot struct {
 	WrittenAt      time.Time `json:"written_at"`
 
 	Accounts             []observe.AccountView `json:"accounts"`
+	Wireless             *WirelessView         `json:"wireless,omitempty"`
 	Actions              []ActionView          `json:"actions"`
 	ManualPausedAccounts []string              `json:"manual_paused_accounts,omitempty"`
 }

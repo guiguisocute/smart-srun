@@ -18,6 +18,14 @@ PROBE_DIR = Path(__file__).resolve().parent / "lua"
 
 
 class LuciRpcBridgeTests(unittest.TestCase):
+    def test_native_version_display(self):
+        lua = shutil.which("lua")
+        if not lua:
+            self.skipTest("lua is not installed")
+        result = subprocess.run([lua, str(PROBE_DIR / "version_probe.lua"), str(REPO_ROOT)],
+                                cwd=REPO_ROOT, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_discovery_and_refresh_controller(self):
         lua = shutil.which("lua")
         if not lua:

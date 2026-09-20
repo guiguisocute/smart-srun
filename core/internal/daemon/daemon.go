@@ -102,6 +102,7 @@ type Daemon struct {
 	wizard        *wifiWizard
 	manualPauses  *manualPauses
 	updater       *updateController
+	wirelessState wirelessObservation
 
 	// published is the last state an action was logged in, so a republication
 	// -- a cancellation arriving while the action is still running -- does not
@@ -373,6 +374,9 @@ func Run(ctx context.Context, options Options) error {
 	loops.Go(func() { coordinatorErr = service.actions.Run(background) })
 	loops.Go(func() { maintainerErr = maintainer.Run(background) })
 	loops.Go(func() { service.writeSnapshots(background) })
+	if options.Runner == nil {
+		loops.Go(func() { service.observeWireless(background, openwrt.NewAdapter(openwrt.Runner{})) })
+	}
 	if service.wizard != nil {
 		loops.Go(func() { service.wizard.runExpiry(background) })
 	}
@@ -595,6 +599,7 @@ func (d *Daemon) snapshotOf(actions []application.Action) Snapshot {
 		ConfigRevision:       cfg.Revision,
 		Version:              d.version,
 		Accounts:             projection.Accounts,
+		Wireless:             d.wirelessState.read(cfg.Revision),
 		ManualPausedAccounts: d.manualPauses.accounts(cfg),
 	}
 

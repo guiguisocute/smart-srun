@@ -113,7 +113,7 @@ func (w *deviceWireless) Association(ctx context.Context, radio string) (
 			"radio", "系统里没有无线电 %s", radio)
 	}
 	iface, running := found.FindInterface(stationSection(radio))
-	if !running || iface.IfName == "" {
+	if !found.Up || found.Pending || found.Disabled || found.RetrySetupFailed || !running || !iface.Station() || iface.IfName == "" {
 		// The section is disabled, or netifd has not brought it up. Not being
 		// associated is an answer; reporting it as a failure would make every
 		// first connection look like a broken radio.
@@ -123,6 +123,9 @@ func (w *deviceWireless) Association(ctx context.Context, radio string) (
 	info, err := w.adapter.RadioInfo(ctx, iface.IfName)
 	if err != nil {
 		return wifi.Association{}, err
+	}
+	if !info.Associated() {
+		return wifi.Association{}, nil
 	}
 	association := wifi.Association{SSID: info.SSID, BSSID: info.BSSID, Encrypted: info.Encrypted}
 	if !association.Joined() {
