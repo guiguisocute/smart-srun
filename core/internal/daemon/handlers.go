@@ -22,6 +22,8 @@ func (d *Daemon) register(registry *control.Registry) {
 	registry.Register("status.get", d.statusGet)
 	registry.Register("schema.get", d.schemaGet)
 	registry.Register("config.get", d.configGet)
+	registry.Register("config.export", d.configExport)
+	registry.Register("config.import", d.configImport)
 	registry.Register("config.validate", d.configValidate)
 	registry.Register("config.apply", d.configApply)
 	registry.Register("capabilities.get", d.capabilitiesGet)

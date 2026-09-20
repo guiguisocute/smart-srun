@@ -47,6 +47,8 @@ var catalogue = []Method{
 	{"version.get", KindRead, ""},
 
 	{"config.get", KindRead, "不返回秘密明文"},
+	{"config.export", KindRead, "明确 include_secrets 才导出凭据；不得用于状态轮询"},
+	{"config.import", KindMutate, "严格校验备份；预览不写盘；提交需要 expected_revision"},
 	{"config.validate", KindRead, "纯校验，不写盘"},
 	{"config.apply", KindMutate, "必须带 expected_revision；冲突时保留旧配置"},
 

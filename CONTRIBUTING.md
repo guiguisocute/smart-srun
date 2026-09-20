@@ -42,7 +42,7 @@ python3 scripts/verify_go_sdk.py sdk/artifacts/2.0.0rc1/build-record.json \
   --go /usr/local/go/bin/go --qemu /usr/bin/qemu-aarch64 --output checks/arm64
 ```
 
-APK 目标可通过 `--sign-key` 和 `--public-key` 传入维护者控制的密钥。私钥不得入库或上传到构建产物。脚本对自己的未签名输入执行离线签名，然后必须用公钥通过原生 `apk verify`，不能只相信签名命令的退出码。公钥信任引导、固件安装和发布验收是另外的步骤；不能在安装时加 `--allow-untrusted`。
+APK 目标可通过 `--sign-key` 和 `--public-key` 传入维护者控制的密钥。私钥不得入库或上传到构建产物。脚本对自己的未签名输入执行离线签名，然后必须用公钥通过原生 `apk verify`，不能只相信签名命令的退出码。用户可明确选择 `apk add --allow-untrusted` 手动安装已确认来源的文件，公钥为可选安装项；指南必须说明它跳过签名验证。内置更新、恢复、热部署和发布验收仍需受信原生验签，不能把手动绕过验证记为签名验收通过。
 
 ### GitHub Actions 与发布
 
@@ -91,3 +91,9 @@ python3 scripts/hot_update.py --host router \
 ```
 
 `--dry-run` 只校验本地文件；`--probe` 读取设备安装信息并选择包，不上传或安装；`--prepare` 上传并完成设备端核验但不安装。去掉这些参数后执行更新，或加 `--background` 提交后返回。必须同时提供当前精确版本的恢复包，不能混用 bundle 与 split，也不能降级成逐文件覆盖。实际安装仍由独立 Worker 处理，主服务停止不会中断它。
+
+### Versioned configuration backups
+
+LuCI Advanced Settings and `srunnet config export FILE|-` produce a credential-bearing `smart-srun-config` envelope (`format_version: 1`). Explicit `config import FILE|- --check` previews 1.6.1 (`config_schema: 1`) or Go (`config_schema: 2`) exports; commit with `--expected-revision` from that preview. Imports replace configuration, remain subject to actor/update/wizard guards and CAS, and leave automatic authentication disabled. Startup still never reads the old Python config path. User-preset catalogues and system network state are separate. Never attach real backups to tests, Issues or logs.
+
+The synthetic cross-version fixture is `tests/fixtures/config-backup-v1.json`; runtime, RPC, CLI and LuCI checks cover secret preservation, malformed input, stale previews and interrupted browser requests.

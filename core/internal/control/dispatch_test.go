@@ -337,7 +337,7 @@ func TestCatalogueCoversTheDeclaredMethodFamilies(t *testing.T) {
 	names := MethodNames()
 	for _, required := range []string{
 		"status.get", "schema.get", "capabilities.get", "version.get",
-		"config.get", "config.validate", "config.apply",
+		"config.get", "config.validate", "config.apply", "config.export", "config.import",
 		"campus.get", "campus.upsert", "campus.remove", "campus.set_default",
 		"hotspot.get", "hotspot.upsert", "hotspot.remove", "hotspot.set_default",
 		"action.submit", "action.get", "action.cancel",
@@ -354,8 +354,8 @@ func TestCatalogueCoversTheDeclaredMethodFamilies(t *testing.T) {
 			t.Errorf("catalogue is missing %q", required)
 		}
 	}
-	if len(names) != 41 {
-		t.Errorf("catalogue has %d methods, expected the 41 from the contract; "+
+	if len(names) != 43 {
+		t.Errorf("catalogue has %d methods, expected the 43 from the contract (D75 backups); "+
 			"adding one needs a decision record", len(names))
 	}
 }

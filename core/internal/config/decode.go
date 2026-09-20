@@ -13,7 +13,8 @@ import (
 
 // LegacySchemaVersion is the 1.x on-disk shape.
 //
-// 2.0 does not read it and does not convert it. Recognising it exists only so
+// Startup does not read or convert it. Explicit backups use ParseBackup.
+// Recognising an old on-disk file exists so
 // the user is told what happened instead of seeing a parse error -- and so the
 // repository knows not to overwrite the old file.
 const LegacySchemaVersion = 1
@@ -68,7 +69,7 @@ func checkSchemaVersion(data []byte) error {
 		// A 1.x file is a flat string map with no schema_version at all.
 		if looksLikeLegacy(data) {
 			return domain.Errorf(domain.CodeInvalidConfig,
-				"这是 1.x 的配置文件，2.0 不读取旧配置。原文件已保留，请在界面上重新配置。").
+				"这是 1.x 的配置文件，2.0 不读取旧配置。原文件已保留，请使用 1.6.1 导出备份，再通过进阶设置导入。").
 				Wrap(ErrLegacyConfig)
 		}
 		return domain.FieldErrorf(domain.CodeInvalidConfig, "schema_version",
@@ -76,7 +77,7 @@ func checkSchemaVersion(data []byte) error {
 	}
 	if *probe.SchemaVersion == LegacySchemaVersion {
 		return domain.Errorf(domain.CodeInvalidConfig,
-			"这是 1.x 的配置文件，2.0 不读取旧配置。原文件已保留，请在界面上重新配置。").
+			"这是 1.x 的配置文件，2.0 不读取旧配置。原文件已保留，请使用 1.6.1 导出备份，再通过进阶设置导入。").
 			Wrap(ErrLegacyConfig)
 	}
 	if *probe.SchemaVersion != domain.ConfigSchemaVersion {

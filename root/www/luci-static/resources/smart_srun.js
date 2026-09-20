@@ -106,6 +106,80 @@
     xhr.send('plan_id=' + encodeURIComponent(planId || '') + '&token=' + encodeURIComponent(requestToken()));
   }
 
+  function initConfigBackup() {
+    var root = document.getElementById('smart-srun-config-backup');
+    if (!root || root.getAttribute('data-initialized')) return;
+    root.setAttribute('data-initialized', '1');
+    var file = document.getElementById('smart-srun-config-file');
+    var importButton = document.getElementById('smart-srun-config-import');
+    var exportButton = document.getElementById('smart-srun-config-export');
+    var result = document.getElementById('smart-srun-config-result');
+    var pending = null, generation = 0, importing = false;
+    function post(endpoint, values, done) {
+      var xhr = new XMLHttpRequest(), body = ['token=' + encodeURIComponent(requestToken())];
+      for (var key in values) {
+        if (Object.prototype.hasOwnProperty.call(values, key)) body.push(encodeURIComponent(key) + '=' + encodeURIComponent(values[key]));
+      }
+      xhr.open('POST', '/cgi-bin/luci/admin/services/smart_srun/' + endpoint, true);
+      xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+      xhr.timeout = 30000;
+      var finished = false;
+      function finish(data) { if (finished) return; finished = true; done(data); }
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState !== 4) return;
+        var data = null;
+        if (xhr.status === 200) { try { data = JSON.parse(xhr.responseText); } catch (ignore) {} }
+        finish(data);
+      };
+      xhr.onerror = xhr.ontimeout = function() { finish(null); };
+      xhr.send(body.join('&'));
+    }
+    exportButton.onclick = function() {
+      exportButton.disabled = true;
+      post('config_export', {}, function(data) {
+        exportButton.disabled = false;
+        if (!data || data.format !== 'smart-srun-config') { result.textContent = '导出失败，请重试'; return; }
+        var url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2) + '\n'], {type:'application/json'}));
+        var link = document.createElement('a');
+        link.href = url; link.download = 'smart-srun-config.json';
+        document.body.appendChild(link); link.click(); document.body.removeChild(link);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+        result.textContent = '配置备份已下载，文件包含密码，请妥善保管。';
+      });
+    };
+    file.onchange = function() {
+      var selected = file.files && file.files[0], revision = ++generation;
+      pending = null; importButton.disabled = true;
+      if (importing || !selected) return;
+      if (selected.size > 524288) { result.textContent = '备份不能超过 512 KiB'; return; }
+      var reader = new FileReader();
+      result.textContent = '正在校验备份…';
+      reader.onerror = function() { if (generation === revision) result.textContent = '无法读取备份'; };
+      reader.onload = function() {
+        var text = String(reader.result || '');
+        if (generation !== revision) return;
+        post('config_import', {data:text, check:'1'}, function(data) {
+          if (generation !== revision) return;
+          if (!data || !data.ok) { result.textContent = (data && data.message) || '备份校验失败'; return; }
+          pending = {data:text, expected_revision:data.expected_revision};
+          importButton.disabled = false;
+          result.textContent = '备份包含 ' + data.campus_accounts + ' 个校园账号、' + data.hotspot_profiles + ' 个热点。确认导入将替换现有配置并关闭自动守护。' + (data.warnings && data.warnings.length ? '\n' + data.warnings.join('\n') : '');
+        });
+      };
+      reader.readAsText(selected);
+    };
+    importButton.onclick = function() {
+      if (!pending || importing) return;
+      importing = true; importButton.disabled = true; file.disabled = true;
+      result.textContent = '正在导入配置…';
+      post('config_import', pending, function(data) {
+        pending = null; importing = false; file.disabled = false; file.value = '';
+        result.textContent = (data && data.message) || '未能确认导入结果，请刷新页面检查配置；不要直接重复导入。';
+        if (data && data.ok) setTimeout(function() { window.location.reload(); }, 1500);
+      });
+    };
+  }
+
   function isPageHidden() {
     return document.hidden === true || document.webkitHidden === true;
   }
@@ -2633,6 +2707,7 @@
 
 
   function initAll() {
+    initConfigBackup();
     initVersionNotice();
     initTables();
     initSchoolInfo();

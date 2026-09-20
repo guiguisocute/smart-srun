@@ -26,10 +26,13 @@ GO_MIPS:=softfloat
 GO_PKG_TARGET_VARS:=$(filter-out CGO_ENABLED=1,$(GO_PKG_TARGET_VARS)) CGO_ENABLED=0
 GO_PKG_DEFAULT_LDFLAGS:=-s -w -buildid '$(SOURCE_DATE_EPOCH)' -linkmode internal
 
-# MIPS needs the smaller non-inlined build to fit the complete 10 MiB payload.
-# Other architectures retain normal inlining. No runtime feature is removed.
+# Keep the complete payload below 10 MiB without removing runtime features.
+# MIPS needs all packages non-inlined; amd64 needs only application packages.
+# The amd64 standard library and all other architectures retain normal inlining.
 ifneq ($(filter mips mipsle,$(GO_ARCH)),)
   GO_PKG_GCFLAGS:=all=-l
+else ifeq ($(GO_ARCH),amd64)
+  GO_PKG_GCFLAGS:=$(GO_PKG)/...=-l
 endif
 
 # Wireless observations use the iwinfo ubus object from rpcd-mod-iwinfo.

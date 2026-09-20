@@ -144,7 +144,7 @@ func TestDecodeReportsLegacyConfigWithoutConverting(t *testing.T) {
 				t.Fatalf("err = %v, want it to wrap ErrLegacyConfig so the "+
 					"repository knows not to overwrite the old file", err)
 			}
-			if !strings.Contains(err.Error(), "重新配置") {
+			if !strings.Contains(err.Error(), "导出备份") {
 				t.Fatalf("error %q does not tell the user what to do", err.Error())
 			}
 		})

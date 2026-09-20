@@ -3,7 +3,8 @@ package domain
 // ConfigSchemaVersion is the on-disk shape version.
 //
 // v2 is a deliberate break from the 1.x UCI-style string map. It is not read by
-// 1.x and does not read 1.x: finding an old file is reported, never converted.
+// 1.x; finding an old file at startup is reported, never converted. Explicit
+// versioned backup import is the only supported 1.6.1 conversion path.
 const ConfigSchemaVersion = 2
 
 // Config is the whole persisted user configuration.
