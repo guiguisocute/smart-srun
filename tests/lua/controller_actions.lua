@@ -102,6 +102,21 @@ local hotspot = harness.last_call("action.submit").params
 assert(hotspot.hotspot_id == "h1", tostring(hotspot.hotspot_id))
 assert(hotspot.account_id == nil, "a hotspot switch does not name a campus account")
 
+-- Background work is lower priority in the Go coordinator. A status preflight
+-- must not prevent the user's request from ever reaching that scheduler.
+for _, background in ipairs({ "maintain", "presets_refresh", "forced_logout", "quiet_hotspot", "quiet_campus" }) do
+    for _, state in ipairs({ "queued", "running" }) do
+        for _, manual in ipairs({ "manual_login", "manual_logout", "switch_campus", "switch_hotspot" }) do
+            harness.reset()
+            harness.responses["status.get"] = { actions = { { kind = background, state = state } } }
+            harness.form = { action = manual }
+            controller.action_enqueue()
+            assert(harness.output.ok == true, background .. ": " .. tostring(harness.output.message))
+            assert(harness.last_call("action.submit").params.kind == manual)
+        end
+    end
+end
+
 -- An action already in flight is refused with the frozen wording, and nothing
 -- is submitted behind it.
 harness.reset()
@@ -115,6 +130,27 @@ assert(harness.output.ok == false, "a second action must be refused")
 assert(harness.output.message:find("已有动作正在执行", 1, true), harness.output.message)
 assert(harness.output.pending_action == "switch_campus", harness.output.pending_action)
 assert(harness.last_call("action.submit") == nil, "nothing may be submitted")
+
+-- A wizard or an unknown kind remains a conflicting operation, including when
+-- it follows background work in the snapshot. Only known background kinds skip
+-- the preflight; the daemon can still reject a full/frozen queue itself.
+for _, kind in ipairs({ "manual_login", "relogin", "detect_verify", "wifi_setup_start", "future_action" }) do
+    harness.reset()
+    harness.responses["status.get"] = { actions = {
+        { kind = "maintain", state = "running" },
+        { kind = kind, state = "queued" },
+    } }
+    controller.action_enqueue()
+    assert(harness.output.ok == false)
+    assert(harness.output.pending_action == kind)
+    assert(harness.last_call("action.submit") == nil)
+end
+harness.reset()
+harness.responses["status.get"] = { actions = { { kind = "maintain", state = "running" } } }
+harness.responses["action.submit"] = { error = { code = "Busy", message = "队列已满" } }
+controller.action_enqueue()
+assert(harness.output.ok == false and harness.output.message == "队列已满")
+harness.responses["action.submit"] = { action_id = "a2", state = "queued" }
 harness.responses["status.get"] = RUNNING
 
 -- Force stop is the fixed lifecycle helper. No init script, no process hunt,

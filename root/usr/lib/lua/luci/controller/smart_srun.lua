@@ -435,6 +435,13 @@ local DAEMON_ACTIONS = {
     manual_logout = "已提交手动登出请求",
 }
 
+-- Go owns priority, cancellation and per-line serialization. Background work
+-- must not stop a higher-priority user request at the LuCI preflight.
+local BACKGROUND_ACTIONS = {
+    maintain = true, presets_refresh = true, forced_logout = true,
+    quiet_hotspot = true, quiet_campus = true,
+}
+
 -- 一次点击一个幂等键。同一秒内的重复提交会被协调器认成同一个动作，
 -- 这正是双击应该发生的事——不是第二次登录。
 local function idempotency_key(action, requested_at)
@@ -445,7 +452,8 @@ end
 local function running_action(snapshot)
     for _, action in ipairs(type(snapshot) == "table" and snapshot.actions or {}) do
         local state = tostring(action.state or "")
-        if state == "queued" or state == "running" then
+        if (state == "queued" or state == "running")
+            and not BACKGROUND_ACTIONS[tostring(action.kind or "")] then
             return tostring(action.kind or "")
         end
     end
