@@ -12,6 +12,7 @@ func (d *Daemon) finishSwitch(action application.Action, outcome application.Out
 	request := action.Request
 	if request.Kind == application.KindQuietHotspot || request.Kind == application.KindQuietCampus {
 		// Temporary scheduling never changes the user's selected profiles.
+		outcome = d.finishQuietRecord(action, outcome)
 		if !outcome.MaintenanceDeferred {
 			d.configChanged(d.config.Revision())
 		}
@@ -23,6 +24,9 @@ func (d *Daemon) finishSwitch(action application.Action, outcome application.Out
 	before := d.config.Snapshot()
 	if request.CheckRevision && request.ConfigRevision != before.Revision {
 		return switchSaveFailed(outcome)
+	}
+	if outcome = d.finishQuietRecord(action, outcome); outcome.State != application.StateSucceeded {
+		return outcome
 	}
 	selection := before.Selection
 	if request.Kind == application.KindSwitchCampus {

@@ -107,6 +107,9 @@ type MaintainerOptions struct {
 	// OnEvent receives what happened. Runs on the loop's goroutine, so it must
 	// return promptly and must not call back in.
 	OnEvent func(MaintenanceEvent)
+	// ResumeQuiet is a validated runtime record from the daemon's single
+	// writer. It is never inferred from merely observing a hotspot connection.
+	ResumeQuiet *QuietResume
 }
 
 // NewMaintainer builds one.
@@ -129,7 +132,7 @@ func NewMaintainer(options MaintainerOptions) *Maintainer {
 	if onEvent == nil {
 		onEvent = func(MaintenanceEvent) {}
 	}
-	return &Maintainer{
+	m := &Maintainer{
 		clock:    clock,
 		settings: options.Settings,
 		submit:   options.Submit,
@@ -141,6 +144,20 @@ func NewMaintainer(options MaintainerOptions) *Maintainer {
 		changes:  make(chan struct{}, 1),
 		accounts: map[string]*accountState{},
 	}
+	cfg := options.Settings.Snapshot()
+	m.revision = cfg.Revision
+	if resume := options.ResumeQuiet; resume != nil && resume.Matches(cfg, clock.Now()) {
+		m.quietSwitch = quietSwitchState{occurrence: resume.Occurrence, hotspotID: resume.HotspotID, done: true, owned: true}
+		m.occurrence = resume.Occurrence
+		if cfg.Quiet.ForceLogout {
+			// A recorded transition was allowed only after the entire logout
+			// sweep completed. Do not contact those campus lines via the hotspot.
+			for _, target := range policy.ForcedLogoutTargets(&cfg) {
+				m.sweep.Succeeded(resume.Occurrence, target.AccountID)
+			}
+		}
+	}
+	return m
 }
 
 // Observe is what the coordinator's Observer calls.

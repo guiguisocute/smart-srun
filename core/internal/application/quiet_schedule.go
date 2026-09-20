@@ -8,8 +8,35 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/policy"
 )
 
-// Ownership is deliberately runtime-only. An already selected hotspot, or one
-// observed after a restart without an owned transition, is left to the user.
+// QuietResume contains no credentials or network identifiers. The daemon may
+// retain it on tmpfs across service restarts; a router reboot clears it.
+type QuietResume struct {
+	Revision   uint64    `json:"revision"`
+	Occurrence string    `json:"occurrence"`
+	AccountID  string    `json:"account_id"`
+	HotspotID  string    `json:"hotspot_id"`
+	StartedAt  time.Time `json:"started_at"`
+}
+
+func (r QuietResume) Matches(cfg domain.Config, now time.Time) bool {
+	if r.Revision != cfg.Revision || !cfg.Enabled || !cfg.Failover.Enabled ||
+		r.AccountID != cfg.Selection.ActiveCampusID || now.Before(r.StartedAt) {
+		return false
+	}
+	if _, ok := cfg.CampusAccountByID(r.AccountID); !ok {
+		return false
+	}
+	if _, ok := cfg.HotspotByID(r.HotspotID); !ok {
+		return false
+	}
+	then := policy.EvaluateQuiet(cfg.Quiet, r.StartedAt)
+	current := policy.EvaluateQuiet(cfg.Quiet, now)
+	return then.Active && then.HasNext && then.Occurrence == r.Occurrence &&
+		now.Before(then.Next.Add(24*time.Hour)) && (!current.Active || current.Occurrence == r.Occurrence)
+}
+
+// An already selected hotspot without a matching owned transition is left to
+// the user. Configuration changes invalidate the retained scheduling intent.
 type quietSwitchState struct {
 	occurrence string
 	hotspotID  string

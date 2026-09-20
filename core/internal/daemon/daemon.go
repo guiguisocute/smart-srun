@@ -291,9 +291,14 @@ func Run(ctx context.Context, options Options) error {
 	// the coordinator publishes their results back to it. Resolving
 	// service.actions at call time rather than at construction is what breaks
 	// the knot without an initialisation order nobody can see.
+	resumeQuiet, resumeErr := readQuietResume(paths)
+	if resumeErr != nil {
+		report(resumeErr) // unknown ownership never grants permission to switch
+	}
 	maintainer := application.NewMaintainer(application.MaintainerOptions{
-		Clock:    clock,
-		Settings: repository,
+		Clock:       clock,
+		Settings:    repository,
+		ResumeQuiet: resumeQuiet,
 		Submit: func(ctx context.Context, request application.Request) (
 			application.Receipt, error) {
 			return service.actions.Submit(ctx, request)
@@ -329,6 +334,10 @@ func Run(ctx context.Context, options Options) error {
 			return service.wizard.check(request)
 		},
 		Observer: func(action application.Action) {
+			if (action.Request.Kind == application.KindQuietHotspot || action.Request.Kind == application.KindQuietCampus) &&
+				(action.State == application.StateCancelled || action.State == application.StateInterrupted) {
+				report(clearQuietResume(paths))
+			}
 			service.wizard.observe(action)
 			service.onAction(action)
 			// The loop learns what happened from the same publication the
