@@ -42,7 +42,13 @@ func TestTerminalSIGINTCleansPartialPassword(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestTerminalSignalHelper$")
+	program, args := os.Args[0], []string{"-test.run=^TestTerminalSignalHelper$"}
+	// Keep the child itself on the target architecture when go test uses
+	// -exec QEMU on a host without global binfmt registration.
+	if executor := os.Getenv("SMARTSRUN_TEST_EXECUTOR"); executor != "" {
+		args, program = append([]string{program}, args...), executor
+	}
+	cmd := exec.CommandContext(ctx, program, args...)
 	cmd.Env = append(os.Environ(), "SMARTSRUN_TEST_TTY_SIGNAL=1")
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
 	if err := cmd.Start(); err != nil {

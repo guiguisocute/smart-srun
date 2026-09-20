@@ -36,6 +36,12 @@ func TestMain(m *testing.M) {
 // helperCommand builds the argv that re-enters this binary as the helper.
 func helperCommand(t *testing.T, args ...string) (string, []string) {
 	t.Helper()
+	// Under user-mode QEMU the Runner's syscalls are emulated, but execve
+	// still enters the host kernel. Use a native copy of this same helper,
+	// without changing the Runner or weakening argv/environment/kill checks.
+	if host := os.Getenv("SMARTSRUN_TEST_HELPER_BIN"); host != "" {
+		return host, append([]string{helperFlag}, args...)
+	}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("locate the test binary: %v", err)
