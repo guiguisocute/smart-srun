@@ -195,12 +195,27 @@ type Worker struct {
 	Service Service
 }
 
-func (w Worker) Run(ctx context.Context) error {
+func (w Worker) Run(ctx context.Context) (result error) {
 	lock, err := acquireLock(w.Paths.WorkerLock())
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
+	workerInfo, _ := os.Lstat(w.Paths.Worker())
+	defer func() {
+		if result == nil {
+			// The executable must remain available throughout a failed install
+			// and recovery. A completed task has no journal and no more work for
+			// this private copy. Unlink before releasing the worker lock so a
+			// subsequent task cannot replace it between identification and cleanup.
+			if err := cleanupCompletedWorker(w.Paths, workerInfo); err != nil {
+				if status, readErr := ReadStatus(w.Paths); readErr == nil {
+					status.Message += "；临时更新程序未能清理"
+					_ = writeState(w.Paths.Status(), status)
+				}
+			}
+		}
+	}()
 	task, err := ReadTask(w.Paths)
 	if err != nil {
 		return storageError(err)

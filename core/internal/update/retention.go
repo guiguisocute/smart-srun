@@ -15,6 +15,25 @@ import (
 // terminal outcome cannot be inferred from directory names or modification time.
 const retainedBackups = 2
 
+func cleanupCompletedWorker(paths Paths, before os.FileInfo) error {
+	if err := Guard(paths); err != nil {
+		return err
+	}
+	current, err := os.Lstat(paths.Worker())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || before == nil || !current.Mode().IsRegular() ||
+		!os.SameFile(before, current) || before.Size() != current.Size() ||
+		!before.ModTime().Equal(current.ModTime()) {
+		return storageError(err)
+	}
+	if err := os.Remove(paths.Worker()); err != nil {
+		return storageError(err)
+	}
+	return syncDirectory(paths.Runtime)
+}
+
 type backupReceipt struct {
 	SchemaVersion  int       `json:"schema_version"`
 	JobID          string    `json:"job_id"`

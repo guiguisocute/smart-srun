@@ -54,6 +54,17 @@ func stageLocal(paths Paths, task Task) error {
 			return err
 		}
 	}
+	// Both private destinations have been copied, hashed and synced. Consume
+	// only this plan's verified upload files; retaining the inbox duplicates
+	// several MiB on tmpfs after every successful SSH deployment.
+	for _, input := range LocalInputs(paths, Candidate{Plan: task.Plan, Recovery: task.Recovery}) {
+		if err := VerifyFile(input); err != nil {
+			return err
+		}
+		if err := os.Remove(input.Path); err != nil {
+			return storageError(err)
+		}
+	}
 	return nil
 }
 
