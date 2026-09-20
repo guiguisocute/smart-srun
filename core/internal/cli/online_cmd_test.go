@@ -16,6 +16,7 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/control"
 	"github.com/matthewlu070111/smart-srun/core/internal/daemon"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/policy/faketime"
 )
 
 type cliRunner struct{ requests chan application.Request }
@@ -48,7 +49,14 @@ func onlineDaemon(t *testing.T) (onlineClient, <-chan application.Request) {
 	requests := make(chan application.Request, 16)
 	ctx, cancel := context.WithCancel(t.Context())
 	go func() {
-		done <- daemon.Run(ctx, daemon.Options{Paths: paths, Runner: cliRunner{requests}, Ready: func() { close(ready) }, OnError: func(err error) { t.Error(err) }})
+		done <- daemon.Run(ctx, daemon.Options{
+			Paths: paths, Runner: cliRunner{requests},
+			// 08:00 Beijing is before daily refresh, including after a backup
+			// import replaces the fixture's configuration with preset defaults.
+			Clock:   faketime.New(time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)),
+			Ready:   func() { close(ready) },
+			OnError: func(err error) { t.Error(err) },
+		})
 	}()
 	t.Cleanup(func() {
 		cancel()
