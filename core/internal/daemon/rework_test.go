@@ -108,6 +108,8 @@ func TestTheServiceAuthenticatesOnItsOwnAndLearnsHowItWent(t *testing.T) {
 	if _, err := repository.Update(repository.Revision(),
 		func(cfg *domain.Config) error {
 			cfg.Enabled = true
+			// This fixture observes authentication maintenance, not preset fetches.
+			cfg.PresetUpdates.Enabled = false
 			cfg.Checks.IntervalSeconds = 60
 			cfg.Selection.ActiveCampusID = "c1"
 			cfg.CampusAccounts = []domain.CampusAccount{{

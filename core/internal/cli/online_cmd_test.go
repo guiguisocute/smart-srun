@@ -37,6 +37,8 @@ func onlineDaemon(t *testing.T) (onlineClient, <-chan application.Request) {
 	}
 	cfg := config.Defaults()
 	cfg.Quiet.Enabled = false
+	// Only the commands under test should submit background actions.
+	cfg.PresetUpdates.Enabled = false
 	data, err := config.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
