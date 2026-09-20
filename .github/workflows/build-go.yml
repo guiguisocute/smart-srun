@@ -9,6 +9,10 @@ on:
         default: "2.0.0rc1"
         type: string
   workflow_call:
+    secrets:
+      SMARTSRUN_APK_SIGNING_KEY:
+        description: "Dedicated APK key; the release-signing environment takes precedence"
+        required: false
     inputs:
       version:
         required: true

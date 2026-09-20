@@ -131,6 +131,21 @@ class ReleaseAutomationTests(unittest.TestCase):
         self.assertNotIn('--clobber', publish)
         self.assertNotIn('build_go_sdk.py', publish)
 
+    def test_release_callers_forward_signing_context_only_to_builder(self):
+        import yaml
+        workflows = ROOT / '.github/workflows'
+        builder = yaml.safe_load((workflows / 'build-go.yml').read_text())
+        # PyYAML's YAML 1.1 reader treats the GitHub Actions `on` key as true.
+        triggers = builder.get('on', builder.get(True))
+        self.assertIs(triggers['workflow_call']['secrets']['SMARTSRUN_APK_SIGNING_KEY']['required'], False)
+        self.assertIn('release-signing', builder['jobs']['build']['environment'])
+        for name in ('build-release.yml', 'build-prerelease.yml'):
+            with self.subTest(workflow=name):
+                jobs = yaml.safe_load((workflows / name).read_text())['jobs']
+                self.assertEqual(jobs['candidate']['secrets'], 'inherit')
+                self.assertEqual(jobs['candidate']['uses'], './.github/workflows/build-go.yml')
+                self.assertNotIn('secrets', jobs['publish'])
+
 
 if __name__ == '__main__':
     unittest.main()
