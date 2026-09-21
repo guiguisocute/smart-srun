@@ -21,6 +21,8 @@
 
 2.0 使用 `/etc/smart-srun/config.json`，不自动读取或迁移 1.x 配置。首次升级可在 1.6.1 的进阶设置导出备份，再在 2.0 中预览并导入；导入后核对账号和网口，再启用自动守护。APK 可手动跳过签名验证安装，公钥为可选项；使用原生验签或内置更新器前需安装项目公钥，详见[安装与校验](https://srun-doc.guiguisocute.com/guide/download#安装与校验)。
 
+切网可能中断游戏、语音等已建立的连接。即使校园网和热点都能上网，更换公网出口后也不能保证 FF14 等游戏不断线。smart-srun 不提供跨出口的会话迁移；切换耗时和联网探测反映网络恢复情况，不代表原连接得到保留。
+
 详细说明请访问 [智慧深澜文档站](https://srun-doc.guiguisocute.com/)；
 
 参与项目见 [贡献说明与致谢](https://srun-doc.guiguisocute.com/contribute/)。
