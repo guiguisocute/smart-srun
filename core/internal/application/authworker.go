@@ -164,11 +164,15 @@ type attempt struct {
 	intent    auth.Intent
 	checkMode domain.CheckMode
 	checks    domain.ChecksConfig
-	revision  uint64
-	binding   domain.Binding
-	line      auth.Line
-	gateway   auth.Gateway
-	sequence  uint64
+	// Scheduled transitions wait for the portal to settle before moving on.
+	// Their authentication intent remains automatic: another user's session
+	// must never be cleared merely because a timetable fired.
+	confirmTerminal bool
+	revision        uint64
+	binding         domain.Binding
+	line            auth.Line
+	gateway         auth.Gateway
+	sequence        uint64
 }
 
 // authenticate is the login path: challenge, login, and then ask whose session
@@ -397,6 +401,12 @@ func (a *Authenticator) logout(ctx context.Context, action Action,
 				return failure(err)
 			}
 			if !dest.want.Satisfied(observed) {
+				if action.Request.Kind == KindForcedLogout {
+					// There is no usable campus wireless path to log out. Do not
+					// send credentials through a hotspot or retry this all night;
+					// completing this local step permits the scheduled transition.
+					return Outcome{State: StateSucceeded, Message: "校园无线未连接，未发送退出请求"}
+				}
 				return failure(domain.Errorf(domain.CodeBindingUnavailable, "当前无线连接不是该校园账号的线路，未发送退出请求"))
 			}
 		}
@@ -463,14 +473,15 @@ func (a *Authenticator) prepare(ctx context.Context, action Action,
 	}
 
 	prepared := &attempt{
-		account:   account,
-		username:  config.EffectiveUsername(account),
-		shape:     shapeOf(config.EffectiveLogin(cfg, account)),
-		intent:    intentOf(action.Request.Kind),
-		checkMode: cfg.Checks.Mode,
-		checks:    cfg.Checks,
-		revision:  revision,
-		sequence:  action.Sequence,
+		account:         account,
+		username:        config.EffectiveUsername(account),
+		shape:           shapeOf(config.EffectiveLogin(cfg, account)),
+		intent:          intentOf(action.Request.Kind),
+		checkMode:       cfg.Checks.Mode,
+		checks:          cfg.Checks,
+		revision:        revision,
+		sequence:        action.Sequence,
+		confirmTerminal: action.Request.Kind == KindForcedLogout || action.Request.Kind == KindQuietCampus,
 	}
 
 	iface, err := lineInterface(cfg, account)

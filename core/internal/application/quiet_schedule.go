@@ -16,6 +16,9 @@ type QuietResume struct {
 	AccountID  string    `json:"account_id"`
 	HotspotID  string    `json:"hotspot_id"`
 	StartedAt  time.Time `json:"started_at"`
+	// A manual hotspot choice inside the quiet window retains the upcoming
+	// return, but does not prove that managed wired accounts were logged out.
+	SweepPending bool `json:"sweep_pending,omitempty"`
 }
 
 func (r QuietResume) Matches(cfg domain.Config, now time.Time) bool {
@@ -35,8 +38,9 @@ func (r QuietResume) Matches(cfg domain.Config, now time.Time) bool {
 		now.Before(then.Next.Add(24*time.Hour)) && (!current.Active || current.Occurrence == r.Occurrence)
 }
 
-// An already selected hotspot without a matching owned transition is left to
-// the user. Configuration changes invalidate the retained scheduling intent.
+// Ownership records the next scheduled return, including an already selected
+// hotspot observed inside the quiet window. Outside that window manual choices
+// remain in effect. Configuration changes invalidate retained scheduling intent.
 type quietSwitchState struct {
 	occurrence string
 	hotspotID  string
@@ -101,6 +105,11 @@ func (m *Maintainer) applyQuietSwitch(action Action, cfg domain.Config, now time
 	if action.Request.Kind == KindSwitchCampus || action.Request.Kind == KindSwitchHotspot {
 		if action.State == StateSucceeded {
 			s.owned, s.done = false, true
+			quiet := policy.EvaluateQuiet(cfg.Quiet, action.StartedAt)
+			if action.Request.Kind == KindSwitchHotspot && cfg.Enabled && cfg.Failover.Enabled && quiet.Active {
+				*s = quietSwitchState{occurrence: quiet.Occurrence, hotspotID: action.Request.HotspotID,
+					done: true, owned: true}
+			}
 		}
 		return false
 	}

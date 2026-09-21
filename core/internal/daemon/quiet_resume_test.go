@@ -15,11 +15,11 @@ import (
 	"github.com/matthewlu070111/smart-srun/core/internal/policy/faketime"
 )
 
-func TestQuietTransitionSurvivesServiceRestartWithoutReclaimingManualHotspot(t *testing.T) {
+func TestQuietDeadlineSurvivesServiceRestartAndManualHotspotChoice(t *testing.T) {
 	for _, manual := range []bool{false, true} {
 		name := "scheduled return"
 		if manual {
-			name = "manual hotspot remains selected"
+			name = "manual hotspot during quiet retains morning return"
 		}
 		t.Run(name, func(t *testing.T) {
 			clock := faketime.New(time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC))
@@ -67,8 +67,8 @@ func TestQuietTransitionSurvivesServiceRestartWithoutReclaimingManualHotspot(t *
 				t.Fatalf("completed switch did not retain ownership: %+v / %v", marker, err)
 			}
 			if manual {
-				// Selecting the same profile does not change the config revision,
-				// but explicitly choosing it must revoke the automatic return.
+				// Choosing the same hotspot does not write config, but the
+				// enabled timetable still applies at the morning boundary.
 				var receipt SubmitResult
 				if err := json.Unmarshal(r.call("action.submit", SubmitParams{Kind: "switch_hotspot", HotspotID: "h1", IdempotencyKey: "stay-here"}), &receipt); err != nil {
 					t.Fatal(err)
@@ -76,8 +76,8 @@ func TestQuietTransitionSurvivesServiceRestartWithoutReclaimingManualHotspot(t *
 				if action := r.awaitTerminal(receipt.ActionID); action.State != application.StateSucceeded {
 					t.Fatalf("manual switch failed: %+v", action)
 				}
-				if marker, err := readQuietResume(r.paths); err != nil || marker != nil {
-					t.Fatalf("manual choice retained scheduled ownership: %+v / %v", marker, err)
+				if marker, err := readQuietResume(r.paths); err != nil || marker == nil || !marker.SweepPending || marker.Revision != 3 {
+					t.Fatalf("manual choice lost the return or invented a completed logout: %+v / %v", marker, err)
 				}
 			}
 			r.stop()
@@ -87,11 +87,7 @@ func TestQuietTransitionSurvivesServiceRestartWithoutReclaimingManualHotspot(t *
 			clock.Advance(time.Hour)
 			restarted := start(t, func(o *Options) { o.Paths, o.Clock, o.Runner = r.paths, clock, switchRunner{} })
 			restarted.paths, restarted.client = r.paths, control.Client{Path: r.paths.Socket()}
-			if manual {
-				awaitKind(restarted, application.KindMaintain)
-			} else {
-				awaitKind(restarted, application.KindQuietCampus)
-			}
+			awaitKind(restarted, application.KindQuietCampus)
 			if marker, err := readQuietResume(r.paths); err != nil || marker != nil {
 				t.Fatalf("ownership not released: %+v / %v", marker, err)
 			}

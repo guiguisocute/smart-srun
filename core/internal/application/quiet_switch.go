@@ -23,11 +23,22 @@ func (a *Authenticator) quietSwitch(ctx context.Context, action Action, report f
 		return failure(domain.Errorf(domain.CodeUnsupportedCapability, "无法管理无线出口，未执行静默切换"))
 	}
 	if entering {
-		// A user-selected hotspot is not owned by this schedule. Do not switch
-		// it now or claim permission to move it back when the window ends.
+		// Reuse the selected hotspot without scanning or reconfiguring it. An
+		// enabled timetable still owns the next campus return at quiet end.
 		if out, stop := a.deferOnHotspot(ctx, cfg, account); stop {
 			if out.MaintenanceDeferred {
-				return quietSwitchDeferred("已连接热点，保留当前连接")
+				observed, err := a.wireless.Association(ctx, hotspot.Radio)
+				if err != nil {
+					return failure(err)
+				}
+				dest, err := hotspotDestination(hotspot)
+				if err != nil {
+					return failure(err)
+				}
+				if dest.want.Satisfied(observed) {
+					return Outcome{State: StateSucceeded, Message: "保留当前热点，到上线时间自动返回校园网"}
+				}
+				return quietSwitchDeferred("当前热点与所选配置不同，保留当前连接")
 			}
 			return out
 		}

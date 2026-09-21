@@ -50,10 +50,12 @@ func (a *Authenticator) verifyLogout(ctx context.Context, tx *auth.Transaction, 
 }
 
 // Only confirmation is retried: this loop cannot send a password or unbind.
-// Maintenance has its own scheduler/backoff and never waits here between polls.
+// Scheduled transitions use the same bounded confirmation as manual actions;
+// an eventually consistent portal must not delay a switch by an entire normal
+// maintenance interval. Ordinary maintenance retains its scheduler/backoff.
 func (a *Authenticator) terminalChecks(ctx context.Context, p *attempt, check func() (Outcome, bool)) Outcome {
 	count := 1
-	if p.intent == auth.IntentManual {
+	if p.intent == auth.IntentManual || p.confirmTerminal {
 		count = max(1, min(config.MaxTerminalAttempts, p.checks.TerminalAttempts))
 	}
 	interval := time.Duration(max(1, min(config.MaxTerminalIntervalSeconds, p.checks.TerminalIntervalSeconds))) * time.Second
