@@ -20,6 +20,12 @@ end
 local bridge = require "luci.smart_srun.bridge"
 local rpc = require "luci.smart_srun.rpc"
 
+-- rpc calls sock:writeall/readall, which only exist once nixio.util has been
+-- loaded. It must load that itself: in the page nixio.fs happened to do it,
+-- and a caller that did not load nixio.fs first failed on its first request.
+check("rpc.loads_nixio_util", package.loaded["nixio.util"] ~= nil,
+    "luci.smart_srun.rpc did not require nixio.util")
+
 -- One configuration in exactly the shape config.get answers with.
 local CONFIG = {
     schema_version = 2,
