@@ -12,6 +12,10 @@
   <a href="https://srun-doc.guiguisocute.com/guide/troubleshooting">故障排查</a>
 </p>
 
+> [!IMPORTANT]
+> **当前稳定版是 [1.6.1](https://github.com/matthewlu070111/smart-srun/releases/tag/v1.6.1)（Python 版）。** 本分支是 2.0 Go 重写版，目前为预发布候选，适合愿意反馈问题的用户。
+> 1.6.1 的源码保留在 [`1.6.1` 分支](https://github.com/matthewlu070111/smart-srun/tree/1.6.1)，已安装的 1.6.1 不会被内置更新推送预发布版本。
+
 ## 使用
 
 1. 在[下载页](https://srun-doc.guiguisocute.com/guide/download)选择路由器型号，核对实际固件、包架构和包管理器：opkg 选择 `.ipk`，apk 选择 `.apk`。
