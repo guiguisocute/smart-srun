@@ -135,6 +135,9 @@ class LuaSyntaxSmokeTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            # rpc.lua loads nixio.util itself for writeall/readall, rather
+            # than relying on a sibling module having loaded nixio.fs first.
+            (stub_root / "nixio" / "util.lua").write_text("return {}\n", encoding="utf-8")
             (stub_root / "luci" / "smart_srun" / "schema.lua").write_text(
                 "\n".join(
                     [

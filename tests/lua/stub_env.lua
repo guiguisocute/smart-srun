@@ -12,6 +12,10 @@ package.preload["nixio"] = function()
     }
 end
 
+-- rpc.lua loads nixio.util for the socket's writeall/readall. Loading it adds
+-- methods and returns nothing the probe calls.
+package.preload["nixio.util"] = function() return {} end
+
 package.preload["luci.jsonc"] = function()
     return {
         stringify = function() error("the probe must not encode a frame") end,

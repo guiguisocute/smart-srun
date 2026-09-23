@@ -11,6 +11,12 @@
 -- argument list and no data from the request in it.
 
 local nixio = require "nixio"
+-- writeall and readall are not nixio methods: nixio.util adds them to the
+-- socket metatable. This module used to rely on something else having loaded
+-- it -- the controller and CBI page pull in nixio.fs, which does -- so it
+-- worked in the page and failed with "attempt to call method 'writeall'" from
+-- any caller that did not happen to load nixio.fs first.
+require "nixio.util"
 local jsonc = require "luci.jsonc"
 
 local M = {}

@@ -198,6 +198,7 @@ local jsonc = {parse=function() return nil end, stringify=function() return "[]"
 package.preload["nixio.fs"] = function() return fs end
 package.preload["luci.jsonc"] = function() return jsonc end
 package.preload["nixio"] = function() return {} end
+package.preload["nixio.util"] = function() return {} end
 local schema = dofile(SCHEMA_PATH)
 local util = {pcdata=function(value) return tostring(value or "") end,
     trim=function(value) return tostring(value or ""):match("^%s*(.-)%s*$") end}
