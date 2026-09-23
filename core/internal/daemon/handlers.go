@@ -58,6 +58,36 @@ func (d *Daemon) register(registry *control.Registry) {
 	registry.Register("update.check", d.updateCheck)
 	registry.Register("update.start", d.updateStart)
 	registry.Register("update.status", d.updateStatus)
+	registry.Register("schools.list", d.schoolsList)
+	registry.Register("schools.inspect", d.schoolsInspect)
+	// school.command stays unbound: a strategy is declarative and may not do
+	// I/O, so a declared command has nothing that could run it. The dispatcher
+	// answering "not in this build" is the truthful reply until that exists.
+}
+
+// SchoolInspectParams names one strategy.
+type SchoolInspectParams struct {
+	ID string `json:"id"`
+}
+
+// schoolsList answers the strategies this build knows, from the same registry
+// school_extra filtering and schema publication read. The CLI used to answer
+// this offline from its own copy while the RPC stayed unbound.
+func (d *Daemon) schoolsList(context.Context, json.RawMessage) (any, error) {
+	return config.SchoolRegistry.List(), nil
+}
+
+func (d *Daemon) schoolsInspect(_ context.Context, raw json.RawMessage) (any, error) {
+	var params SchoolInspectParams
+	if err := control.DecodeParams(raw, &params); err != nil {
+		return nil, err
+	}
+	school, ok := config.SchoolRegistry.Lookup(params.ID)
+	if !ok {
+		return nil, domain.FieldErrorf(domain.CodeNotFound, "id",
+			"没有这个认证策略；学校参数预设请用 presets.list")
+	}
+	return school, nil
 }
 
 // VersionResult is what version.get answers.
@@ -77,7 +107,9 @@ func (d *Daemon) statusGet(context.Context, json.RawMessage) (any, error) {
 }
 
 func (d *Daemon) schemaGet(context.Context, json.RawMessage) (any, error) {
-	return config.BuildSchema(), nil
+	// For the configured school, not the built-in one: the private fields a
+	// page has to render depend on which strategy is selected.
+	return config.BuildSchemaFor(d.config.Snapshot().School), nil
 }
 
 func (d *Daemon) configGet(context.Context, json.RawMessage) (any, error) {

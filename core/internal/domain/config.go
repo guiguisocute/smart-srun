@@ -167,6 +167,16 @@ type LoginShape struct {
 	DoubleStack *bool  `json:"double_stack,omitempty"`
 	OS          string `json:"os,omitempty"`
 	Name        string `json:"name,omitempty"`
+	// Alphabet is the 64-byte Base64 table this school's gateway decodes the
+	// encrypted info blob with. Empty means the table almost every SRun
+	// deployment uses.
+	//
+	// It is here rather than in a strategy because it is the same kind of thing
+	// as the fields above it: a protocol parameter that varies by deployment and
+	// needs no code to express. The baseline carried it as a per-school Python
+	// constant, which meant a school with a different table could only be
+	// supported by shipping a new module.
+	Alphabet string `json:"alphabet,omitempty"`
 }
 
 // HotspotProfile is a fallback uplink. AP policy and BSSID pinning belong to

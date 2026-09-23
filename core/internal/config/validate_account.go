@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/protocol/srun"
 )
 
 func validateCampusAccounts(problems *domain.Errors, cfg domain.Config) {
@@ -110,6 +111,17 @@ func validateLoginShape(problems *domain.Errors,
 	checkBytes(problems, field("login.info_prefix"), login.InfoPrefix, MaxNameBytes, false)
 	checkBytes(problems, field("login.os"), login.OS, MaxNameBytes, false)
 	checkBytes(problems, field("login.name"), login.Name, MaxNameBytes, false)
+
+	// An override is checked with the same constructor the protocol layer uses.
+	// A table that is the wrong length, repeats a character or contains the
+	// padding byte encodes to something the gateway cannot decode, and it would
+	// do so silently: the blob is encrypted and checksummed, so the only symptom
+	// is a login refused for no stated reason. Refuse it at save time instead.
+	if login.Alphabet != "" {
+		if _, err := srun.NewAlphabet(login.Alphabet); err != nil {
+			problems.Addf(field("login.alphabet"), "%s", err.Error())
+		}
+	}
 }
 
 func validateWirelessHalf(problems *domain.Errors,

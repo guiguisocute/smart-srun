@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/strategy"
 )
 
 // apply runs one change through a repository and returns the result, so every
@@ -388,14 +389,31 @@ func configsEqual(a, b domain.Config) bool {
 
 // Strategy-private values belong to the strategy that declared them. Carrying
 // them across a switch would hand the new one parameters it cannot interpret.
+//
+// Both schools here are test strategies, declared and not compiled in: spec 07
+// asks for proof that adding a school needs no code, and a test that used the
+// built-in strategy could not provide it -- that one declares no fields, so
+// every key would be dropped for the wrong reason.
 func TestSwitchingSchoolDropsThePreviousStrategysPrivateValues(t *testing.T) {
+	useTestStrategies(t,
+		strategy.Strategy{ID: "north-campus", Label: "北区",
+			Fields: []strategy.Field{{Key: "campus_zone", Label: "校区", Kind: strategy.FieldString}}},
+		strategy.Strategy{ID: "another-school", Label: "另一所",
+			Fields: []strategy.Field{{Key: "other_key", Label: "其它", Kind: strategy.FieldBool}}},
+	)
 	repository := emptyRepository(t)
 
-	withExtra := SettingsOf(repository.Snapshot())
-	withExtra.SchoolExtra = map[string]any{"campus_zone": "north"}
-	stored := apply(t, repository, ApplySettings(withExtra))
+	// Selecting the school is its own save: ApplySettings clears the map on a
+	// switch, so a save that changed both at once could never store anything.
+	selecting := SettingsOf(repository.Snapshot())
+	selecting.School = "north-campus"
+	selected := apply(t, repository, ApplySettings(selecting))
+
+	start := SettingsOf(selected)
+	start.SchoolExtra = map[string]any{"campus_zone": "north"}
+	stored := apply(t, repository, ApplySettings(start))
 	if stored.SchoolExtra["campus_zone"] != "north" {
-		t.Fatalf("school_extra was not stored: %+v", stored.SchoolExtra)
+		t.Fatalf("a declared key was not stored: %+v", stored.SchoolExtra)
 	}
 
 	switching := SettingsOf(stored)
@@ -411,8 +429,32 @@ func TestSwitchingSchoolDropsThePreviousStrategysPrivateValues(t *testing.T) {
 	same.SchoolExtra = map[string]any{"other_key": true}
 	kept := apply(t, repository, ApplySettings(same))
 	if kept.SchoolExtra["other_key"] != true {
-		t.Fatalf("school_extra was dropped without a switch: %+v", kept.SchoolExtra)
+		t.Fatalf("a declared key was dropped without a switch: %+v", kept.SchoolExtra)
 	}
+
+	// And a key the selected strategy never declared does not survive at all.
+	undeclared := SettingsOf(kept)
+	undeclared.SchoolExtra = map[string]any{"other_key": true, "smuggled": "x"}
+	filtered := apply(t, repository, ApplySettings(undeclared))
+	if _, present := filtered.SchoolExtra["smuggled"]; present {
+		t.Errorf("an undeclared key was stored: %+v", filtered.SchoolExtra)
+	}
+	if filtered.SchoolExtra["other_key"] != true {
+		t.Errorf("the declared key was lost alongside it: %+v", filtered.SchoolExtra)
+	}
+}
+
+// useTestStrategies installs a registry holding only the given strategies.
+func useTestStrategies(t *testing.T, items ...strategy.Strategy) {
+	t.Helper()
+	registry := strategy.NewRegistry()
+	registry.MustRegister(strategy.Default())
+	for _, item := range items {
+		if err := registry.Register(item); err != nil {
+			t.Fatalf("register %s: %v", item.ID, err)
+		}
+	}
+	UseSchoolRegistry(registry, t.Cleanup)
 }
 
 // The wireless half of an account must not survive a switch to wired, or the

@@ -23,6 +23,22 @@ ELF_TARGETS = {
     "mips": (1, 2, 8), "mipsle": (1, 1, 8),
 }
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def payload_limit():
+    """The installed payload budget, from the one file that owns it.
+
+    This verifier previously carried its own copy of the number. Two copies of a
+    limit is one copy too many: raising it in targets.json while this file kept
+    the old value would fail the release with a message pointing at the build,
+    not at the stale literal here.
+    """
+    limit = json.loads((ROOT / "targets.json").read_text(encoding="utf-8"))["development_payload_limit_bytes"]
+    if not isinstance(limit, int) or limit <= 0:
+        raise ValueError("Invalid development payload limit")
+    return limit
+
 
 def inspect_header(data, goarch):
     if len(data) < 64 or data[:4] != b"\x7fELF" or data[5] not in (1, 2):
@@ -86,6 +102,7 @@ def verify(record_path, go, apk=None, keys=None, execute=False, qemu=None):
         raise ValueError("Unsupported ELF inspection target")
     if target["format"] == "apk" and (not apk or not keys):
         raise ValueError("APK verification requires apk and trusted public keys")
+    limit = payload_limit()
     evidence, inspections = {"schema_version": 1, "assets": {}}, []
     for asset in record["artifacts"]:
         name = asset["file"]
@@ -103,7 +120,7 @@ def verify(record_path, go, apk=None, keys=None, execute=False, qemu=None):
                 or arch != expected_arch or arch != asset["architecture"] or files != asset["files"]
                 or sum(files.values()) != asset["installed_payload_bytes"]):
             raise ValueError("Native package identity or measured payload changed")
-        build.validate_payload(actual_name, files, 10 * 1024**2)
+        build.validate_payload(actual_name, files, limit)
         detail = {"file": name, "sha256": asset["sha256"], "architecture": arch,
                   "installed_payload_bytes": sum(files.values())}
         evidence["assets"][asset["sha256"]] = {}
@@ -118,7 +135,7 @@ def verify(record_path, go, apk=None, keys=None, execute=False, qemu=None):
                     with tarfile.open(package) as outer:
                         with tarfile.open(fileobj=io.BytesIO(outer.extractfile("./data.tar.gz").read())) as data:
                             candidates = [entry for entry in data if entry.name.removeprefix("./") == "usr/bin/srunnet"]
-                            if len(candidates) != 1 or not candidates[0].isfile() or candidates[0].size > 10 * 1024**2:
+                            if len(candidates) != 1 or not candidates[0].isfile() or candidates[0].size > limit:
                                 raise ValueError("Missing or unsafe packaged ELF")
                             binary.write_bytes(data.extractfile(candidates[0]).read())
                     binary.chmod(0o755)

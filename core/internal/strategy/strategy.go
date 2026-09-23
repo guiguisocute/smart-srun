@@ -24,14 +24,23 @@ import (
 
 // ReservedCommands are the CLI verbs a strategy may never take over.
 //
-// From CLAUDE.md, and the list is closed. A school that could claim "login"
-// would change what the core command means on that school's routers only,
-// which makes every instruction and every support answer conditional on which
-// school is configured.
+// A school that could claim "login" would change what the core command means on
+// that school's routers only, which makes every instruction and every support
+// answer conditional on which school is configured.
+//
+// This is the canonical list and cli.CoreCommands returns it. It used to be
+// duplicated there with two extra entries, under a comment saying the two could
+// not disagree -- they did, and the gap was real: "service" and "version" are
+// commands this build dispatches, so a strategy claiming either would have
+// shadowed a working verb. The list lives in this package because cli may
+// import strategy and strategy may not import cli.
+//
+// It is a superset of the sixteen verbs CLAUDE.md lists, which predates the
+// service and version commands.
 var ReservedCommands = []string{
 	"status", "login", "logout", "relogin", "daemon", "schools", "config",
 	"switch", "log", "enable", "disable", "help", "man", "update", "presets",
-	"detect",
+	"detect", "service", "version",
 }
 
 // FieldKind is the type of a declared extra field.

@@ -60,6 +60,14 @@ type Shape struct {
 	OS          string
 	Name        string
 	DoubleStack bool
+	// Alphabet is the gateway's Base64 table. Empty means the one almost every
+	// SRun deployment uses; a school with its own table sets it per account.
+	//
+	// Carried as the table rather than a parsed encoder because a Shape is
+	// assembled by the coordinator from resolved configuration, and that layer
+	// has nowhere to report a malformed table. Login is where it can fail
+	// usefully, so that is where it is parsed.
+	Alphabet string
 }
 
 // Line is the part of a bound transport this package uses.
@@ -195,11 +203,25 @@ func (t *Transaction) Login(ctx context.Context, creds Credentials, shape Shape,
 	if err != nil {
 		return Result{}, err
 	}
-	// The baseline table, passed explicitly. A school needing another one gets
-	// it from its strategy; leaving this implicit would make the choice
-	// invisible at the place the credentials are encrypted.
-	encrypted := srun.EncryptedInfo(shape.InfoPrefix, infoJSON, challenge.Token,
-		srun.DefaultAlphabet)
+	// The table is passed explicitly so the choice is visible at the place the
+	// credentials are encrypted.
+	//
+	// A configured table that does not parse fails the login rather than
+	// falling back to the common one. Falling back would encode the blob with a
+	// table the gateway does not use, and because the blob is encrypted and
+	// checksummed the only symptom would be a rejected login: the user would be
+	// told their password is wrong. Configuration validation refuses a bad
+	// table at save time, so reaching here with one means it arrived some other
+	// way, and guessing is the worst available answer.
+	alphabet := srun.DefaultAlphabet
+	if shape.Alphabet != "" {
+		configured, err := srun.NewAlphabet(shape.Alphabet)
+		if err != nil {
+			return Result{}, err
+		}
+		alphabet = configured
+	}
+	encrypted := srun.EncryptedInfo(shape.InfoPrefix, infoJSON, challenge.Token, alphabet)
 
 	// The checksum covers the bare digest, not the {MD5}-prefixed wire field.
 	checksum := srun.Checksum(challenge.Token, creds.Username, digest,
@@ -222,7 +244,7 @@ func (t *Transaction) Login(ctx context.Context, creds Credentials, shape Shape,
 	if err != nil {
 		return Result{}, err
 	}
-	return interpret(payload, creds.Username)
+	return interpret(payload)
 }
 
 // Online reports who is authenticated on this line right now.
@@ -263,7 +285,7 @@ func (t *Transaction) Logout(ctx context.Context, username, ip string) (Result, 
 	if err != nil {
 		return Result{}, err
 	}
-	return interpret(payload, username)
+	return interpret(payload)
 }
 
 // get performs one bounded request and returns the JSON inside the JSONP.

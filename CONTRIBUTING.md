@@ -31,9 +31,11 @@ python3 scripts/build_go_sdk.py --target x86_64-opkg-24.10.8 \
   --version 2.0.0rc1 --work-dir /tmp/smart-srun-sdk --bootstrap /usr/local/go
 ```
 
-工作目录不能有空格。脚本保留构建日志，并输出包、`SHA256SUMS` 和包含源码文件哈希、实际包版本、架构、大小的 `build-record.json`。已记录的同版本产物不会覆盖；构建通过不等于安装或独立验收通过。开发载荷限制为 10 MiB。
+工作目录不能有空格。脚本保留构建日志，并输出包、`SHA256SUMS` 和包含源码文件哈希、实际包版本、架构、大小的 `build-record.json`。已记录的同版本产物不会覆盖；构建通过不等于安装或独立验收通过。
 
-MIPS 使用 `GOMIPS=softfloat`，并关闭内联以满足完整载荷上限；其他架构保留正常内联。这会增加部分 CPU 操作耗时，不能将模拟器微基准当作真机延迟或内存验收。比较用例在 `core/tests/performance/`，资源和网络表现仍需在目标设备测量。
+开发载荷上限为 **16 MiB**（D80，此前 10 MiB），唯一来源是 `targets.json` 的 `development_payload_limit_bytes`；设备端由 `update.MaxPayloadBytes` 强制。改动请只改这两处，不要在脚本里另写字面值。放宽的依据是 D20 的体积归因：体积主要来自 Go 标准库的 crypto、runtime、net/http 和 encoding/json，本项目自身的包约占 5%，写更小的代码省不出来。
+
+MIPS 使用 `GOMIPS=softfloat`，并关闭内联以满足此前 10 MiB 的载荷上限；其他架构保留正常内联。这会增加部分 CPU 操作耗时，不能将模拟器微基准当作真机延迟或内存验收。16 MiB 之后是否恢复内联需要在完整 SDK 矩阵上实测体积与速度后再定，未随 D80 一并改动。比较用例在 `core/tests/performance/`，资源和网络表现仍需在目标设备测量。
 
 `scripts/verify_go_sdk.py` 重新核对原生包元数据、完整载荷、ELF 架构/大小端、静态链接和 Go 构建参数。必须提供构建记录、开发机 Go 和新的报告目录；`--qemu` 或 `--execute` 才运行包内版本命令。APK 另需 `--apk` 和受信公钥目录 `--keys`。输出的 `validation.json` 按包 SHA256 记录 ELF 检查，`inspection.json` 保存具体结果；版本命令成功不等于核心功能、安装或真机通过。
 

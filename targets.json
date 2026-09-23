@@ -3,7 +3,7 @@
   "go_version": "1.27.1",
   "go_source_sha256": "4e408abae126d916b6164627193f2c54f0e3ca1312d693b86db45f862ab238b1",
   "golang_framework_commit": "d0106a08c903fb3e02436021917c4d7ce9b19705",
-  "development_payload_limit_bytes": 10485760,
+  "development_payload_limit_bytes": 16777216,
   "targets": [
     {
       "id": "x86_64-opkg-24.10.8",

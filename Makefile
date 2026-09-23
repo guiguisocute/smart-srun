@@ -26,9 +26,15 @@ GO_MIPS:=softfloat
 GO_PKG_TARGET_VARS:=$(filter-out CGO_ENABLED=1,$(GO_PKG_TARGET_VARS)) CGO_ENABLED=0
 GO_PKG_DEFAULT_LDFLAGS:=-s -w -buildid '$(SOURCE_DATE_EPOCH)' -linkmode internal
 
-# Keep the complete payload below 10 MiB without removing runtime features.
-# MIPS needs all packages non-inlined; amd64 needs only application packages.
-# The amd64 standard library and all other architectures retain normal inlining.
+# Keep the complete payload inside the targets.json budget without removing
+# runtime features. MIPS needs all packages non-inlined; amd64 needs only
+# application packages. The amd64 standard library and all other architectures
+# retain normal inlining.
+#
+# D80 raised that budget from 10 to 16 MiB, which is what these -l flags were
+# bought with: disabling inlining costs run-time speed on exactly the slowest
+# devices. Restoring it is a separate change because it needs a measured build
+# on the full SDK matrix, not an assumption that the headroom covers it.
 ifneq ($(filter mips mipsle,$(GO_ARCH)),)
   GO_PKG_GCFLAGS:=all=-l
 else ifeq ($(GO_ARCH),amd64)

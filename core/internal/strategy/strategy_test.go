@@ -268,15 +268,34 @@ func TestAnUnknownStrategyIsNotSilentlySubstituted(t *testing.T) {
 	}
 }
 
-// The reserved list is the one CLAUDE.md fixes. A verb quietly dropped from it
-// becomes claimable by a strategy.
-func TestTheReservedListIsTheDocumentedOne(t *testing.T) {
-	expected := []string{
+// The reserved list covers every verb this build dispatches. A verb quietly
+// dropped from it becomes claimable by a strategy.
+//
+// It is a superset of the sixteen CLAUDE.md fixes: "service" and "version" are
+// commands the CLI answers and were missing here while cli.CoreCommands kept a
+// second copy that included them.
+func TestTheReservedListCoversEveryDispatchedVerb(t *testing.T) {
+	documented := []string{
 		"status", "login", "logout", "relogin", "daemon", "schools", "config",
 		"switch", "log", "enable", "disable", "help", "man", "update",
 		"presets", "detect",
 	}
-	if !slices.Equal(ReservedCommands, expected) {
-		t.Errorf("reserved commands = %v, want %v", ReservedCommands, expected)
+	for _, name := range documented {
+		if !slices.Contains(ReservedCommands, name) {
+			t.Errorf("documented verb %q is no longer reserved", name)
+		}
+	}
+	for _, name := range []string{"service", "version"} {
+		if !slices.Contains(ReservedCommands, name) {
+			t.Errorf("dispatched verb %q is not reserved; a strategy could shadow it", name)
+		}
+	}
+
+	seen := map[string]bool{}
+	for _, name := range ReservedCommands {
+		if seen[name] {
+			t.Errorf("reserved verb %q is listed twice", name)
+		}
+		seen[name] = true
 	}
 }

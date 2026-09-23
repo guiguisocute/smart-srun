@@ -7,13 +7,15 @@ import (
 	"os"
 	"time"
 
+	"github.com/matthewlu070111/smart-srun/core/internal/config"
 	"github.com/matthewlu070111/smart-srun/core/internal/daemon"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
-	"github.com/matthewlu070111/smart-srun/core/internal/strategy"
 )
 
 func onlineSchools(args []string, stdout, stderr *os.File) int {
-	registry := strategy.Builtin()
+	// The registry school_extra filtering and the daemon's schools.* read, so
+	// the CLI cannot list a strategy the daemon would treat as unknown.
+	registry := config.SchoolRegistry
 	if len(args) == 1 && args[0] == "list" {
 		for _, school := range registry.List() {
 			fmt.Fprintf(stdout, "%s\t%s\n", school.ID, school.Label)

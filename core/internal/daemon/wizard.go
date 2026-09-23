@@ -176,6 +176,15 @@ func (r wifiRoutingRunner) Run(ctx context.Context, action application.Action, r
 	if !action.Request.Kind.WifiSetup() {
 		return r.actions.Run(ctx, action, report)
 	}
+	// Mounted even without a wizard, so this answers instead of the worker's
+	// "not implemented" fallback. A build on a router with no manageable radio
+	// has a capability problem, not a missing feature, and telling a user the
+	// wizard was never written sends them to the wrong place.
+	if r.wizard == nil {
+		return application.Outcome{State: application.StateFailed,
+			Code:    domain.CodeUnsupportedCapability,
+			Message: "这台设备没有可管理的无线客户端，无法使用无线向导"}
+	}
 	var err error
 	if action.Request.Kind == application.KindWifiSetupStart {
 		err = r.wizard.start(ctx, action)

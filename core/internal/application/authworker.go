@@ -151,9 +151,32 @@ func (a *Authenticator) Run(ctx context.Context, action Action,
 	case KindSwitchHotspot:
 		return a.switchHotspot(ctx, action, report)
 	default:
+		// Reached only by a kind that no decorator claimed. RoutedElsewhere
+		// names the ones that are somebody else's on purpose, and a test pins
+		// HandledHere plus RoutedElsewhere to AllKinds -- so a new kind whose
+		// router was never wired fails that test instead of reaching a user as
+		// "not implemented".
 		return Outcome{State: StateFailed, Code: domain.CodeUnsupportedCapability,
-			Message: "动作 " + string(action.Request.Kind) + " 尚未实现"}
+			Message: "动作 " + string(action.Request.Kind) + " 没有对应的执行器，请报告此问题"}
 	}
+}
+
+// HandledHere are the kinds the authentication worker performs itself.
+//
+// Listed rather than derived: the switch above is the implementation, and a
+// list generated from it could not catch the switch being wrong.
+func HandledHere() []Kind {
+	return []Kind{KindQuietHotspot, KindQuietCampus, KindLogin, KindRelogin,
+		KindMaintain, KindSwitchCampus, KindForcedLogout, KindLogout,
+		KindSwitchHotspot}
+}
+
+// RoutedElsewhere are the kinds a decorator intercepts before this worker sees
+// them: preset refresh, the discovery probes and the wireless wizard.
+func RoutedElsewhere() []Kind {
+	return []Kind{KindPresetsRefresh, KindDetectACID, KindDetectEnvironment,
+		KindDetectOperators, KindDetectIdentity, KindDetectVerify,
+		KindWifiSetupStart, KindWifiSetupCancel}
 }
 
 // attempt is everything one action needs, resolved once at its start.
@@ -806,5 +829,6 @@ func shapeOf(login config.EffectiveLoginShape) auth.Shape {
 		OS:          login.OS,
 		Name:        login.Name,
 		DoubleStack: login.DoubleStack,
+		Alphabet:    login.Alphabet,
 	}
 }

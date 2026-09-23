@@ -14,6 +14,15 @@ revision=$(git -C "$project_dir" rev-parse --short=12 HEAD)
 if [ -n "$(git -C "$project_dir" status --porcelain -- core)" ]; then revision="$revision.dirty"; fi
 version="0.0.0-dev.$revision"
 arch=${GOARCH:-$(go env GOARCH)}
+# targets.json owns the payload budget. Read it rather than repeating it here,
+# and refuse to build on anything that is not a plain decimal count of bytes --
+# a silently empty value would turn the check below into a comparison against
+# nothing, which passes.
+payload_limit=$(sed -n 's/.*"development_payload_limit_bytes"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+    "$project_dir/targets.json")
+case "$payload_limit" in
+    ''|*[!0-9]*) echo "Cannot read development_payload_limit_bytes from targets.json" >&2; exit 1 ;;
+esac
 mkdir -p "$stage_dir/usr/bin" "$stage_dir/etc/init.d" \
     "$stage_dir/usr/share/smart-srun" \
     "$stage_dir/usr/lib/lua/luci/controller" "$stage_dir/usr/lib/lua/luci/model/cbi" \
@@ -64,8 +73,8 @@ chmod 644 "$stage_dir/usr/share/smart-srun/school-presets.json"
     for relative in $luci_files; do
         payload_bytes=$((payload_bytes + $(wc -c < "$relative")))
     done
-    if [ "$payload_bytes" -gt 10485760 ]; then
-        echo "Development payload exceeds the 10 MiB budget: $payload_bytes bytes" >&2
+    if [ "$payload_bytes" -gt "$payload_limit" ]; then
+        echo "Development payload exceeds the $payload_limit byte budget: $payload_bytes bytes" >&2
         exit 1
     fi
     printf 'version=%s\narch=%s\ninstalled_payload_bytes=%s\nformat=development-tar-not-sdk-package\n' \

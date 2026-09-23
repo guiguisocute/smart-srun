@@ -1,6 +1,9 @@
 package config
 
-import "github.com/matthewlu070111/smart-srun/core/internal/domain"
+import (
+	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/protocol/srun"
+)
 
 // FieldKind is the shape a value has, in terms a form can act on.
 type FieldKind string
@@ -55,6 +58,60 @@ type Schema struct {
 	// UnverifiedOperatorSuffix is published so the editor can show the hint for
 	// it without hard-coding the sentinel in two languages.
 	UnverifiedOperatorSuffix string `json:"unverified_operator_suffix"`
+	// SchoolExtra are the selected strategy's private fields, in the same shape
+	// as every other field so the page renders them the same way.
+	//
+	// Always present, empty when the strategy declares nothing. The page used to
+	// get these from a contract it never fetched, so the controls could not
+	// appear whatever a strategy declared; publishing them here, through the
+	// schema call the page already makes, is what connects the two ends.
+	SchoolExtra []SchoolField `json:"school_extra"`
+}
+
+// SchoolField is one strategy-private control.
+//
+// It carries the choices a select needs, which the flat Field shape has no room
+// for, and it names the strategy it came from: a page holding a stale schema
+// must be able to tell that the school changed under it.
+type SchoolField struct {
+	Strategy    string   `json:"strategy"`
+	Key         string   `json:"key"`
+	Label       string   `json:"label"`
+	Kind        string   `json:"kind"`
+	Help        string   `json:"help,omitempty"`
+	Choices     []Choice `json:"choices,omitempty"`
+	StoragePath string   `json:"path"`
+}
+
+// Choice is one option of a select or multi field.
+type Choice struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+// SchoolExtraFields converts a strategy's declarations into published fields.
+//
+// An unknown strategy publishes nothing rather than failing: the page asks for
+// a schema, and a configuration naming a strategy this build does not have is a
+// thing to render as "no private settings", not an error that blanks the form.
+func SchoolExtraFields(school string) []SchoolField {
+	declared, known := SchoolRegistry.Lookup(school)
+	if !known {
+		return []SchoolField{}
+	}
+	out := make([]SchoolField, 0, len(declared.Fields))
+	for _, field := range declared.Fields {
+		item := SchoolField{
+			Strategy: declared.ID, Key: field.Key, Label: field.Label,
+			Kind: string(field.Kind), Help: field.Help,
+			StoragePath: "school_extra." + field.Key,
+		}
+		for _, option := range field.Options {
+			item.Choices = append(item.Choices, Choice{Value: option.Value, Label: option.Label})
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func num(value float64) *float64 { return &value }
@@ -67,9 +124,16 @@ func enumStrings[T ~string](values []T) []string {
 	return out
 }
 
-// BuildSchema derives the contract from the same defaults and limits the
-// validator enforces, so a changed default cannot reach the form as the old one.
-func BuildSchema() Schema {
+// BuildSchema derives the contract for the built-in strategy.
+//
+// Offline callers -- `srunnet config schema` with the daemon stopped -- have no
+// configuration to read a school from, so they get the default one.
+func BuildSchema() Schema { return BuildSchemaFor(DefaultSchool) }
+
+// BuildSchemaFor derives the contract from the same defaults and limits the
+// validator enforces, so a changed default cannot reach the form as the old
+// one, and publishes the named strategy's private fields alongside them.
+func BuildSchemaFor(school string) Schema {
 	defaults := Defaults()
 
 	schema := Schema{
@@ -79,6 +143,7 @@ func BuildSchema() Schema {
 		CampusAccount:            campusAccountFields(),
 		Hotspot:                  hotspotFields(),
 		UnverifiedOperatorSuffix: UnverifiedOperatorSuffix,
+		SchoolExtra:              SchoolExtraFields(school),
 	}
 	schema.Collections.MaxCampusAccounts = MaxCampusAccounts
 	schema.Collections.MaxHotspotProfiles = MaxHotspotProfiles
@@ -204,6 +269,9 @@ func campusAccountFields() []Field {
 			Note: "配置里是布尔值，发到网关时映射为 \"0\"/\"1\""},
 		{Path: "login.os", Kind: KindString, Default: DefaultLoginOS, MaxBytes: MaxNameBytes},
 		{Path: "login.name", Kind: KindString, Default: DefaultLoginName, MaxBytes: MaxNameBytes},
+		{Path: "login.alphabet", Kind: KindString, Default: srun.DefaultAlphabetTable,
+			MaxBytes: srun.AlphabetSize,
+			Note:     "深澜自定义 Base64 字母表，64 个互不相同的可见 ASCII 字符且不含 =；留空使用通用表。绝大多数学校不需要填"},
 
 		{Path: "preset_id", Kind: KindString, MaxBytes: MaxIDBytes,
 			Note: "只记录填写来源；刷新目录不得据此覆盖已保存参数"},

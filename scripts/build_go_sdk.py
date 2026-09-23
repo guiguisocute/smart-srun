@@ -65,7 +65,10 @@ def validate_payload(package, files, limit):
     if package not in PACKAGES or not expected <= files.keys() or files.keys() - expected - metadata:
         raise ValueError("Package payload differs from the explicit runtime file list")
     if any(not isinstance(size, int) or size < 0 for size in files.values()) or sum(files.values()) > limit:
-        raise ValueError("Installed payload exceeds the 10 MiB budget or has an invalid size")
+        # The limit is reported rather than spelled out: it comes from
+        # targets.json, and a literal here said "10 MiB" for as long as that was
+        # true and would have gone on saying it afterwards.
+        raise ValueError(f"Installed payload exceeds the {limit} byte budget or has an invalid size")
 
 
 def digest(path):

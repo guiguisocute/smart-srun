@@ -328,7 +328,7 @@ func (t *Transaction) Confirm() error {
 
 // Rollback undoes what this transaction wrote, and only that.
 func (t *Transaction) Rollback(ctx context.Context) (Outcome, error) {
-	return rollback(ctx, t.store, t.paths, t.journal, t.now)
+	return rollback(ctx, t.store, t.paths, t.journal)
 }
 
 func (t *Transaction) setPhase(phase Phase) error {
@@ -345,8 +345,7 @@ func (t *Transaction) setPhase(phase Phase) error {
 // while this was running. An option somebody else has since changed is left
 // exactly as found and reported as a conflict, because the alternative is this
 // program quietly reverting somebody's work.
-func rollback(ctx context.Context, store Store, paths Paths, journal *Journal,
-	now func() time.Time) (Outcome, error) {
+func rollback(ctx context.Context, store Store, paths Paths, journal *Journal) (Outcome, error) {
 
 	if journal.Phase.Terminal() {
 		return Outcome{Phase: journal.Phase}, nil
@@ -644,6 +643,6 @@ func Recover(ctx context.Context, store Store, paths Paths,
 func rollbackAndReport(ctx context.Context, store Store, paths Paths,
 	journal *Journal, now func() time.Time) (Outcome, bool, error) {
 
-	outcome, err := rollback(ctx, store, paths, journal, now)
+	outcome, err := rollback(ctx, store, paths, journal)
 	return outcome, true, err
 }

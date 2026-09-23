@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/strategy"
 )
 
 // Exit codes, fixed by spec 03. A script can branch on these without parsing
@@ -52,15 +53,12 @@ func ExitCodeFor(err error) int {
 
 // CoreCommands are the command names a school strategy may never claim.
 //
-// The list lives here, next to the parser, so the strategy registry and the CLI
-// cannot disagree about what is reserved. A strategy that shadowed `logout`
-// would make the documented way to log out stop working.
+// Returned from strategy.ReservedCommands rather than restated, so the registry
+// and the CLI cannot disagree about what is reserved. They previously each kept
+// their own copy under a comment making this same promise, and the copies had
+// drifted apart by two entries.
 func CoreCommands() []string {
-	return []string{
-		"status", "login", "logout", "relogin", "daemon", "schools", "config",
-		"switch", "log", "enable", "disable", "help", "man", "update",
-		"presets", "detect", "service", "version",
-	}
+	return slices.Clone(strategy.ReservedCommands)
 }
 
 // IsCoreCommand reports whether name is reserved.

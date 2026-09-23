@@ -284,9 +284,10 @@ func Run(ctx context.Context, options Options) error {
 	}
 	runner = presetRoutingRunner{actions: runner, refresh: refresh}
 	runner = probeRoutingRunner{actions: runner, daemon: service}
-	if service.wizard != nil {
-		runner = wifiRoutingRunner{actions: runner, wizard: service.wizard}
-	}
+	// Unconditional: a nil wizard is a state this router reports, not a reason
+	// to leave the wifi_setup kinds unrouted and let them fall through to the
+	// authentication worker's "not implemented" default.
+	runner = wifiRoutingRunner{actions: runner, wizard: service.wizard}
 
 	// The maintenance loop is built before the coordinator and submits through
 	// a closure, because each needs the other: the loop submits actions, and

@@ -459,6 +459,43 @@ local function account_by_id(config, id)
     return nil
 end
 
+-- portal_origin reduces a configured gateway address to a bare HTTP(S)
+-- origin, or "" when it is not one.
+--
+-- 1.6.1's rule, kept: scheme and host (IPv6 in brackets, or letters, digits,
+-- dots and hyphens) with an optional port, nothing else. No userinfo, no path,
+-- no whitespace, control characters or backslashes -- the last because browsers
+-- disagree about what a backslash in an authority means.
+local function portal_origin(value)
+    -- Schemes are case-insensitive; the answer is always written lower-case.
+    local scheme, rest = trim(value):match("^(%a+)://(.*)$")
+    scheme = scheme and scheme:lower()
+    if scheme ~= "http" and scheme ~= "https" then return "" end
+    local authority = rest:match("^([^/%?#]+)")
+    if not authority or authority:find("[%s%c\\@]") then return "" end
+    local host, port = authority:match("^(%[[%x:]+%])(.*)$")
+    if not host then host, port = authority:match("^([%w%.%-]+)(.*)$") end
+    if not host or not (port == "" or port:match("^:%d%d?%d?%d?%d?$")) then return "" end
+    return scheme:lower() .. "://" .. authority
+end
+
+-- failed_login_portal answers the page's "open the school's page" link.
+--
+-- Only after a failed manual login, as in 1.6.1, and only from the account that
+-- action was for -- not whichever account is active by the time the page asks.
+-- The address is the one the user configured. A gateway's response body never
+-- supplies a URL here.
+local function failed_login_portal(action, config)
+    if type(action) ~= "table" or tostring(action.kind or "") ~= "manual_login"
+        or tostring(action.state or "") ~= "failed" then
+        return ""
+    end
+    local account = account_by_id(config or {}, tostring(action.account_id or ""))
+    return account and portal_origin(account.base_url) or ""
+end
+
+M.portal_origin = portal_origin
+
 local function view_by_id(snapshot, id)
     for _, view in ipairs(snapshot.accounts or {}) do
         if view.account_id == id then
@@ -637,7 +674,7 @@ function M.status_view(snapshot, config, now)
         wired_auth_sessions = {},
         last_action = last and tostring(last.kind or "") or "",
         last_action_message = last and tostring(last.message or "") or "",
-        last_action_portal_url = "",
+        last_action_portal_url = failed_login_portal(last, config),
         action_result = last and ACTION_RESULT[tostring(last.state or "")] or "",
         last_action_ts = last_action_ts,
         action_started_at = feedback_pending and now or 0,
@@ -764,6 +801,48 @@ end
 -- same mapping the save path uses means a changed default cannot reach the
 -- form as the old one, and a field nobody mapped cannot acquire a default that
 -- nothing would ever apply.
+-- school_extra_descriptors answers the selected strategy's private controls.
+--
+-- The page used to build these from parse_school_runtime_contract(""), a
+-- literal empty string, so the list was always empty and every control below it
+-- was unreachable whatever a strategy declared. The daemon publishes the
+-- declarations through the same schema.get the defaults above come from; this
+-- translates them into the shape the page's normaliser already expects.
+--
+-- Kind names differ on purpose: Go names them for the configuration contract
+-- (number, select, multi), the page names them for its widgets (int, enum).
+-- Translating here keeps both vocabularies honest. "multi" has no widget yet
+-- and is passed through unmapped, which the page's supported-type filter drops.
+local SCHOOL_EXTRA_KINDS = { string = "string", bool = "bool",
+    number = "int", select = "enum" }
+
+function M.school_extra_descriptors()
+    local schema, err = rpc.call("schema.get", nil)
+    if not schema then
+        return nil, err
+    end
+    local out = {}
+    for _, field in ipairs(schema.school_extra or {}) do
+        if type(field) == "table" then
+            local kind = tostring(field.kind or "string")
+            local choices = {}
+            for _, choice in ipairs(field.choices or {}) do
+                if type(choice) == "table" and choice.value ~= nil then
+                    choices[#choices + 1] = tostring(choice.value)
+                end
+            end
+            out[#out + 1] = {
+                key = tostring(field.key or ""),
+                type = SCHOOL_EXTRA_KINDS[kind] or kind,
+                label = tostring(field.label or ""),
+                description = tostring(field.help or ""),
+                choices = choices,
+            }
+        end
+    end
+    return out
+end
+
 function M.defaults()
     local schema, err = rpc.call("schema.get", nil)
     if not schema then
@@ -842,6 +921,11 @@ function M.action_feedback(action_id)
     payload.last_action = action.kind
     payload.action_result = result
     payload.last_action_message = tostring(action.message or "")
+    -- The configuration is read only for the one outcome that can use it, so
+    -- polling a running action costs no extra call.
+    if action.kind == "manual_login" and action.state == "failed" then
+        payload.last_action_portal_url = failed_login_portal(action, rpc.call("config.get", nil))
+    end
     return payload
 end
 

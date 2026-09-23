@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/strategy"
 )
 
 func openWith(t *testing.T, cfg domain.Config) (*Repository, string) {
@@ -213,8 +214,15 @@ func TestAnInvalidResultIsRefusedBeforeWriting(t *testing.T) {
 // Snapshot has to hand out something the caller cannot use to reach into the
 // repository -- including through the pointer inside LoginShape.
 func TestSnapshotIsIndependentOfTheStoredConfiguration(t *testing.T) {
+	// A declared field, so the value survives school_extra filtering and this
+	// test still measures what it is about: whether the copy is deep.
+	useTestStrategies(t, strategy.Strategy{ID: "deep-copy", Label: "深拷贝",
+		Fields: []strategy.Field{{Key: "choices", Label: "选项", Kind: strategy.FieldMulti,
+			Options: []strategy.Option{{Value: "a", Label: "A"}, {Value: "b", Label: "B"}}}}})
+
 	start := validStartingConfig()
 	enabled := true
+	start.School = "deep-copy"
 	start.CampusAccounts[0].Login.DoubleStack = &enabled
 	start.SchoolExtra = map[string]any{"choices": []any{"a", "b"}}
 	repository, _ := openWith(t, start)
