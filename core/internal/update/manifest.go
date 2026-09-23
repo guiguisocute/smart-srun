@@ -14,8 +14,14 @@ const (
 	Repository       = "matthewlu070111/smart-srun"
 	MaxManifestBytes = 256 << 10
 	MaxAssetBytes    = 16 << 20
-	MaxPayloadBytes  = 10 << 20
-	MaxAssets        = 256
+	// MaxPayloadBytes is the installed size one device may accept, raised from
+	// 10 MiB by D80. The old limit left 132 KiB on mipsel, which is not a
+	// budget -- it is a number that refuses the next change whatever that
+	// change is. D20 measured where the size actually goes: crypto, runtime,
+	// net/http and encoding/json, with this project's own packages at about
+	// 5%, so the limit cannot be met by writing smaller code.
+	MaxPayloadBytes = 16 << 20
+	MaxAssets       = 256
 )
 
 type Validation struct {

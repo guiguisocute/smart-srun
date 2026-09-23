@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import json
 from pathlib import Path
+import re
 import tempfile
 import tarfile
 import unittest
@@ -72,6 +73,38 @@ class GoSDKBuildTests(unittest.TestCase):
         del files["usr/bin/srunnet"]
         with self.assertRaises(ValueError):
             build.validate_payload("luci-app-smart-srun-bundle", files, 10 * 1024**2)
+
+    def test_payload_budget_has_one_source(self):
+        """targets.json and the device constant must agree, and nothing may fork them.
+
+        D80 raised the budget from 10 to 16 MiB and found the old number written
+        out in five places. A build-side limit that drifts above the device's
+        produces packages the router refuses to install; one that drifts below
+        refuses a package the router would have accepted. Either way the failure
+        names the build, not the stale literal, so this pins them together.
+        """
+        limit = json.loads((ROOT / "targets.json").read_text(encoding="utf-8"))["development_payload_limit_bytes"]
+        self.assertEqual(limit, 16 * 1024**2)
+
+        source = (ROOT / "core/internal/update/manifest.go").read_text(encoding="utf-8")
+        shift = re.search(r"MaxPayloadBytes\s*=\s*(\d+)\s*<<\s*(\d+)", source)
+        self.assertIsNotNone(shift, "MaxPayloadBytes is no longer a shift literal")
+        self.assertEqual(int(shift.group(1)) << int(shift.group(2)), limit)
+
+        # Every enforcement point must read the budget by name. Checking for the
+        # key rather than banning its value keeps this honest about the
+        # neighbouring constants: hot_update_go.MAX_PACKAGE is the compressed
+        # asset cap and currently happens to be 16 MiB too, which a value-based
+        # check would report as drift it is not.
+        for name in ("scripts/verify_go_sdk.py", "scripts/hot_update_go.py",
+                     "scripts/build_go_sdk.py", "scripts/build-go-dev.sh"):
+            text = (ROOT / name).read_text(encoding="utf-8")
+            self.assertIn("development_payload_limit_bytes", text,
+                          f"{name} does not read the budget from targets.json")
+            # The superseded value must survive nowhere: unlike 16 MiB it is not
+            # shared with any other limit, so any occurrence is a stale copy.
+            self.assertNotRegex(text, r"10485760|\b10 ?\* ?1024\*\*2",
+                                f"{name} still carries the old 10 MiB budget")
 
     def test_rc_and_stable_native_versions(self):
         self.assertEqual(build.package_version("2.0.0rc10", "opkg"), "2.0.0~rc10")

@@ -18,6 +18,12 @@ from urllib.parse import urlsplit
 
 MAX_MANIFEST = 256 * 1024
 MAX_PACKAGE = 16 * 1024**2
+# The installed payload budget, read from the file that owns it so the uploader
+# and the device agree. The device enforces update.MaxPayloadBytes; a stale copy
+# here would refuse a package the router would have accepted.
+MAX_PAYLOAD = json.loads(
+    (Path(__file__).resolve().parents[1] / "targets.json").read_text(encoding="utf-8")
+)["development_payload_limit_bytes"]
 NAMES = {"core": "smart-srun", "luci": "luci-app-smart-srun", "bundle": "luci-app-smart-srun-bundle"}
 STATUS_COMMAND = "if [ -x /var/run/smart-srun/update-worker ]; then /var/run/smart-srun/update-worker update status; else /usr/bin/srunnet update status; fi"
 
@@ -92,8 +98,8 @@ def select(inputs, inventory, recovery=False):
             raise ValueError("Recovery package is not the exact installed version")
         verify_local(path, asset)
         chosen.append((asset, path))
-    if len({a["package_version"] for a, _ in chosen}) != 1 or sum(a["installed_bytes"] for a, _ in chosen) > 10 * 1024**2:
-        raise ValueError("Split version mismatch or installed payload exceeds 10 MiB")
+    if len({a["package_version"] for a, _ in chosen}) != 1 or sum(a["installed_bytes"] for a, _ in chosen) > MAX_PAYLOAD:
+        raise ValueError(f"Split version mismatch or installed payload exceeds {MAX_PAYLOAD} bytes")
     return chosen
 
 

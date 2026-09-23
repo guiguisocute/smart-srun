@@ -128,8 +128,11 @@ func BuildPlan(manifest Manifest, inventory Inventory, channel string) (Plan, er
 		return Plan{}, domain.Errorf(domain.CodePackageIncompatible, "核心与界面安装包版本不匹配")
 	}
 	// LuCI + core together count against the same device payload limit.
+	// The message reads the constant rather than repeating it: the previous
+	// literal said 10 MiB and would have kept saying so after D80 raised it.
 	if plan.InstalledBytes > MaxPayloadBytes {
-		return Plan{}, domain.Errorf(domain.CodePackageIncompatible, "安装后的总载荷超过 10 MiB 限制")
+		return Plan{}, domain.Errorf(domain.CodePackageIncompatible,
+			"安装后的总载荷超过 %d MiB 限制", MaxPayloadBytes>>20)
 	}
 	data, err := json.Marshal(plan)
 	if err != nil {
