@@ -414,6 +414,79 @@ wifi_view = bridge.status_view(wifi_state, wifi_config, 1000)
 equal("wifi.no_invented_ap", wifi_view.current_bssid, "")
 equal("wifi.no_invented_ssid", wifi_view.current_ssid, "")
 
+-- A failed manual login offers the school's page again, as 1.6.1 did.
+--
+-- The page has always had the link (renderPortalGuidance). The 2.0 bridge sent
+-- "" in both places that feed it, so the path could never fire. The address is
+-- the configured one for the account that failed, reduced to an origin.
+local function failed(kind, account_id, state)
+    return { service = "running", written_at = "2026-09-18T12:00:30Z", actions = {
+        { kind = kind, account_id = account_id, state = state or "failed",
+          message = "认证失败", ended_at = "2026-09-18T12:00:10Z" },
+    } }
+end
+equal("portal.failed_login", bridge.status_view(failed("manual_login", "c1"), CONFIG, 1000)
+    .last_action_portal_url, "http://10.0.0.55")
+equal("portal.succeeded_login", bridge.status_view(failed("manual_login", "c1", "succeeded"), CONFIG, 1000)
+    .last_action_portal_url, "")
+equal("portal.cancelled_login", bridge.status_view(failed("manual_login", "c1", "cancelled"), CONFIG, 1000)
+    .last_action_portal_url, "")
+for _, kind in ipairs({ "manual_logout", "relogin", "switch_campus", "switch_hotspot" }) do
+    equal("portal.not_after_" .. kind, bridge.status_view(failed(kind, "c1"), CONFIG, 1000)
+        .last_action_portal_url, "")
+end
+-- The account the login was for, not the active one: c2 is not active here.
+local elsewhere = {}
+for key, value in pairs(CONFIG) do elsewhere[key] = value end
+elsewhere.campus_accounts = {
+    CONFIG.campus_accounts[1],
+    { id = "c2", base_url = "https://portal.example.edu:8443/srun_portal_pc?ac_id=8" },
+}
+equal("portal.uses_the_failed_account", bridge.status_view(failed("manual_login", "c2"), elsewhere, 1000)
+    .last_action_portal_url, "https://portal.example.edu:8443")
+equal("portal.unknown_account", bridge.status_view(failed("manual_login", "gone"), CONFIG, 1000)
+    .last_action_portal_url, "")
+
+-- Only a bare origin survives. Everything refused here is something a browser
+-- would resolve differently from what the user sees, or would carry
+-- credentials or control characters into a link.
+for value, want in pairs({
+    ["http://10.0.0.55"] = "http://10.0.0.55",
+    ["http://10.0.0.55/"] = "http://10.0.0.55",
+    ["  HTTP://gw.example.edu:801/path  "] = "http://gw.example.edu:801",
+    ["http://[fe80::1]:8080/x"] = "http://[fe80::1]:8080",
+    ["http://user:pw@10.0.0.55"] = "",
+    ["http://10.0.0.55\\@evil.example"] = "",
+    ["javascript:alert(1)"] = "",
+    ["ftp://10.0.0.55"] = "",
+    ["http://"] = "",
+    ["http://gw example"] = "",
+    ["http://gw.example:port"] = "",
+    ["http://gw.example:123456"] = "",
+    ["10.0.0.55"] = "",
+    [""] = "",
+}) do
+    equal("portal.origin[" .. value .. "]", bridge.portal_origin(value), want)
+end
+
+-- The progress dialog reads its own receipt through action_feedback.
+local real_call = rpc.call
+local answers = {}
+rpc.call = function(method) return answers[method] end
+answers["config.get"] = CONFIG
+answers["action.get"] = { id = "a1", kind = "manual_login", account_id = "c1", state = "failed", message = "认证失败" }
+equal("feedback.failed_login_portal", bridge.action_feedback("a1").last_action_portal_url, "http://10.0.0.55")
+answers["action.get"] = { id = "a1", kind = "manual_login", account_id = "c1", state = "running" }
+answers["config.get"] = nil
+equal("feedback.running_reads_no_config", bridge.action_feedback("a1").last_action_portal_url, "")
+answers["action.get"] = { id = "a1", kind = "manual_logout", account_id = "c1", state = "failed", message = "x" }
+answers["config.get"] = CONFIG
+equal("feedback.logout_has_no_portal", bridge.action_feedback("a1").last_action_portal_url, "")
+answers["action.get"] = { id = "a1", kind = "manual_login", account_id = "c1", state = "failed", message = "x" }
+answers["config.get"] = nil
+equal("feedback.config_unreadable", bridge.action_feedback("a1").last_action_portal_url, "")
+rpc.call = real_call
+
 if failures > 0 then
     io.stderr:write(string.format("%d check(s) failed\n", failures))
     os.exit(1)

@@ -78,9 +78,19 @@ for _, state in ipairs({ "queued", "running", "succeeded", "failed", "cancelled"
     harness.reset()
     harness.form = { action_id = "instance-a1" }
     harness.responses["action.get"] = {id = "instance-a1", kind = "manual_login", state = state,
-        message = "this request", ended_at = "2026-09-18T11:00:00Z", result = { secret = "private" }}
+        account_id = "c1", message = "this request", ended_at = "2026-09-18T11:00:00Z",
+        result = { secret = "private" }}
+    harness.responses["config.get"] = CONFIG
     controller.action_status()
-    assert(#harness.calls == 1 and #harness.helpers == 0)
+    -- Polling costs one read. The one outcome that can offer the school's page
+    -- (a failed manual login) costs one more, of the already-redacted
+    -- configuration, and never starts the service.
+    if state == "failed" then
+        assert(#harness.calls == 2 and #harness.helpers == 0, #harness.calls)
+        assert(harness.calls[2].method == "config.get" and not harness.calls[2].started)
+    else
+        assert(#harness.calls == 1 and #harness.helpers == 0, #harness.calls)
+    end
     local read = harness.calls[1]
     assert(read.method == "action.get" and not read.started)
     assert(read.params.action_id == "instance-a1" and read.params.session == nil)

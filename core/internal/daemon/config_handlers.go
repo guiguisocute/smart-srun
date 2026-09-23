@@ -15,6 +15,11 @@ type ConfigWriteResult struct {
 	Revision uint64        `json:"config_revision"`
 	ID       string        `json:"id,omitempty"`
 	Config   domain.Config `json:"config"`
+	// Warnings names input the save accepted but did not keep. Spec 03 drops
+	// school_extra keys the selected strategy does not declare "with a
+	// diagnostic"; this is that diagnostic, so a caller that sent a key learns
+	// it was discarded instead of finding it missing later.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type ConfigApplyParams struct {
@@ -33,20 +38,37 @@ func (d *Daemon) configApply(ctx context.Context, raw json.RawMessage) (any, err
 	if err := config.DecodePatch(params.Settings, &shape); err != nil {
 		return nil, err
 	}
-	return d.changeConfig(ctx, params.ExpectedRevision, "", "", func(cfg *domain.Config) error {
+	var dropped []string
+	result, err := d.changeConfig(ctx, params.ExpectedRevision, "", "", func(cfg *domain.Config) error {
 		settings := config.SettingsOf(*cfg)
 		var supplied map[string]json.RawMessage
 		if err := json.Unmarshal(params.Settings, &supplied); err != nil {
 			return domain.Errorf(domain.CodeInvalidArgument, "settings 格式无效")
 		}
-		if _, present := supplied["school_extra"]; present {
+		_, extraSupplied := supplied["school_extra"]
+		if extraSupplied {
 			settings.SchoolExtra = nil // a supplied object replaces the old map
 		}
 		if err := config.DecodePatch(params.Settings, &settings); err != nil {
 			return err
 		}
+		// Only keys the caller actually sent are reported. A save that switched
+		// strategy clears the map by design and is not the caller's mistake.
+		dropped = nil
+		if extraSupplied && settings.School == cfg.School {
+			_, dropped = config.FilterSchoolExtra(settings.School, settings.SchoolExtra)
+		}
 		return config.ApplySettings(settings)(cfg)
 	})
+	if err != nil {
+		return nil, err
+	}
+	written := result.(ConfigWriteResult)
+	for _, key := range dropped {
+		written.Warnings = append(written.Warnings,
+			"school_extra."+key+" 不是当前认证策略声明的字段，已丢弃")
+	}
+	return written, nil
 }
 
 type CampusUpsertParams struct {

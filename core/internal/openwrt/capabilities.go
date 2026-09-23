@@ -112,9 +112,10 @@ func (c Capabilities) RequireUbusObject(objects ...UbusObject) error {
 	return nil
 }
 
-// Deliberately absent: a method listing everything that was found. It would
-// have no caller until the capabilities RPC exists in M08, and an accessor
-// nobody calls is an accessor nobody has had to get right.
+// Deliberately absent: a method listing everything that was found. The
+// capabilities.get RPC asks Has and HasUbusObject for a fixed list instead, so
+// the wire shape is decided by that handler rather than by whatever this scan
+// happened to discover.
 
 // Require reports the first missing tool as UnsupportedCapability.
 //

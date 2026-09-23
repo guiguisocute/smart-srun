@@ -25,13 +25,17 @@ type WirelessPlan struct {
 
 // Wireless moves the managed client between networks and reports what it sees.
 //
-// Consumer-defined here, and deliberately not implemented in this milestone.
-// Applying a wireless change safely is a transaction -- staging directory,
-// before/after comparison, a journal that survives a reboot, and a rollback
-// that only restores values this transaction wrote -- and spec 07 puts that in
-// M10 with the explicit rule that nothing may modify a real radio until that
-// card passes. A build without one refuses a switch; it does not perform half
-// of one.
+// Consumer-defined here: spec 02 asks for interfaces where they are used, and
+// the implementation is daemon's deviceWireless, which applies a change as a
+// transaction -- staging directory, before/after comparison, a journal that
+// survives a reboot, and a rollback that only restores values this transaction
+// wrote.
+//
+// It stays an interface rather than a direct dependency because a nil one is a
+// meaningful state: a build or a device that cannot change a radio refuses a
+// switch outright rather than performing half of one. daemon assembles it
+// explicitly for that reason -- a nil *deviceWireless in an interface is not a
+// nil interface, and that is exactly where the distinction would be lost.
 type Wireless interface {
 	// Association is what the client radio is doing right now.
 	Association(ctx context.Context, radio string) (wifi.Association, error)

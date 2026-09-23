@@ -57,6 +57,10 @@ type LoginPatch struct {
 	DoubleStack **bool  `json:"double_stack,omitempty"`
 	OS          *string `json:"os,omitempty"`
 	Name        *string `json:"name,omitempty"`
+	// Absent keeps the stored table. The frozen LuCI account form does not
+	// submit this field, so a page save must not be able to clear a table set
+	// from the CLI -- which is exactly what the pointer means here.
+	Alphabet *string `json:"alphabet,omitempty"`
 }
 
 // HotspotPatch is a partial hotspot profile.
@@ -90,10 +94,9 @@ type Settings struct {
 	Log           domain.LogConfig          `json:"log"`
 	PresetUpdates domain.PresetUpdateConfig `json:"preset_updates"`
 
-	// SchoolExtra is strategy-private storage. Filtering it against the
-	// strategy's declared descriptors needs the strategy registry and lands
-	// with it (M06); what is enforced here is the rule that does not need
-	// descriptors -- switching strategy drops the previous one's values.
+	// SchoolExtra is strategy-private storage. ApplySettings drops the previous
+	// strategy's values on a switch; keys the selected strategy never declared
+	// are dropped by Normalize, through FilterSchoolExtra and SchoolRegistry.
 	SchoolExtra map[string]any `json:"school_extra"`
 }
 
@@ -314,25 +317,34 @@ func RepairSelection(cfg *domain.Config) {
 		firstHotspot = cfg.HotspotProfiles[0].ID
 	}
 
+	// The configured default is consulted before the first account.
+	//
+	// Otherwise "默认账号" is a setting that decides nothing: the active pointer
+	// fell straight back to whichever account happened to be first in the list,
+	// and the default was then rewritten to follow the active one -- so it could
+	// only ever agree with a choice it had no part in. Reading the stored value
+	// here, before the line below repairs it, is what gives it an effect: delete
+	// the account you are on, and you land on the one you nominated.
 	cfg.Selection.ActiveCampusID = repairPointer(
-		cfg.Selection.ActiveCampusID, campus, firstCampus)
+		cfg.Selection.ActiveCampusID, campus, cfg.Selection.DefaultCampusID, firstCampus)
 	cfg.Selection.DefaultCampusID = repairPointer(
 		cfg.Selection.DefaultCampusID, campus, cfg.Selection.ActiveCampusID)
 	cfg.Selection.ActiveHotspotID = repairPointer(
-		cfg.Selection.ActiveHotspotID, hotspots, firstHotspot)
+		cfg.Selection.ActiveHotspotID, hotspots, cfg.Selection.DefaultHotspotID, firstHotspot)
 	cfg.Selection.DefaultHotspotID = repairPointer(
 		cfg.Selection.DefaultHotspotID, hotspots, cfg.Selection.ActiveHotspotID)
 }
 
-func repairPointer(id string, known map[string]struct{}, fallback string) string {
-	if id != "" {
-		if _, ok := known[id]; ok {
-			return id
+// repairPointer keeps id if it still names something, otherwise takes the first
+// fallback that does. Fallbacks are tried in order, so a dangling default does
+// not stop the next candidate from being used.
+func repairPointer(id string, known map[string]struct{}, fallbacks ...string) string {
+	for _, candidate := range append([]string{id}, fallbacks...) {
+		if candidate == "" {
+			continue
 		}
-	}
-	if fallback != "" {
-		if _, ok := known[fallback]; ok {
-			return fallback
+		if _, ok := known[candidate]; ok {
+			return candidate
 		}
 	}
 	return ""
@@ -375,6 +387,7 @@ func (p LoginPatch) applyTo(shape *domain.LoginShape) {
 	assign(&shape.InfoPrefix, p.InfoPrefix)
 	assign(&shape.OS, p.OS)
 	assign(&shape.Name, p.Name)
+	assign(&shape.Alphabet, p.Alphabet)
 
 	// Two levels of pointer: the outer one is presence, the inner one is the
 	// tri-state the field itself has. Sending an explicit null clears the

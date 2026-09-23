@@ -21,8 +21,8 @@ import (
 // is applied first and re-applied on every start rather than treated as
 // cosmetic, and it is what makes "only the local root user" true here.
 //
-// Accepting connections, the procd service and the lifecycle around them are
-// M08. This establishes the endpoint and nothing else.
+// This establishes the endpoint and nothing else. Accepting connections is
+// Serve; the procd service and its lifecycle are the daemon package's.
 func Listen(path string) (net.Listener, error) {
 	if err := prepareRuntimeDir(filepath.Dir(path)); err != nil {
 		return nil, err

@@ -1,6 +1,9 @@
 package config
 
-import "github.com/matthewlu070111/smart-srun/core/internal/domain"
+import (
+	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/protocol/srun"
+)
 
 // Built-in login shape values used when neither the account nor
 // login_defaults supplies one. They are not configuration: no UI has ever
@@ -85,12 +88,17 @@ func mustClock(hour, minute int) domain.ClockTime {
 // in the 1.x runtime.
 func EffectiveLogin(cfg domain.Config, account domain.CampusAccount) EffectiveLoginShape {
 	shape := EffectiveLoginShape{
-		N:           firstNonEmpty(account.Login.N, cfg.LoginDefaults.N, "200"),
-		Type:        firstNonEmpty(account.Login.Type, cfg.LoginDefaults.Type, "1"),
-		Enc:         firstNonEmpty(account.Login.Enc, cfg.LoginDefaults.Enc, "srun_bx1"),
-		InfoPrefix:  firstNonEmpty(account.Login.InfoPrefix, DefaultInfoPrefix),
-		OS:          firstNonEmpty(account.Login.OS, DefaultLoginOS),
-		Name:        firstNonEmpty(account.Login.Name, DefaultLoginName),
+		N:          firstNonEmpty(account.Login.N, cfg.LoginDefaults.N, "200"),
+		Type:       firstNonEmpty(account.Login.Type, cfg.LoginDefaults.Type, "1"),
+		Enc:        firstNonEmpty(account.Login.Enc, cfg.LoginDefaults.Enc, "srun_bx1"),
+		InfoPrefix: firstNonEmpty(account.Login.InfoPrefix, DefaultInfoPrefix),
+		OS:         firstNonEmpty(account.Login.OS, DefaultLoginOS),
+		Name:       firstNonEmpty(account.Login.Name, DefaultLoginName),
+		// Resolved to the concrete table rather than left empty, so the value
+		// the protocol layer will use is the value diagnostics print. There is
+		// no global login_defaults.alphabet: the table belongs to a gateway,
+		// and an account already carries which gateway it talks to.
+		Alphabet:    firstNonEmpty(account.Login.Alphabet, srun.DefaultAlphabetTable),
 		DoubleStack: DefaultDoubleStack,
 	}
 	if account.Login.DoubleStack != nil {
@@ -109,6 +117,10 @@ type EffectiveLoginShape struct {
 	DoubleStack bool
 	OS          string
 	Name        string
+	// Alphabet is always the concrete 64-byte table, never empty. It is not a
+	// secret -- it is a public property of the gateway -- so it appears in
+	// diagnostic output alongside the other resolved parameters.
+	Alphabet string
 }
 
 // EffectiveUsername is the username actually sent to the gateway.

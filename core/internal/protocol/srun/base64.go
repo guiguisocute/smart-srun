@@ -21,6 +21,10 @@ import (
 // the table is custom.
 const PadChar = '='
 
+// AlphabetSize is how many bytes a table has: one per six-bit group. Named so
+// the configuration layer can bound the field without restating 64.
+const AlphabetSize = 64
+
 // DefaultAlphabetTable is the table the baseline shipped. A school may use a
 // different one; the algorithm does not change with it.
 const DefaultAlphabetTable = "LVoJPiCN2R8G90yg+hmFHuacZ1OWMnrsSTXkYpUq/3dlbfKwv6xztjI7DeBE45QA"
@@ -58,14 +62,14 @@ func mustAlphabet(table string) *Alphabet {
 // was sent -- and it would do so silently, which is why this is refused up
 // front rather than discovered as an authentication failure.
 func NewAlphabet(table string) (*Alphabet, error) {
-	if len(table) != 64 {
+	if len(table) != AlphabetSize {
 		return nil, domain.Errorf(domain.CodeInvalidConfig,
-			"Base64 字母表必须是 64 个字节，收到 %d 个", len(table))
+			"Base64 字母表必须是 %d 个字节，收到 %d 个", AlphabetSize, len(table))
 	}
 
 	var alphabet Alphabet
 	var seen [256]bool
-	for index := range 64 {
+	for index := range AlphabetSize {
 		symbol := table[index]
 		switch {
 		case symbol < 0x21 || symbol > 0x7e:

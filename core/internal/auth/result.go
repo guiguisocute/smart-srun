@@ -116,7 +116,13 @@ func (a gatewayAnswer) identity() string {
 // The three answers that matter are "ok", "already online", and everything
 // else. Only the first two are not failures, and the second is not a success
 // either -- it is a question about whose session that is.
-func interpret(payload json.RawMessage, expected string) (Result, error) {
+//
+// It deliberately takes no expected username. Deciding whose session is on the
+// line is readIdentity's job, against the online endpoint; this reply is the
+// gateway's answer about the request, not about the session. The parameter used
+// to be here and was never read, which made the signature claim an identity
+// check that the body did not perform.
+func interpret(payload json.RawMessage) (Result, error) {
 	var answer gatewayAnswer
 	if err := json.Unmarshal(payload, &answer); err != nil {
 		return Result{}, domain.Errorf(domain.CodeProtocolInvalid,

@@ -255,14 +255,6 @@ local function normalize_school_runtime_descriptor(descriptor)
     return item
 end
 
-local function parse_school_runtime_contract(raw_json)
-    local parsed = jsonc.parse(raw_json or "")
-    if type(parsed) ~= "table" then
-        parsed = {}
-    end
-    return parsed
-end
-
 local function bind_school_extra_flag(opt, descriptor, school_changed_ref)
     opt.rmempty = false
     function opt.cfgvalue()
@@ -328,13 +320,13 @@ local schools = {}
 -- 只读、不联网：远程刷新是独立任务，不在页面渲染里发起。
 local school_presets = bridge.presets() or {}
 
-local school_runtime_contract = parse_school_runtime_contract("")
-if type(school_runtime_contract.school_extra) == "table" then
-    cfg[SCHOOL_EXTRA_KEY] = school_runtime_contract.school_extra
-end
+-- 学校私有字段的描述符来自守护进程发布的 schema，值来自上面已读取的配置。
+-- 这里曾经是 parse_school_runtime_contract("")，传字面空串，描述符恒为空，
+-- 下面整段控件渲染永远不会执行。
+local school_runtime_contract = { field_descriptors = bridge.school_extra_descriptors() or {} }
 local school_runtime_descriptors = {}
 local school_runtime_renderable = type(school_runtime_contract.field_descriptors) == "table"
-    and type(school_runtime_contract.school_extra) == "table"
+    and type(cfg[SCHOOL_EXTRA_KEY]) == "table"
 
 if school_runtime_renderable then
     for _, descriptor in ipairs(school_runtime_contract.field_descriptors) do

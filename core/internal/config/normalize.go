@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
@@ -47,10 +48,42 @@ func Normalize(cfg domain.Config) domain.Config {
 	}
 	cfg.HotspotProfiles = hotspots
 
-	if cfg.SchoolExtra == nil {
-		cfg.SchoolExtra = map[string]any{}
-	}
+	cfg.SchoolExtra, _ = FilterSchoolExtra(cfg.School, cfg.SchoolExtra)
 	return cfg
+}
+
+// FilterSchoolExtra keeps only the keys the named strategy declares, and
+// reports the ones it dropped.
+//
+// Spec 03: school_extra accepts only the current strategy's declared
+// descriptors, unknown keys are dropped with a diagnostic, and switching
+// strategy must not carry the previous one's private parameters along. Until
+// this existed the map was stored verbatim, so a key nothing declared lived in
+// the configuration forever and a strategy could be handed parameters it never
+// asked for.
+//
+// The dropped names are returned rather than logged here: this package does no
+// I/O, and the caller knows whether a person is waiting for the answer.
+func FilterSchoolExtra(school string, extra map[string]any) (map[string]any, []string) {
+	kept := make(map[string]any, len(extra))
+	if len(extra) == 0 {
+		return kept, nil
+	}
+	declared, known := SchoolRegistry.Lookup(school)
+	var dropped []string
+	for key, value := range extra {
+		// An unknown strategy declares nothing, so everything goes. That is the
+		// same answer as a known strategy with no fields, and it is the right
+		// one: values whose meaning depends on code this build does not have
+		// are not values this build can honour.
+		if known && declared.DeclaresField(key) {
+			kept[key] = value
+			continue
+		}
+		dropped = append(dropped, key)
+	}
+	slices.Sort(dropped)
+	return kept, dropped
 }
 
 // NormalizeCampusAccount canonicalises one account and clears the fields its

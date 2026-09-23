@@ -12,6 +12,7 @@ import (
 
 	"github.com/matthewlu070111/smart-srun/core/internal/config"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/strategy"
 )
 
 func (r *running) writeConfig(method, params string) ConfigWriteResult {
@@ -149,5 +150,50 @@ func TestConcurrentConfigurationSavesHaveExactlyOneWinner(t *testing.T) {
 	}
 	if success != 1 || conflict != 1 || service.status().ConfigRevision != 1 {
 		t.Fatalf("success=%d conflict=%d", success, conflict)
+	}
+}
+
+// A settings save that sends a school_extra key the selected strategy does not
+// declare keeps the rest, drops that key, and says so.
+//
+// Spec 03 asks for the drop "with a diagnostic". Filtering alone satisfied the
+// first half and left a caller to discover the missing key later; the warning
+// is the second half. A strategy switch clears the map by design and is not the
+// caller's mistake, so it is not reported.
+func TestSettingsSaveReportsUndeclaredSchoolExtraKeys(t *testing.T) {
+	registry := strategy.NewRegistry()
+	registry.MustRegister(strategy.Default())
+	registry.MustRegister(strategy.Strategy{ID: "zoned", Label: "分区",
+		Fields: []strategy.Field{{Key: "zone", Label: "区", Kind: strategy.FieldString}}})
+	config.UseSchoolRegistry(registry, t.Cleanup)
+
+	service := start(t, nil)
+	service.writeConfig("config.apply", `{"expected_revision":0,"settings":{"school":"zoned"}}`)
+
+	saved := service.writeConfig("config.apply",
+		`{"expected_revision":1,"settings":{"school_extra":{"zone":"north","smuggled":"x"}}}`)
+	if saved.Config.SchoolExtra["zone"] != "north" {
+		t.Fatalf("the declared key was not kept: %+v", saved.Config.SchoolExtra)
+	}
+	if _, present := saved.Config.SchoolExtra["smuggled"]; present {
+		t.Fatalf("an undeclared key was stored: %+v", saved.Config.SchoolExtra)
+	}
+	if len(saved.Warnings) != 1 || !strings.Contains(saved.Warnings[0], "school_extra.smuggled") {
+		t.Fatalf("warnings = %q, want one naming school_extra.smuggled", saved.Warnings)
+	}
+
+	clean := service.writeConfig("config.apply",
+		`{"expected_revision":2,"settings":{"school_extra":{"zone":"south"}}}`)
+	if len(clean.Warnings) != 0 {
+		t.Errorf("a fully declared save reported warnings: %q", clean.Warnings)
+	}
+
+	switched := service.writeConfig("config.apply",
+		`{"expected_revision":3,"settings":{"school":"default","school_extra":{"zone":"x"}}}`)
+	if len(switched.Warnings) != 0 {
+		t.Errorf("a strategy switch was reported as the caller's mistake: %q", switched.Warnings)
+	}
+	if len(switched.Config.SchoolExtra) != 0 {
+		t.Errorf("school_extra survived a switch: %+v", switched.Config.SchoolExtra)
 	}
 }

@@ -3,10 +3,12 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/matthewlu070111/smart-srun/core/internal/config"
 	"github.com/matthewlu070111/smart-srun/core/internal/domain"
+	"github.com/matthewlu070111/smart-srun/core/internal/strategy"
 )
 
 func TestExitCodeForKnownCodes(t *testing.T) {
@@ -73,6 +75,29 @@ func TestCoreCommandsAreReserved(t *testing.T) {
 	for _, name := range []string{"", "jxnu", "campus-portal", "Login", "cfg"} {
 		if IsCoreCommand(name) {
 			t.Errorf("%q was reported reserved", name)
+		}
+	}
+}
+
+// The CLI's view and the registry's view are the same list, not two lists that
+// happen to look alike.
+//
+// They were two copies that had drifted apart by "service" and "version", each
+// under a comment promising they could not disagree. A promise nothing checks
+// is how they drifted.
+func TestCoreCommandsAreExactlyTheRegistrysReservedList(t *testing.T) {
+	if !slices.Equal(CoreCommands(), strategy.ReservedCommands) {
+		t.Errorf("CoreCommands() = %v, registry reserves %v",
+			CoreCommands(), strategy.ReservedCommands)
+	}
+
+	// Returned by value: a caller that sorted or truncated the result must not
+	// be able to change what the registry refuses.
+	got := CoreCommands()
+	if len(got) > 0 {
+		got[0] = "mutated"
+		if strategy.ReservedCommands[0] == "mutated" {
+			t.Error("CoreCommands exposes the registry's own slice")
 		}
 	}
 }
